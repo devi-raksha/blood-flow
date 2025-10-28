@@ -133,6 +133,7 @@ namespace dealii
     // Parameters
     unsigned int fe_degree            = 1;
     std::string  output_filename      = "solution";
+    std::string  output_directory     = ".";
     bool         use_direct_solver    = true;
     unsigned int n_refinement_cycles  = 4;
     unsigned int n_global_refinements = 4;

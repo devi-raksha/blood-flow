@@ -148,6 +148,7 @@ namespace dealii
   {
     add_parameter("Finite element degree", fe_degree);
     add_parameter("Output filename", output_filename);
+    add_parameter("Output directory", output_directory);
     add_parameter("Use direct solver", use_direct_solver);
     add_parameter("Number of refinement cycles", n_refinement_cycles);
     add_parameter("Number of global refinement", n_global_refinements);
@@ -502,7 +503,7 @@ namespace dealii
   {
     const std::string filename =
       output_filename + "-" + std::to_string(cycle) + ".vtu";
-    std::ofstream output(filename);
+    std::ofstream output(output_directory + "/" + filename);
 
     DataOut<dim, spacedim> data_out;
     data_out.attach_dof_handler(dof_handler);
@@ -519,7 +520,7 @@ namespace dealii
     data_out.write_vtu(output);
     static std::vector<std::pair<double, std::string>> pvd_output_records;
     pvd_output_records.push_back(std::make_pair(time, filename));
-    std::ofstream pvd_output(output_filename + ".pvd");
+    std::ofstream pvd_output(output_directory + "/" + output_filename + ".pvd");
     DataOutBase::write_pvd_record(pvd_output, pvd_output_records);
   }
 
