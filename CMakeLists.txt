@@ -32,6 +32,7 @@ SET(TARGET1 "DG_advection_reaction_estimator")
 SET(TARGET2 "blood_flow_system_updated_1d3d")
 SET(TARGET3 "burger_equation")
 SET(TARGET4 "burger_with_periodic_bc")
+SET(TARGET5 "non_linear_conservation_law")
 
 # Declare all source files for each target:
 SET(TARGET1_SRC
@@ -52,6 +53,11 @@ set(TARGET3_SRC
 set(TARGET4_SRC
   source/burger_with_periodic_bc.cc
   main_burger.cc
+)
+
+set(TARGET5_SRC
+  source/non_linear_conservation_law.cc
+  main_non_linear_conservation_law.cc
 )
 
 CMAKE_MINIMUM_REQUIRED(VERSION 3.13.4)
@@ -83,6 +89,9 @@ DEAL_II_SETUP_TARGET(${TARGET3})
 
 ADD_EXECUTABLE(${TARGET4} ${TARGET4_SRC})
 DEAL_II_SETUP_TARGET(${TARGET4})
+
+ADD_EXECUTABLE(${TARGET5} ${TARGET5_SRC})
+DEAL_II_SETUP_TARGET(${TARGET5})
 
 # Add tests
 ADD_SUBDIRECTORY(tests)
