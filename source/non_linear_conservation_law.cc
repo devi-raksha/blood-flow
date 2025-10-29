@@ -301,13 +301,14 @@ namespace dealii
       const auto &normals    = fe_iv.get_fe_face_values(0).get_normal_vectors();
       const unsigned int n_q = fe_iv.get_fe_face_values(0).n_quadrature_points;
 
-      const auto b_vec = compute_directional_vector(cell);
+      const auto b_vec          = compute_directional_vector(cell);
+      const auto b_vec_neighbor = compute_directional_vector(ncell);
 
-      std::vector<double> explicit_uL(n_q), explicit_uR(n_q);
+      std::vector<double> explicit_u(n_q), explicit_u_neighbor(n_q);
       fe_iv.get_fe_face_values(0)[u_extractor].get_function_values(solution,
-                                                                   explicit_uL);
-      fe_iv.get_fe_face_values(1)[u_extractor].get_function_values(solution,
-                                                                   explicit_uR);
+                                                                   explicit_u);
+      fe_iv.get_fe_face_values(1)[u_extractor].get_function_values(
+        solution, explicit_u_neighbor);
       copy.face_data.emplace_back();
       auto              &face = copy.face_data.back();
       const unsigned int nd   = fe_iv.n_current_interface_dofs();
@@ -318,23 +319,30 @@ namespace dealii
       for (unsigned int q = 0; q < n_q; ++q)
         {
           const double an =
-            compute_flux_diff(b_vec, explicit_uL[q]) * normals[q];
+            compute_flux_diff(b_vec, explicit_u[q]) * normals[q];
+          const double an_neighbor =
+            compute_flux_diff(b_vec_neighbor, explicit_u_neighbor[q]) *
+            normals[q];
+
+          const auto alpha = std::max(std::abs(an), std::abs(an_neighbor));
 
           for (unsigned int i = 0; i < nd; ++i)
             {
               for (unsigned int j = 0; j < nd; ++j)
                 {
-                  const auto implicit_uL = fe_iv[u_extractor].value(0, i, q);
-                  const auto implicit_uR = fe_iv[u_extractor].value(1, j, q);
+                  const auto implicit_u = fe_iv[u_extractor].value(0, j, q);
+                  const auto implicit_u_neighbor =
+                    fe_iv[u_extractor].value(1, j, q);
 
-                  const auto fluxL =
-                    compute_flux(b_vec, implicit_uL, explicit_uL[q]);
-                  const auto fluxR =
-                    compute_flux(b_vec, implicit_uR, explicit_uR[q]);
+                  const auto flux =
+                    compute_flux(b_vec, implicit_u, explicit_u[q]);
+                  const auto flux_neighbor =
+                    compute_flux(b_vec_neighbor,
+                                 implicit_u_neighbor,
+                                 explicit_u_neighbor[q]);
 
-                  auto F_hat =
-                    0.5 * (fluxL + fluxR) * normals[q] +
-                    theta * std::abs(an) * (implicit_uR - implicit_uL);
+                  auto F_hat = 0.5 * (flux + flux_neighbor) * normals[q] -
+                               0.5 * alpha * (implicit_u - implicit_u_neighbor);
 
                   face.cell_matrix(i, j) +=
                     F_hat * fe_iv[u_extractor].jump_in_values(i, q) * JxW[q];
