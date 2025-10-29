@@ -76,18 +76,7 @@ namespace dealii
     reinit(const Iterator &cell, const unsigned int dofs_per_cell);
   };
 
-  // .........Flux computation functions................
-  template <int dim, int spacedim>
-  double
-  compute_burger_lax_friedrichs_flux(const double u_left,
-                                     const double u_right,
-                                     const double b_dot_n);
-
-  template <int dim, int spacedim>
-  double
-  compute_tangent_normal_product_burger(
-    const typename DoFHandler<dim, spacedim>::active_cell_iterator &cell,
-    const Tensor<1, spacedim>                                      &normal);
+  // Flux computation methods will be members of the class below.
 
   // Main class
   template <int dim, int spacedim>
@@ -102,6 +91,21 @@ namespace dealii
     run_convergence_study();
 
   private:
+    // Flux computation helpers
+    Tensor<1, spacedim>
+    compute_directional_vector(
+      const typename DoFHandler<dim, spacedim>::active_cell_iterator &cell)
+      const;
+
+    Tensor<1, spacedim>
+    compute_flux(const Tensor<1, spacedim> &b,
+                 const double              &implicit_u,
+                 const double              &explicit_u) const;
+
+    Tensor<1, spacedim>
+    compute_flux_diff(const Tensor<1, spacedim> &b,
+                      const double              &explicit_u) const;
+
     void
     setup_system();
     void
@@ -111,9 +115,7 @@ namespace dealii
     void
     solve();
     void
-    output_results(const unsigned int cycle) const;
-    void
-    compute_errors(unsigned int k);
+    output_results(const unsigned int cycle, const unsigned int timestep) const;
 
     // Mesh and DOF management
     Triangulation<dim, spacedim>                  triangulation;
@@ -139,14 +141,14 @@ namespace dealii
     unsigned int n_global_refinements = 4;
     double       time_step            = 0.01;
     double       final_time           = 1.0;
-    double       theta                = 1.0; // penalty parameter
+    double       theta                = 0.5; // penalty parameter
     double       omega                = 1.0; // relaxation parameter
     double       time                 = 0.0;
     unsigned int n_time_steps         = 0;
 
     // Picard iteration parameters
-    const unsigned int max_picard_iterations = 10;
-    const double       picard_tolerance      = 1e-8;
+    unsigned int max_picard_iterations = 10;
+    double       picard_tolerance      = 1e-8;
 
     // Function parsers
     ParameterAcceptorProxy<Functions::ParsedFunction<spacedim>>

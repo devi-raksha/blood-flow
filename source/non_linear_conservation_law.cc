@@ -1,5 +1,6 @@
 #include "../include/non_linear_conservation_law.h"
 
+#include <deal.II/base/parameter_acceptor.h>
 #include <deal.II/base/parsed_convergence_table.h>
 #include <deal.II/base/quadrature_lib.h>
 #include <deal.II/base/utilities.h>
@@ -12,67 +13,19 @@
 #include <fstream>
 #include <iomanip>
 #include <iostream>
+#include <string>
+
+namespace
+{
+  auto set_default_expression = [](auto              &function,
+                                   const std::string &expression) {
+    function.declare_parameters_call_back.connect(
+      [&]() { function.prm.set("Function expression", expression); });
+  };
+} // namespace
 
 namespace dealii
 {
-  // ---------------------
-  // Exact and RHS classes
-  // ---------------------
-
-  // template <int spacedim>
-  // double
-  // ExactSolutionBurger<spacedim>::value(const Point<spacedim> &p,
-  //                                      const unsigned int) const
-  // {
-  //   const double x = p[0]; // assumes parametric x on embedded 1D
-  //   const double t = this->get_time();
-  //   return std::exp(-t) * std::sin(numbers::PI * x);
-  // }
-
-  // template <int spacedim>
-  // Tensor<1, spacedim>
-  // ExactSolutionBurger<spacedim>::gradient(const Point<spacedim> &p,
-  //                                         const unsigned int) const
-  // {
-  //   // Only tangential derivative matters; return component-wise gradient
-  //   Tensor<1, spacedim> g;
-  //   const double        x = p[0];
-  //   const double        t = this->get_time();
-  //   // ∂u/∂x (in x-direction; for embedded case, will be projected along
-  //   // tangent)
-  //   const double du_dx = std::exp(-t) * numbers::PI * std::cos(numbers::PI *
-  //   x); g[0]               = du_dx; for (unsigned int d = 1; d < spacedim;
-  //   ++d)
-  //     g[d] = 0.0;
-  //   return g;
-  // }
-
-  // template <int spacedim>
-  // double
-  // RHS_Burger<spacedim>::value(const Point<spacedim> &p,
-  //                             const unsigned int) const
-  // {
-  //   // Return f(x,t) - the source function
-  //   // For manufactured solution u = e^{-t} sin(πx), compute f such that u_t
-  //   +
-  //   // ∇·(u²/2) = f
-  //   const double x = p[0];
-  //   const double t = this->get_time();
-
-  //   // u_exact = e^{-t} sin(πx)
-  //   // u_t = -e^{-t} sin(πx)
-  //   const double u_t = -std::exp(-t) * std::sin(numbers::PI * x);
-  //   // ∇·(u²/2) = d/dx(u²/2) = u * du/dx = e^{-t} sin(πx) * e^{-t} π cos(πx)
-  //   =
-  //   // e^{-2t} π sin(πx) cos(πx)
-  //   const double div_flux = std::exp(-2.0 * t) * numbers::PI *
-  //                           std::sin(numbers::PI * x) *
-  //                           std::cos(numbers::PI * x);
-
-  //   // f = u_t + ∇·(u²/2)
-  //   return u_t + div_flux;
-  // }
-
   // ---------------------
   // Scratch/Copy data
   // ---------------------
@@ -117,19 +70,38 @@ namespace dealii
 
 
   // ---------------------
-  // Utility functions
+  // Utility: member implementations for flux computations
   // ---------------------
 
   template <int dim, int spacedim>
-  double
-  compute_tangent_normal_product_burger(
-    const typename DoFHandler<dim, spacedim>::active_cell_iterator &cell,
-    const Tensor<1, spacedim>                                      &normal)
+  Tensor<1, spacedim>
+  NonLinearConservationLaw<dim, spacedim>::compute_directional_vector(
+    const typename DoFHandler<dim, spacedim>::active_cell_iterator &cell) const
   {
     // Unit tangent along the embedded 1D edge
-    const Tensor<1, spacedim> b = (cell->vertex(1) - cell->vertex(0)) /
-                                  cell->vertex(1).distance(cell->vertex(0));
-    return b * normal;
+    return (cell->vertex(1) - cell->vertex(0)) /
+           cell->vertex(1).distance(cell->vertex(0));
+  }
+
+  template <int dim, int spacedim>
+  Tensor<1, spacedim>
+  NonLinearConservationLaw<dim, spacedim>::compute_flux(
+    const Tensor<1, spacedim> &b,
+    const double              &implicit_u,
+    const double              &explicit_u) const
+  {
+    // Physical one-sided fluxes
+    return 0.5 * explicit_u * implicit_u * b;
+  }
+
+  template <int dim, int spacedim>
+  Tensor<1, spacedim>
+  NonLinearConservationLaw<dim, spacedim>::compute_flux_diff(
+    const Tensor<1, spacedim> &b,
+    const double              &explicit_u) const
+  {
+    // Physical one-sided fluxes
+    return 0.5 * explicit_u * b;
   }
 
 
@@ -139,7 +111,8 @@ namespace dealii
 
   template <int dim, int spacedim>
   NonLinearConservationLaw<dim, spacedim>::NonLinearConservationLaw()
-    : triangulation()
+    : ParameterAcceptor("Conservation law/")
+    , triangulation()
     , dof_handler(triangulation)
     , fe(nullptr)
     , initial_condition("Initial condition")
@@ -156,10 +129,19 @@ namespace dealii
     add_parameter("Final time", final_time);
     add_parameter("Theta (penalty parameter)", theta);
     add_parameter("Omega (relaxation parameter)", omega);
+    add_parameter("Picard iterations", max_picard_iterations);
+    add_parameter("Picard tolerance", picard_tolerance);
 
     enter_subsection("Error");
+    enter_my_subsection(this->prm);
     convergence_table.add_parameters(this->prm);
+    leave_my_subsection(this->prm);
     leave_subsection();
+
+    set_default_expression(initial_condition, "sin(pi*x)");
+    set_default_expression(exact_solution, "sin(pi*x)*exp(-t)");
+    set_default_expression(
+      rhs_function, "-exp(-t)*sin(pi*x) + exp(-2*t)*pi*sin(pi*x)*cos(pi*x)");
   }
 
   template <int dim, int spacedim>
@@ -273,18 +255,11 @@ namespace dealii
       const auto &q_points = fe_v.get_quadrature_points();
 
       // Evaluate u^n at quadrature points
-      std::vector<double> u_old(fe_v.n_quadrature_points);
-      // fe_v[u_extractor].get_function_values(solution_old, u_old);
-      fe_v[u_extractor].get_function_values(solution, u_old);
-
-      std::vector<Tensor<1, spacedim>> grad_uold(fe_v.n_quadrature_points);
-      // fe_v[u_extractor].get_function_gradients(solution_old, grad_uold);
-      fe_v[u_extractor].get_function_gradients(solution, grad_uold);
-
+      std::vector<double> explicit_u(fe_v.n_quadrature_points);
+      fe_v[u_extractor].get_function_values(solution, explicit_u);
 
       // Unit tangent vector along the embedded 1D edge
-      const auto b_vec = (cell->vertex(1) - cell->vertex(0)) /
-                         cell->vertex(1).distance(cell->vertex(0));
+      const auto b_vec = compute_directional_vector(cell);
 
       // Source term f(x,t^{n+1})
       rhs_function.set_time(time);
@@ -292,15 +267,16 @@ namespace dealii
       for (unsigned int q = 0; q < fe_v.n_quadrature_points; ++q)
         {
           const double rhs_value = rhs_function.value(q_points[q]);
-          const double u_old_q   = u_old[q];
-
           for (unsigned int i = 0; i < ndofs; ++i)
             {
               for (unsigned int j = 0; j < ndofs; ++j)
                 {
+                  const auto implicit_u_q = fe_v[u_extractor].value(j, q);
+                  const auto flux =
+                    compute_flux(b_vec, implicit_u_q, explicit_u[q]);
+
                   copy.cell_matrix(i, j) -=
-                    0.5 * u_old_q * b_vec * fe_v[u_extractor].value(j, q) *
-                    fe_v[u_extractor].gradient(i, q) * JxW[q];
+                    flux * fe_v[u_extractor].gradient(i, q) * JxW[q];
                 }
               // Source contribution
               copy.cell_rhs(i) +=
@@ -325,15 +301,13 @@ namespace dealii
       const auto &normals    = fe_iv.get_fe_face_values(0).get_normal_vectors();
       const unsigned int n_q = fe_iv.get_fe_face_values(0).n_quadrature_points;
 
-      std::vector<double> uL_old(n_q), uR_old(n_q);
-      // fe_iv.get_fe_face_values(0)[u_extractor].get_function_values(solution_old,
-      //                                                              uL_old);
-      // fe_iv.get_fe_face_values(1)[u_extractor].get_function_values(solution_old,
-      //                                                              uR_old);
+      const auto b_vec = compute_directional_vector(cell);
+
+      std::vector<double> explicit_uL(n_q), explicit_uR(n_q);
       fe_iv.get_fe_face_values(0)[u_extractor].get_function_values(solution,
-                                                                   uL_old);
+                                                                   explicit_uL);
       fe_iv.get_fe_face_values(1)[u_extractor].get_function_values(solution,
-                                                                   uR_old);
+                                                                   explicit_uR);
       copy.face_data.emplace_back();
       auto              &face = copy.face_data.back();
       const unsigned int nd   = fe_iv.n_current_interface_dofs();
@@ -343,97 +317,97 @@ namespace dealii
 
       for (unsigned int q = 0; q < n_q; ++q)
         {
-          const double bn =
-            compute_tangent_normal_product_burger<dim, spacedim>(cell,
-                                                                 normals[q]);
-          // Semi-implicit numerical flux: F̂ = {{u^n * u^{n+1}}} * bn + penalty
-          for (unsigned int j = 0; j < nd; ++j)
+          const double an =
+            compute_flux_diff(b_vec, explicit_uL[q]) * normals[q];
+
+          for (unsigned int i = 0; i < nd; ++i)
             {
-              // const double ul = fe_iv[u_extractor].value(0, j, q);
-              // const double ur = fe_iv[u_extractor].value(1, j, q);
-
-              // // Average flux: {{u^n * u^{n+1}}}
-              // const double F_avg =
-              //   0.25 * bn * (uL_old[q] * ul + uR_old[q] * ur);
-
-              // const double h = cell->diameter();
-
-              // // const double alpha = theta * h / (2 * time_step);
-
-              for (unsigned int i = 0; i < nd; ++i)
+              for (unsigned int j = 0; j < nd; ++j)
                 {
+                  const auto implicit_uL = fe_iv[u_extractor].value(0, i, q);
+                  const auto implicit_uR = fe_iv[u_extractor].value(1, j, q);
+
+                  const auto fluxL =
+                    compute_flux(b_vec, implicit_uL, explicit_uL[q]);
+                  const auto fluxR =
+                    compute_flux(b_vec, implicit_uR, explicit_uR[q]);
+
+                  auto F_hat =
+                    0.5 * (fluxL + fluxR) * normals[q] +
+                    theta * std::abs(an) * (implicit_uR - implicit_uL);
+
                   face.cell_matrix(i, j) +=
-                    (bn * (uL_old[q] + uR_old[q]) / 4 *
-                       fe_iv[u_extractor].jump_in_values(i, q) *
-                       fe_iv[u_extractor].average_of_values(j, q) +
-                     theta * std::abs(bn * (uL_old[q] + uR_old[q]) / 4) *
-                       fe_iv[u_extractor].jump_in_values(i, q) *
-                       fe_iv[u_extractor].jump_in_values(j, q)) *
-                    JxW[q];
+                    F_hat * fe_iv[u_extractor].jump_in_values(i, q) * JxW[q];
                 }
             }
         }
     };
 
 
-    auto boundary_worker =
-      [&](const Iterator                            &cell,
-          unsigned int                               face_no,
-          ConservationLawScratchData<dim, spacedim> &scratch,
-          ConservationLawCopyData                   &copy) {
-        scratch.fe_interface_values.reinit(cell, face_no);
-        const auto &fe_face = scratch.fe_interface_values.get_fe_face_values(0);
+    auto boundary_worker = [&](
+                             const Iterator                            &cell,
+                             unsigned int                               face_no,
+                             ConservationLawScratchData<dim, spacedim> &scratch,
+                             ConservationLawCopyData                   &copy) {
+      scratch.fe_interface_values.reinit(cell, face_no);
+      const auto &fe_face = scratch.fe_interface_values.get_fe_face_values(0);
 
-        const auto        &JxW     = fe_face.get_JxW_values();
-        const auto        &normals = fe_face.get_normal_vectors();
-        const unsigned int n_q     = fe_face.n_quadrature_points;
+      const auto        &JxW     = fe_face.get_JxW_values();
+      const auto        &normals = fe_face.get_normal_vectors();
+      const unsigned int n_q     = fe_face.n_quadrature_points;
 
-        std::vector<double> u_in(n_q);
-        // fe_face[u_extractor].get_function_values(solution_old, u_in);
-        fe_face[u_extractor].get_function_values(solution, u_in);
-
-
-        const auto         &q_points = fe_face.get_quadrature_points();
-        std::vector<double> g(n_q);
-        std::vector<double> u_ext_old(n_q);
-
-        exact_solution.set_time(time);
-        exact_solution.value_list(q_points, g);
-
-        // Boundary data at t^n and t^{n+1}
-        exact_solution.set_time(time - time_step); // t^n
-        exact_solution.value_list(q_points, u_ext_old);
-
-        for (unsigned int q = 0; q < n_q; ++q)
-          {
-            const double bn =
-              compute_tangent_normal_product_burger<dim, spacedim>(cell,
-                                                                   normals[q]);
-
-            // std::vector<double> g1(n_q);
+      std::vector<double> explicit_u(n_q);
+      // fe_face[u_extractor].get_function_values(solution_old, u_in);
+      fe_face[u_extractor].get_function_values(solution, explicit_u);
 
 
-            if (bn * (u_ext_old[q] / 2) > 0)
-              {
-                for (unsigned int i = 0; i < fe_face.get_fe().dofs_per_cell;
-                     ++i)
-                  for (unsigned int j = 0; j < fe_face.get_fe().dofs_per_cell;
-                       ++j)
-                    copy.cell_matrix(i, j) +=
-                      fe_face[u_extractor].value(i, q)   // \phi_i
-                      * fe_face[u_extractor].value(j, q) // \phi_j
-                      * bn * u_ext_old[q] / 2 // \beta . n = bn u_old/2
-                      * JxW[q];               // dx
-              }
-            else
+      const auto         &q_points = fe_face.get_quadrature_points();
+      std::vector<double> g(n_q);
+      std::vector<double> external_u(n_q);
+
+      exact_solution.set_time(time);
+      exact_solution.value_list(q_points, external_u);
+
+      const auto b_vec = compute_directional_vector(cell);
+
+      for (unsigned int q = 0; q < n_q; ++q)
+        {
+          const double an =
+            compute_flux_diff(b_vec, explicit_u[q]) * normals[q];
+
+          if (an > 0)
+            {
               for (unsigned int i = 0; i < fe_face.get_fe().dofs_per_cell; ++i)
-                copy.cell_rhs(i) += -fe_face[u_extractor].value(i, q) // \phi_i
-                                    * g[q]                            // g*/
-                                    * bn * u_ext_old[q] /
-                                    2         // g1[q]/2 // \beta . n
-                                    * JxW[q]; // dx
-          }
-      };
+                for (unsigned int j = 0; j < fe_face.get_fe().dofs_per_cell;
+                     ++j)
+                  {
+                    const auto implicit_u = fe_face[u_extractor].value(j, q);
+                    const auto flux =
+                      compute_flux(b_vec, implicit_u, explicit_u[q]);
+
+                    const auto f_hat =
+                      flux * normals[q] + theta * an * implicit_u;
+
+                    copy.cell_matrix(i, j) +=
+                      f_hat * fe_face[u_extractor].value(i, q) * JxW[q]; // dx
+                  }
+            }
+          else
+            {
+              const auto flux =
+                compute_flux(b_vec, external_u[q], external_u[q]);
+
+              const auto f_hat =
+                flux * normals[q] + theta * std::abs(an) * external_u[q];
+
+              for (unsigned int i = 0; i < fe_face.get_fe().dofs_per_cell; ++i)
+                {
+                  copy.cell_rhs(i) +=
+                    -f_hat * fe_face[u_extractor].value(i, q) * JxW[q]; // dx
+                }
+            }
+        }
+    };
 
     const QGauss<dim>     quadrature(2 * fe->tensor_degree() + 1);
     const QGauss<dim - 1> quadrature_face(2 * fe->tensor_degree() + 1);
@@ -499,10 +473,16 @@ namespace dealii
   template <int dim, int spacedim>
   void
   NonLinearConservationLaw<dim, spacedim>::output_results(
-    const unsigned int cycle) const
+    const unsigned int cycle,
+    const unsigned int timestep_number) const
   {
+    const unsigned int max_steps =
+      static_cast<unsigned int>(std::round(final_time / time_step));
+    const unsigned int n_pad = Utilities::needed_digits(max_steps);
+
     const std::string filename =
-      output_filename + "-" + std::to_string(cycle) + ".vtu";
+      output_filename + "-" + std::to_string(cycle) + "-" +
+      Utilities::int_to_string(timestep_number, n_pad) + ".vtu";
     std::ofstream output(output_directory + "/" + filename);
 
     DataOut<dim, spacedim> data_out;
@@ -519,57 +499,12 @@ namespace dealii
     data_out.build_patches();
     data_out.write_vtu(output);
     static std::vector<std::pair<double, std::string>> pvd_output_records;
+    if (timestep_number == 0)
+      pvd_output_records.clear();
     pvd_output_records.push_back(std::make_pair(time, filename));
-    std::ofstream pvd_output(output_directory + "/" + output_filename + ".pvd");
+    std::ofstream pvd_output(output_directory + "/" + output_filename + "-" +
+                             std::to_string(cycle) + ".pvd");
     DataOutBase::write_pvd_record(pvd_output, pvd_output_records);
-  }
-
-  template <int dim, int spacedim>
-  void
-  NonLinearConservationLaw<dim, spacedim>::compute_errors(unsigned int k)
-  {
-    Vector<float> diff(triangulation.n_active_cells());
-
-    exact_solution.set_time(time);
-
-    // L2 error
-    VectorTools::integrate_difference(dof_handler,
-                                      solution,
-                                      exact_solution,
-                                      diff,
-                                      QGauss<dim>(fe_degree + 2),
-                                      VectorTools::L2_norm);
-    const double L2 = VectorTools::compute_global_error(triangulation,
-                                                        diff,
-                                                        VectorTools::L2_norm);
-
-    // H1 seminorm
-    VectorTools::integrate_difference(dof_handler,
-                                      solution,
-                                      exact_solution,
-                                      diff,
-                                      QGauss<dim>(fe_degree + 2),
-                                      VectorTools::H1_seminorm);
-    const double H1 =
-      VectorTools::compute_global_error(triangulation,
-                                        diff,
-                                        VectorTools::H1_seminorm);
-
-    static double lastL2 = 0.0, lastH1 = 0.0;
-
-    std::cout << std::scientific << std::setprecision(3);
-    std::cout << "=== Errors at t=" << time << " (cycle " << (k + 1)
-              << ") ===\n";
-    std::cout << " L2:  " << L2 << "  rate: "
-              << (k == 0 ? 0.0 : std::log(lastL2 / L2) / std::log(2.0)) << "\n";
-    std::cout << " H1s: " << H1 << "  rate: "
-              << (k == 0 ? 0.0 : std::log(lastH1 / H1) / std::log(2.0)) << "\n";
-    std::cout << " DoFs: " << dof_handler.n_dofs() << "   h≈"
-              << 1.0 / triangulation.n_active_cells() << "\n";
-    std::cout << std::string(60, '=') << std::endl;
-
-    lastL2 = L2;
-    lastH1 = H1;
   }
 
   template <int dim, int spacedim>
@@ -664,13 +599,12 @@ namespace dealii
 
             // Advance in time
             solution_old = solution;
-            output_results(step);
+            output_results(cycle, step);
           }
         {
           Vector<double> tmp(dof_handler.n_dofs());
-          mass_matrix.vmult(tmp, solution);    // tmp = M * solution
-          const double l2_sq = solution * tmp; // u^T M u
-          const double l2    = std::sqrt(std::max(0.0, l2_sq));
+          const double   l2 =
+            mass_matrix.matrix_scalar_product(solution, solution);
 
           // For manufactured solution u = e^{-t} sin(πx), L2 norm is
           // ||u||_{L2} = sqrt(int_{0}^}{1} sin^2 (pi x) e^{-2t})= sqrt(1/2) *
@@ -683,8 +617,11 @@ namespace dealii
                     << std::fabs(l2 - analytic_L2) / analytic_L2 << std::endl;
         }
 
-        compute_errors(cycle);
+        convergence_table.error_from_exact(dof_handler,
+                                           solution,
+                                           exact_solution);
       }
+    convergence_table.output_table(std::cout);
   }
   // Explicit instantiations: 1D embedded in 3D
   template class NonLinearConservationLaw<1, 3>;

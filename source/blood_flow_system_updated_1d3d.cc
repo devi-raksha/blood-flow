@@ -46,7 +46,7 @@ namespace dealii
     add_parameter("Eta (stability parameter)", eta);
     add_parameter("Initial condition A expression", initial_A_expression);
     add_parameter("Initial condition U expression", initial_Q_expression);
-    //add_parameter("Pressure boundary expression", pressure_bc_expression);
+    // add_parameter("Pressure boundary expression", pressure_bc_expression);
   }
 
   template <int dim, int spacedim>
@@ -429,16 +429,14 @@ namespace dealii
                     }
 
                   // RHS contributions
-                  
-                      // 1) -<Q^{n+1}, φ_A>
-                      copy.cell_rhs(j) -=
-                        QR_old * fe_face[area_extractor].value(j, q) * JxW[q];
 
-                      // 2) Momentum flux contribution
-                      copy.cell_rhs(j) +=
-                        flux_Q * fe_face[momentum_extractor].value(j, q) *
-                        JxW[q];
-                    
+                  // 1) -<Q^{n+1}, φ_A>
+                  copy.cell_rhs(j) -=
+                    QR_old * fe_face[area_extractor].value(j, q) * JxW[q];
+
+                  // 2) Momentum flux contribution
+                  copy.cell_rhs(j) +=
+                    flux_Q * fe_face[momentum_extractor].value(j, q) * JxW[q];
                 }
             }
         }
@@ -541,11 +539,6 @@ namespace dealii
                                                      quadrature,
                                                      quadrature_face);
     BloodFlowCopyData                   copy_data;
-
-    auto null_boundary = [](const auto        &cell,
-                            const unsigned int face_no,
-                            auto              &scratch,
-                            auto              &copy) {};
 
     MeshWorker::mesh_loop(dof_handler.begin_active(),
                           dof_handler.end(),
