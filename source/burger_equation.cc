@@ -415,7 +415,7 @@ namespace dealii
                   copy.cell_matrix(i, j) +=
                     fe_face[u_extractor].value(i, q)   // \phi_i
                     * fe_face[u_extractor].value(j, q) // \phi_j
-                    * bn * u_ext_old / 2               // \beta . n = bn u_old/2
+                    * bn * u_in[q] / 2                 // \beta . n = bn u_old/2
                     * JxW[q];                          // dx
             }
           else

@@ -385,11 +385,11 @@ namespace dealii
                     const auto flux =
                       compute_flux(b_vec, implicit_u, explicit_u[q]);
 
-                    const auto f_hat =
-                      flux * normals[q] + theta * an * implicit_u;
+                    const auto F_hat =
+                      flux * normals[q]; // + theta * an * implicit_u;
 
                     copy.cell_matrix(i, j) +=
-                      f_hat * fe_face[u_extractor].value(i, q) * JxW[q]; // dx
+                      F_hat * fe_face[u_extractor].value(i, q) * JxW[q]; // dx
                   }
             }
           else
@@ -397,13 +397,13 @@ namespace dealii
               const auto flux =
                 compute_flux(b_vec, external_u[q], external_u[q]);
 
-              const auto f_hat =
-                flux * normals[q] + theta * std::abs(an) * external_u[q];
+              const auto F_hat =
+                flux * normals[q]; // + theta * std::abs(an) * external_u[q];
 
               for (unsigned int i = 0; i < fe_face.get_fe().dofs_per_cell; ++i)
                 {
                   copy.cell_rhs(i) +=
-                    -f_hat * fe_face[u_extractor].value(i, q) * JxW[q]; // dx
+                    -F_hat * fe_face[u_extractor].value(i, q) * JxW[q]; // dx
                 }
             }
         }
