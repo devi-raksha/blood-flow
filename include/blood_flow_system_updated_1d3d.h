@@ -43,19 +43,20 @@ namespace dealii
   namespace BloodFlowParameters
   {
     // Default physical parameters for blood flow
-    constexpr double DEFAULT_RHO = 1.06;                 // Density (g/cm³)
-    constexpr double DEFAULT_REFERENCE_AREA = 3.1416e-4; // Reference area (cm²)
-    constexpr double DEFAULT_ELASTIC_MODULUS = 80;       // Elastic modulus (Pa)
+    constexpr double DEFAULT_RHO = 1.06; // Density (g/cm³)
+    constexpr double DEFAULT_REFERENCE_AREA =
+      3.141592653589793e-4;                           // Reference area (cm²)
+    constexpr double DEFAULT_ELASTIC_MODULUS = 1.0e6; // Elastic modulus (Pa)
     constexpr double DEFAULT_REFERENCE_PRESSURE =
       0.0;                                      // Reference pressure (Pa)
-    constexpr double DEFAULT_VISCOSITY_C = 0.0; // Viscosity coefficient
+    constexpr double DEFAULT_VISCOSITY_C = 1.0; // Viscosity coefficient
     constexpr double DEFAULT_THETA       = 1.0; // Penalty parameter
     constexpr double DEFAULT_ETA         = 1.0; // Stability parameter
 
     // Manufactured solution parameters
     constexpr double DEFAULT_R0 = 9.99e-3; // Reference radius (m)
     constexpr double DEFAULT_L  = 1.0;     // Domain length (m)
-    constexpr double DEFAULT_T0 = 0.1;     // Time period (s)
+    constexpr double DEFAULT_T0 = 1.0;     // Time period (s)
 
     // Tube law exponent
     constexpr double TUBE_LAW_EXPONENT = 0.5;
@@ -81,6 +82,35 @@ namespace dealii
       elastic_modulus * m * std::pow(ratio, m - 1.0) / reference_area;
     return std::sqrt(area / density * dpda);
   }
+
+  /**
+   * Compute characteristic value Ul+ cl using velocity and wave speed 
+   */
+  template <int dim, int spacedim>
+  double
+  compute_plus_eigen(const double explicit_velocity,
+                     const double wave_speed_explicit
+                     )
+  {
+    
+    return explicit_velocity + wave_speed_explicit;
+  }
+
+
+    /**
+   * Compute characteristic value Ul- cl using velocity and wave speed 
+   */
+  template <int dim, int spacedim>
+  double
+  compute_diff_eigen(const double explicit_velocity,
+                     const double wave_speed_explicit
+                     )
+  {
+    
+    return explicit_velocity - wave_speed_explicit;
+  }
+
+
 
   /**
    * Compute pressure using the tube law
@@ -116,152 +146,182 @@ namespace dealii
   //====================================================================
 
   /**
-   * Compute Lax-Friedrichs penalty parameter for area equation: A^{n+1}P(A^n)/ρ
+   * Compute physical flux for area equation: F_A = A * U * (b · n)
    */
   template <int dim, int spacedim>
-  double
-  compute_rusanov_penalty_area(const double area_left_old,
-                               const double area_right_old,
-                               const double reference_area,
-                               const double elastic_modulus,
-                               const double rho)
+  Tensor<1, spacedim>
+  compute_physical_area_flux(const double implicit_area,
+                             const double explicit_velocity,
+                             const Tensor<1, spacedim> &b)
   {
-    // For flux F_A = A^{n+1} * P(A^n) / ρ
-    // dF_A/dA = P(A^n) / ρ (derivative w.r.t. A^{n+1})
-    const double P_left  = compute_pressure_value<dim, spacedim>(area_left_old,
-                                                                reference_area,
-                                                                elastic_modulus,
-                                                                0.0);
-    const double P_right = compute_pressure_value<dim, spacedim>(
-      area_right_old, reference_area, elastic_modulus, 0.0);
-
-    return std::max(std::abs(P_left), std::abs(P_right)) / rho;
+    return implicit_area * explicit_velocity * b;
   }
 
   /**
-   * Compute Lax-Friedrichs penalty parameter for momentum equation:
-   * (Q^n)^2/(ρ*A^n)
+   * Semi-implicit area flux: F_A = 0.5 * (A_old * U_new + U_old * A_new) * (b ·
+   * n)
    */
   template <int dim, int spacedim>
   double
-  compute_rusanov_penalty_momentum(const double momentum_left_old,
-                                   const double momentum_right_old,
-                                   const double area_left_old,
-                                   const double area_right_old,
-                                   const double rho)
+  compute_physical_area_flux_semi_implicit(const double area_old,
+                                           const double velocity_old,
+                                           const double area_new,
+                                           const double velocity_new,
+                                           const double b_dot_n)
   {
-    // For flux F_Q = (Q^n)^2 / (ρ * A^n)
-    // dF_Q/dQ = 2*Q^n / (ρ * A^n) (derivative w.r.t. Q)
-    const double dFQ_left =
-      2.0 * std::abs(momentum_left_old) / (rho * area_left_old);
-    const double dFQ_right =
-      2.0 * std::abs(momentum_right_old) / (rho * area_right_old);
-
-    return std::max(dFQ_left, dFQ_right);
+    return 0.5 * (area_old * velocity_new + velocity_old * area_new) * b_dot_n;
   }
 
   /**
-   * Compute area flux: A^{n+1} * P(A^n) / ρ
+   * Compute physical flux for momentum equation: F_U = (0.5 * U^2 + P/ρ) * (b ·
+   * n)
    */
   template <int dim, int spacedim>
   double
-  compute_area_pressure_flux(const double area_new,
-                             const double area_old,
-                             const double reference_area,
-                             const double elastic_modulus,
-                             const double rho)
+  compute_physical_momentum_flux(const double implicit_velocity,
+                                 const double explicit_velocity,
+                                const Tensor<1, spacedim> &b)
   {
-    const double pressure_old = compute_pressure_value<dim, spacedim>(
-      area_old, reference_area, elastic_modulus, 0.0);
-    return area_new * pressure_old / rho;
+    return (0.5 * implicit_velocity * explicit_velocity) * b;
   }
 
   /**
-   * Compute momentum convection flux: (Q^n)^2 / (ρ * A^n)
+   * Semi-implicit momentum flux: F_U = U_old * U_new + P(A_new)/ρ
    */
   template <int dim, int spacedim>
   double
-  compute_momentum_convection_flux(const double momentum_old,
-                                   const double area_old,
-                                   const double rho)
+  compute_physical_momentum_flux_semi_implicit(const double velocity_old,
+                                               const double velocity_new,
+                                               const double pressure_new,
+                                               const double rho,
+                                               const double b_dot_n)
   {
-    return (momentum_old * momentum_old) / (rho * area_old);
+    return (velocity_old * velocity_new + pressure_new / rho) * b_dot_n;
   }
 
   /**
-   * Updated numerical Rusanov flux computation
-   */
-  /**
-   * Compute Rusanov (Lax–Friedrichs) flux for the area equation:
-   * ̂F_A = 0.5(F_A⁻ + F_A⁺) – 0.5 α (A⁺ – A⁻)
+   * Compute Rusanov penalty parameter
    */
   template <int dim, int spacedim>
   double
-  compute_area_rusanov_flux(const double area_left_new,
-                            const double area_right_new,
-                            const double area_left_old,
-                            const double area_right_old,
-                            const double reference_area,
-                            const double elastic_modulus,
-                            const double rho,
-                            const double b_dot_n)
+  compute_rusanov_penalty(const double velocity_left,
+                          const double velocity_right,
+                          const double wave_speed_left,
+                          const double wave_speed_right)
   {
-    // Physical one‐sided fluxes
-    const double FA_L =
-      compute_area_pressure_flux<dim, spacedim>(
-        area_left_new, area_left_old, reference_area, elastic_modulus, rho) *
-      b_dot_n;
-    const double FA_R =
-      compute_area_pressure_flux<dim, spacedim>(
-        area_right_new, area_right_old, reference_area, elastic_modulus, rho) *
-      b_dot_n;
-
-    // Penalty parameter
-    const double alpha = compute_rusanov_penalty_area<dim, spacedim>(
-      area_left_old, area_right_old, reference_area, elastic_modulus, rho);
-
-    // Rusanov flux
-    return 0.5 * (FA_L + FA_R) - 0.5 * alpha * (area_right_new - area_left_new);
+    const double s1 = std::abs(velocity_left - wave_speed_left);
+    const double s2 = std::abs(velocity_left + wave_speed_left);
+    const double s3 = std::abs(velocity_right - wave_speed_right);
+    const double s4 = std::abs(velocity_right + wave_speed_right);
+    return 0.5 * std::max({s1, s2, s3, s4});
   }
 
+  // /**
+  //  * Compute numerical Rusanov flux for interior faces
+  //  */
+  // template <int dim, int spacedim>
+  // std::pair<double, double>
+  // compute_numerical_flux_rusanov(const double area_left,
+  //                                const double velocity_left,
+  //                                const double area_right,
+  //                                const double velocity_right,
+  //                                const double pressure_left,
+  //                                const double pressure_right,
+  //                                const double wave_speed_left,
+  //                                const double wave_speed_right,
+  //                                const double rho,
+  //                                const double b_dot_n)
+  // {
+  //   // Physical fluxes
+  //   const double FA_L = compute_physical_area_flux<dim, spacedim>(area_left,
+  //                                                                 velocity_left,
+  //                                                                 b_dot_n);
+  //   const double FA_R =
+  //     compute_physical_area_flux<dim, spacedim>(area_right,
+  //                                               velocity_right,
+  //                                               b_dot_n);
+  //   const double FU_L = compute_physical_momentum_flux<dim, spacedim>(
+  //     velocity_left, pressure_left, rho, b_dot_n);
+  //   const double FU_R = compute_physical_momentum_flux<dim, spacedim>(
+  //     velocity_right, pressure_right, rho, b_dot_n);
+
+  //   // Rusanov penalty parameter
+  //   const double alpha = compute_rusanov_penalty<dim, spacedim>(
+  //     velocity_left, velocity_right, wave_speed_left, wave_speed_right);
+
+  //   // Rusanov fluxes
+  //   const double flux_A =
+  //     0.5 * (FA_L + FA_R) - alpha * (area_right - area_left);
+  //   const double flux_U =
+  //     0.5 * (FU_L + FU_R) - alpha * (velocity_right - velocity_left);
+
+  //   return std::make_pair(flux_A, flux_U);
+  // }
+
+  // /**
+  //  * Semi-implicit Rusanov flux for interior faces
+  //  */
+  // template <int dim, int spacedim>
+  // std::pair<double, double>
+  // compute_numerical_flux_rusanov_semi_implicit(const double area_left_old,
+  //                                              const double velocity_left_old,
+  //                                              const double area_right_old,
+  //                                              const double velocity_right_old,
+  //                                              const double area_left_new,
+  //                                              const double velocity_left_new,
+  //                                              const double area_right_new,
+  //                                              const double velocity_right_new,
+  //                                              const double pressure_left,
+  //                                              const double pressure_right,
+  //                                              const double wave_speed_left,
+  //                                              const double wave_speed_right,
+  //                                              const double rho,
+  //                                              const double b_dot_n)
+  // {
+  //   // Semi-implicit physical fluxes
+  //   const double FA_L =
+  //     compute_physical_area_flux_semi_implicit<dim, spacedim>(area_left_old,
+  //                                                             velocity_left_old,
+  //                                                             area_left_new,
+  //                                                             velocity_left_new,
+  //                                                             b_dot_n);
+  //   const double FA_R = compute_physical_area_flux_semi_implicit<dim, spacedim>(
+  //     area_right_old,
+  //     velocity_right_old,
+  //     area_right_new,
+  //     velocity_right_new,
+  //     b_dot_n);
+  //   const double FU_L =
+  //     compute_physical_momentum_flux_semi_implicit<dim, spacedim>(
+  //       velocity_left_old, velocity_left_new, pressure_left, rho, b_dot_n);
+  //   const double FU_R =
+  //     compute_physical_momentum_flux_semi_implicit<dim, spacedim>(
+  //       velocity_right_old, velocity_right_new, pressure_right, rho, b_dot_n);
+
+  //   // Rusanov penalty parameter (use new values)
+  //   const double alpha = compute_rusanov_penalty<dim, spacedim>(
+  //     velocity_left_new, velocity_right_new, wave_speed_left, wave_speed_right);
+
+  //   // Rusanov fluxes
+  //   const double flux_A =
+  //     0.5 * (FA_L + FA_R) - alpha * (area_right_new - area_left_new);
+  //   const double flux_U =
+  //     0.5 * (FU_L + FU_R) - alpha * (velocity_right_new - velocity_left_new);
+
+  //   return std::make_pair(flux_A, flux_U);
+  // }
 
   /**
-   * Compute Rusanov (Lax–Friedrichs) flux for the momentum equation:
-   * ̂F_Q = 0.5(F_Q⁻ + F_Q⁺) – 0.5 beta (Q⁺ – Q⁻)
+   * Compute directional derivative
    */
-  template <int dim, int spacedim>
-  double
-  compute_momentum_rusanov_flux(const double momentum_left_old,
-                                const double momentum_right_old,
-                                const double area_left_old,
-                                const double area_right_old,
-                                const double rho,
-                                const double b_dot_n)
-  {
-    // Physical one‐sided fluxes
-    const double FQ_L =
-      compute_momentum_convection_flux<dim, spacedim>(momentum_left_old,
-                                                      area_left_old,
-                                                      rho) *
-      b_dot_n;
-    const double FQ_R =
-      compute_momentum_convection_flux<dim, spacedim>(momentum_right_old,
-                                                      area_right_old,
-                                                      rho) *
-      b_dot_n;
 
-    // Penalty parameter
-    const double beta =
-      compute_rusanov_penalty_momentum<dim, spacedim>(momentum_left_old,
-                                                      momentum_right_old,
-                                                      area_left_old,
-                                                      area_right_old,
-                                                      rho);
-
-    // Rusanov flux
-    return 0.5 * (FQ_L + FQ_R) -
-           0.5 * beta * (momentum_right_old - momentum_left_old);
-  }
+template <int dim, int spacedim, typename CellIterator>
+Tensor<1, spacedim>
+compute_directional_derivative(const CellIterator &cell)
+{
+  return (cell->vertex(1) - cell->vertex(0)) /
+         cell->vertex(1).distance(cell->vertex(0));
+}
 
 
   /**
@@ -275,6 +335,21 @@ namespace dealii
     const auto b_vec = (cell->vertex(1) - cell->vertex(0)) /
                        cell->vertex(1).distance(cell->vertex(0));
     return b_vec * normal;
+  }
+
+  /**
+   * Compute penalty parameter for stabilization
+   */
+  template <int dim, int spacedim>
+  double
+  compute_penalty_parameter(const double wave_speed_left,
+                            const double wave_speed_right,
+                            const double h_face,
+                            const double theta)
+  {
+    return theta *
+           std::max(std::abs(wave_speed_left), std::abs(wave_speed_right)) /
+           h_face;
   }
 
   //====================================================================
@@ -293,20 +368,28 @@ namespace dealii
 
   public:
     ExactSolutionBloodFlow()
-      : Function<spacedim>(2) // 2 components: area A and momentum q
+      : Function<spacedim>(2) // 2 components: area and velocity
+      , r0(BloodFlowParameters::DEFAULT_R0)
+      , a0(numbers::PI * r0 * r0)
       , L(BloodFlowParameters::DEFAULT_L)
+      , T0(BloodFlowParameters::DEFAULT_T0)
+      , atilde(0.1 * a0)
+      , qtilde(0.0)
     {}
 
     virtual double
     value(const Point<spacedim> &p, const unsigned int component) const override
     {
       const double x = p[0];
-      // const double t = this->get_time();
-      const double u_c = 4.0; // baseline velocity
-      if (component == 0)     // area A
-        return std::pow(std::sin(2.0 * numbers::PI * x) + u_c, -1);
-      else // momentum q
-        return 1.0;
+      const double t = this->get_time();
+
+      if (component == 0) // area A
+        return a0 + atilde * std::sin(2.0 * numbers::PI * x / L) *
+                      std::cos(2.0 * numbers::PI * t / T0);
+      else // velocity U
+        return qtilde - (atilde * L / T0) *
+                          std::cos(2.0 * numbers::PI * x / L) *
+                          std::sin(2.0 * numbers::PI * t / T0);
     }
 
     virtual void
@@ -323,19 +406,21 @@ namespace dealii
              const unsigned int     component) const override
     {
       const double x = p[0];
-      // const double t = this->get_time();
+      const double t = this->get_time();
 
       Tensor<1, spacedim> grad;
 
       if (component == 0) // area A gradient
         {
-          const double u_c = 4.0; // baseline velocity
-          grad[0] = -2.0 * numbers::PI * std::cos(2.0 * numbers::PI * x) /
-                    std::pow(std::sin(2.0 * numbers::PI * x) + u_c, 2);
+          grad[0] = atilde * (2.0 * numbers::PI / L) *
+                    std::cos(2.0 * numbers::PI * x / L) *
+                    std::cos(2.0 * numbers::PI * t / T0);
         }
-      else if (component == 1) // momentum Q gradient
+      else if (component == 1) // velocity U gradient
         {
-          grad[0] = 0.0;
+          grad[0] = (atilde * L / T0) * (2.0 * numbers::PI / L) *
+                    std::sin(2.0 * numbers::PI * x / L) *
+                    std::sin(2.0 * numbers::PI * t / T0);
         }
 
       return grad;
@@ -409,14 +494,24 @@ namespace dealii
     {}
 
     virtual double
-    value(const Point<spacedim> &,
+    value(const Point<spacedim> &p,
           const unsigned int /*component*/ = 0) const override
     {
-      // const double x = p[0];
-      // const double t = this->get_time();
+      const double x = p[0];
+      const double t = this->get_time();
 
       // Forcing term from manufactured solution
-      return 0;
+      return std::sin(2.0 * numbers::PI * x / L) *
+               std::sin(2.0 * numbers::PI * t / T0) *
+               (-2.0 * numbers::PI / T0 * atilde +
+                (a0 + atilde * std::sin(2.0 * numbers::PI * x / L) *
+                        std::cos(2.0 * numbers::PI * t / T0)) *
+                  2.0 * numbers::PI / T0 * atilde) +
+             atilde * std::cos(2.0 * numbers::PI * x / L) *
+               std::cos(2.0 * numbers::PI * t / T0) * (2.0 * numbers::PI / L) *
+               (qtilde - (atilde * L / T0) *
+                           std::cos(2.0 * numbers::PI * x / L) *
+                           std::sin(2.0 * numbers::PI * t / T0));
     }
   };
 
@@ -424,13 +519,13 @@ namespace dealii
    * RHS U-forcing term f_u(x,t) for manufactured solution
    */
   template <int spacedim>
-  class RHS_Q_BloodFlow : public Function<spacedim>
+  class RHS_U_BloodFlow : public Function<spacedim>
   {
   private:
     double r0, a0, L, T0, atilde, rho, elastic_modulus, viscosity_c, m;
 
   public:
-    RHS_Q_BloodFlow()
+    RHS_U_BloodFlow()
       : Function<spacedim>(1)
       , r0(BloodFlowParameters::DEFAULT_R0)
       , a0(numbers::PI * r0 * r0)
@@ -448,12 +543,20 @@ namespace dealii
           const unsigned int /*component*/ = 0) const override
     {
       const double x = p[0];
-      // const double t = this->get_time();
-      const double u_c = 4.0; // baseline velocity
-      const double A   = std::pow(std::sin(2.0 * numbers::PI * x) + u_c, -1);
+      const double t = this->get_time();
+      const double A = a0 + atilde * std::sin(2.0 * numbers::PI * x / L) *
+                              std::cos(2.0 * numbers::PI * t / T0);
 
-      return std::cos(2.0 * numbers::PI * x) +
-             elastic_modulus / (rho * std::pow(a0, m)) * std::pow(A, m - 1);
+      return std::cos(2.0 * numbers::PI * x / L) *
+               std::cos(2.0 * numbers::PI * t / T0) *
+               (-L * L / (T0 * T0) + elastic_modulus / (rho * std::pow(a0, m)) *
+                                       std::pow(A, m - 1)) +
+             (atilde - (atilde * L / T0) * std::cos(2.0 * numbers::PI * x / L) *
+                         std::sin(2.0 * numbers::PI * t / T0)) *
+               ((2.0 * numbers::PI / T0) * atilde *
+                  std::sin(2.0 * numbers::PI * x / L) *
+                  std::sin(2.0 * numbers::PI * t / T0) +
+                viscosity_c);
     }
 
     // Setters for runtime parameter updates
@@ -571,6 +674,7 @@ namespace dealii
     void
     run_convergence_study();
 
+
     // Exact solution typedef for easy access
     using ExactSolution = ExactSolutionBloodFlow<spacedim>;
 
@@ -601,9 +705,10 @@ namespace dealii
 
     // Physical parameters
     double       time_step       = 0.01;
-    double       final_time      = 0.1;
+    double       final_time      = 1.0;
     double       time            = 0.0;
     unsigned int n_time_steps    = 0;
+    double omega                 = 1;
     double       rho             = BloodFlowParameters::DEFAULT_RHO;
     double       viscosity_c     = BloodFlowParameters::DEFAULT_VISCOSITY_C;
     double       reference_area  = BloodFlowParameters::DEFAULT_REFERENCE_AREA;
@@ -612,20 +717,24 @@ namespace dealii
     double theta              = BloodFlowParameters::DEFAULT_THETA;
     double eta                = BloodFlowParameters::DEFAULT_ETA;
 
+    // Picard iteration parameters
+    unsigned int max_picard_iterations = 10;
+    double       picard_tolerance      = 1e-8;
+
     // Function expressions for initial and boundary conditions
     std::string initial_A_expression =
-      "1/ (sin(2*pi*x)+4)"; // Manufactured solution
-    std::string initial_Q_expression = "1";
-    // std::string pressure_bc_expression = "0.0";
+      "3.141592653589793e-4 + 3.141592653589793e-5 * sin(2*3.141592653589793*x)";
+    std::string initial_U_expression   = "0.0";
+    std::string pressure_bc_expression = "0.0";
 
     // Function parsers
     FunctionParser<spacedim> initial_A;
-    FunctionParser<spacedim> initial_Q;
+    FunctionParser<spacedim> initial_U;
     FunctionParser<spacedim> pressure_bc;
 
     // RHS functions
     std::unique_ptr<RHS_A_BloodFlow<spacedim>> rhs_A_function;
-    std::unique_ptr<RHS_Q_BloodFlow<spacedim>> rhs_Q_function;
+    std::unique_ptr<RHS_U_BloodFlow<spacedim>> rhs_U_function;
 
     // Allow access to private members for any function whose name contains
     // "test"

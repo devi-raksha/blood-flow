@@ -1,0 +1,242 @@
+\documentclass[11pt]{article}
+\usepackage{amsmath,amssymb,amsthm,mathtools}
+\usepackage[a4paper,margin=1in]{geometry}
+\usepackage{bm}
+\usepackage{xcolor}
+\usepackage{hyperref}
+\newtheorem{theorem}{Theorem}
+\newtheorem{remark}[theorem]{Remark}
+\title{Discontinuous Galerkin variational formulation for a 1D embedded Blood Flow system with Lax--Friedrichs flux}
+\author{}
+\date{}
+
+\newcommand{\R}{\mathbb{R}}
+\newcommand{\avg}[1]{\left\{\!\!\left\{#1\right\}\!\!\right\}}
+\newcommand{\jump}[1]{\left[\!\left[#1\right]\!\right]}
+\newcommand{\dt}{\Delta t}
+\newcommand{\Vh}{V_h}
+\newcommand{\Th}{\mathcal{T}_h}
+\newcommand{\Fh}{\mathcal{F}_h}
+\newcommand{\Kh}{K}
+\newcommand{\norm}[1]{\left\lVert #1\right\rVert}
+
+
+\begin{document}
+\maketitle
+
+\section{Model problem and geometry}
+We consider the 1D embedded blood flow model along a centerline
+$\Gamma \subset \R^{\text{spacedim}}$:
+\begin{align}
+  \partial_t A + \bm b\!\cdot\!\nabla (A U) &= f_A,
+  && \text{(Area equation)}, \label{eq:area-eq}\\
+  \partial_t U + \bm b\!\cdot\!\nabla\!\left(\frac{U^2}{2}\right)
+  + \frac{1}{\rho}\bm b\!\cdot\!\nabla P(A)
+  + c\,U &= f_U,
+  && \text{(Momentum equation)}. \label{eq:momentum-eq}
+\end{align}
+Here $A$ and $U$ denote the cross-sectional area and mean velocity, respectively.
+The tangent direction of each 1D segment is
+\[
+  \bm b = \frac{\bm x_1 - \bm x_0}{\lVert \bm x_1 - \bm x_0\rVert},
+\]
+and the projection of $\bm b$ on the face normal $\bm n$ is denoted by
+$\beta = \bm b\!\cdot\!\bm n$.
+The pressure $P(A)$ follows a constitutive law (e.g.\ Laplace or elastic model), represented as ,
+\begin{equation}
+\boxed{%
+P(A) = P_0 + E \left[\left(\frac{A}{A_0}\right)^{m} - 1\right],
+}
+\qquad m = \text{tube law exponent.}
+\end{equation}
+
+and $dP(A)=\mathrm{d}P/\mathrm{d}A$ enters the weak formulation.
+
+\section{Discrete space and notation}
+Let $\Th$ be a partition of $\Gamma$ into 1D cells $K$. For polynomial degree $k$,
+\[
+  \Vh = \{ v\in L^2(\Gamma): v|_K \in \mathbb P_k(K)\ \forall K\in\Th \},
+\]
+implemented by \texttt{FE\_DGQ$<1,\,$spacedim$>$}.  
+For $F\in\Fh^\circ$ an interior face with unit normal $\bm n$, we set
+\[
+  \avg{v}=\tfrac12(v^-+v^+), \qquad \jump{v}=v^- - v^+.
+\]
+On boundary faces $F\subset\partial\Gamma$ we set $\avg{v}=v$ and $\jump{v}=v$.
+
+ 
+
+\section{Lax--Friedrichs numerical flux}
+The Lax--Friedrichs (LF) flux is a robust, symmetric upwind flux that
+stabilizes nonlinear hyperbolic systems by adding dissipation proportional to the
+maximum characteristic speed.  
+For a generic flux $\mathbf{F}(W)$ and normal $\bm n$, it is defined as
+\begin{equation}
+  \widehat{\mathbf{F}}(W^-,W^+) \cdot \bm n
+  = \tfrac12 \big[ \mathbf{F}(W^-)\cdot\bm n + \mathbf{F}(W^+)\cdot\bm n \big]
+    - \tfrac{\alpha}{2}(W^+ - W^-),
+  \label{eq:laxfriedrichs-flux}
+\end{equation}
+where
+\[
+  \alpha = \max_{s=\pm}\big|\lambda_{\max}\big(\mathbf{H}(W^s)\big)\big|,
+  \qquad
+  \mathbf{H} = \frac{\partial \mathbf{F}}{\partial W}
+\]
+is the flux Jacobian and $\lambda_{\max}$ its largest eigenvalue.
+For the blood flow system,
+\[
+  \mathbf{F}(W) =
+  \begin{pmatrix}
+    A U \\[2mm]
+    \dfrac{U^2}{2} + \dfrac{1}{\rho}P(A)
+  \end{pmatrix}, \qquad
+  \mathbf{H} =
+  \begin{pmatrix}
+    U & A \\[1mm]
+    \dfrac{c^2}{A} & U
+  \end{pmatrix}, \qquad
+  \lambda_{1,2} = U \pm c, \quad
+  c=\sqrt{\dfrac{A}{\rho}\dfrac{dP}{dA}}.
+\]
+Thus $\alpha = \max(|U|+c)$ on each face.
+
+\section{DG weak formulation with Lax--Friedrichs flux}
+
+We seek $(A_h,U_h)\in\Vh\times\Vh$ such that for all test functions
+$(\phi_A,\phi_U)\in\Vh\times\Vh$:
+\begin{align}
+\sum_{K\in\Th}\!\!\int_K
+  \frac{A_h^{n+1}-A_h^n}{\dt}\,\phi_A
+&\;-\;
+  (A_h^{n+1}\,\bar U_h)\,\bm b\!\cdot\!\nabla\phi_A
+\nonumber\\
+&\;+\;
+  \sum_{F\in\Fh}\!\!\int_F
+  \widehat{(A U)}^{\text{LF}}\,\phi_A^-\,\mathrm d\ell
+\;=\;
+  \sum_{K\in\Th}\!\!\int_K f_A\,\phi_A ,
+\label{eq:area-dg-lf}
+\\[8pt]
+\sum_{K\in\Th}\!\!\int_K
+  \frac{U_h^{n+1}-U_h^n}{\dt}\,\phi_U
+&\;-\;
+  \Big(
+    \tfrac{\bar U_h}{2}\,U_h^{n+1}
+    + \tfrac{1}{\rho}P(\bar A_h)
+  \Big)
+  \bm b\!\cdot\!\nabla\phi_U
+\nonumber\\
+&\;+\;
+  \sum_{F\in\Fh}\!\!\int_F
+  \widehat{\!\left(
+    \tfrac{U^2}{2}
+    + \tfrac{1}{\rho}P(A)
+  \right)\!}^{\text{LF}}
+  \phi_U^-\,\mathrm d\ell
+\;=\;
+  \sum_{K\in\Th}\!\!\int_K
+  (f_U - c\,U_h^{n+1})\,\phi_U .
+\label{eq:momentum-dg-lf}
+\end{align}
+
+The LF fluxes are computed from \eqref{eq:laxfriedrichs-flux} for each
+variable with $\alpha = \max(|U|+c)$ across the face.
+
+ 
+
+\section{Boundary conditions and Lax--Friedrichs numerical fluxes}
+
+At boundary faces $F\subset\partial\Gamma$, an exterior (ghost) state
+$W^+ = (A^+,U^+)^\top$ is introduced to construct the Lax--Friedrichs (LF)
+numerical flux. The generic form of the LF flux for a conservation law
+$\partial_t W + \bm b\!\cdot\!\nabla \mathbf{F}(W) = 0$
+with normal direction $\bm n$ and $\beta=\bm b\!\cdot\!\bm n$
+is given by
+\begin{equation}
+  \widehat{\mathbf{F}}^{\text{LF}}(W^-,W^+)\cdot\bm n
+  = \tfrac12\beta\big[\mathbf{F}(W^-)+\mathbf{F}(W^+)\big]
+    - \tfrac{\alpha}{2}(W^+ - W^-),
+  \label{eq:LF-flux-general}
+\end{equation}
+where $\alpha$ is a local dissipation coefficient chosen as
+\[
+  \alpha = \max\big(|U^-|+c^-,\,|U^+|+c^+\big),
+  \qquad
+  c = \sqrt{\tfrac{A}{\rho}\,\tfrac{dP}{dA}} .
+\]
+The sign of the eigenvalues $\lambda_{1,2} = U \pm c$ of the flux Jacobian
+$\mathbf{H}=\partial\mathbf{F}/\partial W$
+determines the direction of information propagation:
+\[
+W^+ =
+\begin{cases}
+  W_{\text{ext}} & \text{if inflow, i.e. } \lambda_i(W^-)\!<\!0,\\[2pt]
+  W^- & \text{if outflow, i.e. } \lambda_i(W^-)\!>\!0.
+\end{cases}
+\]
+
+\subsection*{Lax--Friedrichs flux for the area equation}
+For the first component of $\mathbf{F}(W)$, namely
+\[
+  F_1(A,U) = A\,U ,
+\]
+the Lax--Friedrichs flux across a face $F$ is
+\begin{equation}
+  \widehat{(A U)}_{\text{LF}}
+  = \tfrac12\beta\big[(A^-U^-)+(A^+U^+)\big]
+   - \tfrac{\alpha}{2}(A^+ - A^-),
+  \label{eq:LF-flux-AU}
+\end{equation}
+where $\beta=\bm b\!\cdot\!\bm n$ and $\alpha$ is as defined above.
+The first term provides the centered flux, while the second introduces
+dissipation proportional to the jump $\jump{A}$.
+
+\subsection*{Lax--Friedrichs flux for the momentum equation}
+The second component of the physical flux is
+\[
+  F_2(A,U) = \frac{U^2}{2} + \frac{1}{\rho}P(A) ,
+\]
+representing the convective and pressure contributions to the momentum balance.
+The corresponding Lax--Friedrichs flux reads
+\begin{equation}
+  \widehat{\left(\frac{U^2}{2} + \frac{1}{\rho}P(A)\right)}_{\!\!\text{LF}}
+  = \tfrac12\beta
+    \left[
+      \left(\frac{(U^-)^2}{2}+\frac{1}{\rho}P(A^-)\right)
+      + \left(\frac{(U^+)^2}{2}+\frac{1}{\rho}P(A^+)\right)
+    \right]
+   - \tfrac{\alpha}{2}(U^+ - U^-),
+  \label{eq:LF-flux-U2PA}
+\end{equation}
+where again $\alpha=\max(|U|+c)$.
+
+\subsection*{Inflow case}
+When $\lambda_1 < 0 \text{ and } \lambda_2 <0$ then:
+\begin{itemize}
+  \item The LF fluxes \eqref{eq:LF-flux-AU} is equivalent to $\tfrac12\beta (A^-U^-)$ and
+  \eqref{eq:LF-flux-U2PA} is equivalent to $\tfrac12\beta
+ \left(\frac{(U^-)^2}{2}+\frac{1}{\rho}P(A^-)\right)$.
+\end{itemize}
+\subsection*{Outflow case}
+When $\lambda_1 > 0 \text{ and } \lambda_2 > 0$ then:
+      \begin{itemize}
+          \item The LF fluxes \eqref{eq:LF-flux-AU} is equivalent to $\tfrac12\beta (A_{bc} U_{bc})$ and
+  \eqref{eq:LF-flux-U2PA} is equivalent to $\tfrac12\beta
+ \left(\frac{(U_{bc})^2}{2}+\frac{1}{\rho}P(A_{bc})\right)$.
+      \end{itemize}
+
+\section{Algorithm summary with Lax--Friedrichs flux}
+\begin{enumerate}
+  \item Assemble $M_A$, $M_U$.
+  \item For each time step:
+  \begin{enumerate}
+    \item Initialize Picard iterate $(A^{(0)},U^{(0)})=(A^n,U^n)$.
+    \item Assemble fluxes using the LF formula \eqref{eq:laxfriedrichs-flux}.
+    \item Solve the linearized system with updated $\mathcal{A}$.
+    \item Relax and update until Picard convergence.
+  \end{enumerate}
+  \item Advance to $t^{n+1}$ and write output.
+\end{enumerate}
+
+\end{document}

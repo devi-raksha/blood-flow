@@ -2,10 +2,8 @@
  */
 #include "../include/blood_flow_system_updated_1d3d.h"
 
-#include <deal.II/base/exceptions.h>
 #include <deal.II/base/function_parser.h>
 #include <deal.II/base/types.h>
-#include <deal.II/base/utilities.h>
 
 #include <deal.II/lac/dynamic_sparsity_pattern.h>
 
@@ -45,8 +43,10 @@ namespace dealii
     add_parameter("Theta (penalty parameter)", theta);
     add_parameter("Eta (stability parameter)", eta);
     add_parameter("Initial condition A expression", initial_A_expression);
-    add_parameter("Initial condition U expression", initial_Q_expression);
-    // add_parameter("Pressure boundary expression", pressure_bc_expression);
+    add_parameter("Initial condition U expression", initial_U_expression);
+    add_parameter("Pressure boundary expression", pressure_bc_expression);
+    add_parameter("Omega (relaxation parameter)", omega);
+    add_parameter("Picard iterations", max_picard_iterations);
   }
 
   template <int dim, int spacedim>
@@ -64,19 +64,18 @@ namespace dealii
   {
     if (!fe)
       {
-        // Two-component system: A (area) and U (momentum)
+        // Two-component system: A (area) and U (velocity)
         fe = std::make_unique<FESystem<dim, spacedim>>(
           FE_DGQ<dim, spacedim>(fe_degree), 2);
 
-
         // Initialize RHS functions with current parameters
         rhs_A_function = std::make_unique<RHS_A_BloodFlow<spacedim>>();
-        rhs_Q_function = std::make_unique<RHS_Q_BloodFlow<spacedim>>();
+        rhs_U_function = std::make_unique<RHS_U_BloodFlow<spacedim>>();
 
         // Update RHS function parameters
-        rhs_Q_function->set_rho(rho);
-        rhs_Q_function->set_elastic_modulus(elastic_modulus);
-        rhs_Q_function->set_viscosity_c(viscosity_c);
+        rhs_U_function->set_rho(rho);
+        rhs_U_function->set_elastic_modulus(elastic_modulus);
+        rhs_U_function->set_viscosity_c(viscosity_c);
 
         std::string vars;
         if (spacedim == 1)
@@ -87,8 +86,8 @@ namespace dealii
           vars = "x,y,z";
         std::map<std::string, double> const_map;
         initial_A.initialize(vars, initial_A_expression, const_map);
-        initial_Q.initialize(vars, initial_Q_expression, const_map);
-        // pressure_bc.initialize(vars, pressure_bc_expression, const_map);
+        initial_U.initialize(vars, initial_U_expression, const_map);
+        pressure_bc.initialize(vars, pressure_bc_expression, const_map);
       }
 
     dof_handler.distribute_dofs(*fe);
@@ -104,6 +103,14 @@ namespace dealii
     pressure.reinit(dof_handler.n_dofs());
   }
 
+template <int dim, int spacedim, typename CellIterator>
+Tensor<1, spacedim>
+compute_directional_derivative(const CellIterator &cell)
+{
+  return (cell->vertex(1) - cell->vertex(0)) /
+         cell->vertex(1).distance(cell->vertex(0));
+}
+
   template <int dim, int spacedim>
   void
   BloodFlowSystem<dim, spacedim>::assemble_mass_matrix()
@@ -112,7 +119,7 @@ namespace dealii
     Vector<double> dummy_rhs(dof_handler.n_dofs());
 
     const FEValuesExtractors::Scalar area_extractor(0);
-    const FEValuesExtractors::Scalar momentum_extractor(1);
+    const FEValuesExtractors::Scalar velocity_extractor(1);
 
     auto cell_worker = [&](const auto                          &cell,
                            BloodFlowScratchData<dim, spacedim> &scratch,
@@ -135,10 +142,10 @@ namespace dealii
                                             fe_v[area_extractor].value(j, q) *
                                             JxW[q];
 
-                  // Mass matrix for momentum component
+                  // Mass matrix for velocity component
                   copy.cell_matrix(i, j) +=
-                    fe_v[momentum_extractor].value(i, q) *
-                    fe_v[momentum_extractor].value(j, q) * JxW[q];
+                    fe_v[velocity_extractor].value(i, q) *
+                    fe_v[velocity_extractor].value(j, q) * JxW[q];
                 }
             }
         }
@@ -179,9 +186,9 @@ namespace dealii
 
     // Define extractors
     const FEValuesExtractors::Scalar area_extractor(0);
-    const FEValuesExtractors::Scalar momentum_extractor(1);
+    const FEValuesExtractors::Scalar velocity_extractor(1);
 
-    // Cell worker - handles volume integral terms
+    // Cell worker - implicit volume + source
     auto cell_worker = [&](const Iterator                      &cell,
                            BloodFlowScratchData<dim, spacedim> &scratch_data,
                            BloodFlowCopyData                   &copy_data) {
@@ -194,70 +201,73 @@ namespace dealii
       const auto &JxW      = fe_v.get_JxW_values();
       const auto &q_points = fe_v.get_quadrature_points();
 
-      // Get old solution values using extractors
-      std::vector<double> old_area_values(fe_v.n_quadrature_points);
-      std::vector<double> old_momentum_values(fe_v.n_quadrature_points);
+      // Get A^n U^n values at quadrature points
+      std::vector<double> explicit_area(fe_v.n_quadrature_points);
+      std::vector<double> explicit_velocity(fe_v.n_quadrature_points);
 
-      fe_v[area_extractor].get_function_values(solution_old, old_area_values);
-      fe_v[momentum_extractor].get_function_values(solution_old,
-                                                   old_momentum_values);
+      fe_v[area_extractor].get_function_values(solution, explicit_area);
+      fe_v[velocity_extractor].get_function_values(solution, explicit_velocity);
+
+      // Unit tangent vector along the embedded 1D edge
+      const auto b_vec = compute_directional_derivative<dim, spacedim>(cell);
+
+      // Set time for RHS functions
+      rhs_A_function->set_time(time); // f_a(x,t^{n+1}) from area equation
+      rhs_U_function->set_time(time); // f_u(x,t^{n+1}) from momentum equation
 
       for (unsigned int point = 0; point < fe_v.n_quadrature_points; ++point)
         {
-          const auto b_vec = (cell->vertex(1) - cell->vertex(0)) /
-                             cell->vertex(1).distance(cell->vertex(0));
-          const double A_old = old_area_values[point];
-          const double Q_old = old_momentum_values[point];
-
-          // Set time for RHS functions
-          rhs_A_function->set_time(time);
-          rhs_Q_function->set_time(time);
-
           const double rhs_A_value = rhs_A_function->value(q_points[point]);
-          const double rhs_Q_value = rhs_Q_function->value(q_points[point]);
+          const double rhs_U_value = rhs_U_function->value(q_points[point]);
 
           for (unsigned int i = 0; i < n_dofs; ++i)
             {
               for (unsigned int j = 0; j < n_dofs; ++j)
                 {
-                  // A-Q block: implicit term in momentum equation
-                  // - (b · ∇\phi_A, Q^{n+1})
-                  const double b_gradA =
-                    b_vec * fe_v[area_extractor].gradient(i, point);
+                  const auto implicit_area =
+                    fe_v[area_extractor].value(j, point);
+                  const auto implicit_velocity =
+                    fe_v[velocity_extractor].value(j, point);
+
+                  const auto flux_A = compute_physical_area_flux<dim, spacedim>(
+                    implicit_area, explicit_velocity[point], b_vec)*normals[point];
 
                   copy_data.cell_matrix(i, j) -=
-                    fe_v[momentum_extractor].value(j, point) * b_gradA *
+                    flux_A * fe_v[area_extractor].gradient(i, point) *
                     JxW[point];
 
-                  // pressure term in momentum equation
-                  // -(b · ∇\phi_Q ,  P_old/rho *A)
-                  const double P_old = compute_pressure_value<dim, spacedim>(
-                    A_old, reference_area, elastic_modulus, reference_pressure);
+                  // U-U block: nonlinear convection + viscosity
+                  const auto flux_U =
+                    compute_physical_momentum_flux<dim, spacedim>(
+                      implicit_velocity, explicit_velocity[point], b_vec);
+                      const double nonlinear_conv =
+                        -flux_U * fe_v[velocity_extractor].gradient(i, point);
 
-                  copy_data.cell_matrix(i, j) -=
-                    (1.0 / rho) * P_old * fe_v[area_extractor].value(j, point) *
-                    fe_v[momentum_extractor].gradient(i, point) * b_vec *
-                    JxW[point];
+                  const double reaction =
+                    viscosity_c * fe_v[velocity_extractor].value(i, point) *
+                    fe_v[velocity_extractor].value(j, point);
 
-                  // - (\phi_Q, P_old /rho*b · ∇A)
-                  copy_data.cell_matrix(i, j) -=
-                    (1.0 / rho) * P_old *
-                    fe_v[momentum_extractor].value(i, point) *
-                    fe_v[area_extractor].gradient(j, point) * b_vec *
-                    JxW[point];
+                  copy_data.cell_matrix(i, j) +=
+                    (nonlinear_conv + reaction) * JxW[point];
                 }
 
-              copy_data.cell_rhs(i) +=
-                1 / rho * Q_old * Q_old / A_old *
-                fe_v[momentum_extractor].gradient(i, point) * b_vec *
-                JxW[point];
+              // Compute pressure using header function
+              const double explicit_P =
+                compute_pressure_value<dim, spacedim>(explicit_area[point],
+                                                      reference_area,
+                                                      elastic_modulus,
+                                                      reference_pressure);
 
+              // pressure  RHS
+              copy_data.cell_rhs(i) +=
+                (1.0 / rho) * explicit_P * b_vec *
+                fe_v[velocity_extractor].gradient(i, point) * JxW[point];
 
               // Right-hand side terms
               copy_data.cell_rhs(i) +=
                 rhs_A_value * fe_v[area_extractor].value(i, point) * JxW[point];
               copy_data.cell_rhs(i) +=
-                rhs_Q_value * fe_v[momentum_extractor].value(i, point) *
+                rhs_U_value * fe_v[velocity_extractor].value(i, point) *
                 JxW[point];
             }
         }
@@ -279,16 +289,22 @@ namespace dealii
       const auto &normals    = fe_iv.get_fe_face_values(0).get_normal_vectors();
       const unsigned int n_q = fe_iv.get_fe_face_values(0).n_quadrature_points;
 
-      // Extract solution values (old time level)
-      std::vector<double> A_L(n_q), Q_L(n_q), A_R(n_q), Q_R(n_q);
+      const auto b_vec = compute_directional_derivative<dim, spacedim>(cell);
+      const auto b_vec_neighbor =
+        compute_directional_derivative<dim, spacedim>(ncell);
+
+      // Extract solution values
+      std::vector<double> explicit_area(n_q), explicit_velocity(n_q),
+        explicit_area_neighbor(n_q), explicit_velocity_neighbor(n_q);
+
       fe_iv.get_fe_face_values(0)[area_extractor].get_function_values(
-        solution_old, A_L);
-      fe_iv.get_fe_face_values(0)[momentum_extractor].get_function_values(
-        solution_old, Q_L);
+        solution, explicit_area);
+      fe_iv.get_fe_face_values(0)[velocity_extractor].get_function_values(
+        solution, explicit_velocity);
       fe_iv.get_fe_face_values(1)[area_extractor].get_function_values(
-        solution_old, A_R);
-      fe_iv.get_fe_face_values(1)[momentum_extractor].get_function_values(
-        solution_old, Q_R);
+        solution, explicit_area_neighbor);
+      fe_iv.get_fe_face_values(1)[velocity_extractor].get_function_values(
+        solution, explicit_velocity_neighbor);
 
       copy.face_data.emplace_back();
       auto              &face = copy.face_data.back();
@@ -299,52 +315,97 @@ namespace dealii
 
       for (unsigned int q = 0; q < n_q; ++q)
         {
-          const auto   normal = normals[q];
-          const double b_dot_n =
-            compute_tangent_normal_product<dim, spacedim>(cell, normal);
+          // Compute pressures and wave speeds using header functions
+          const double explicit_pressure =
+            compute_pressure_value<dim, spacedim>(explicit_area[q],
+                                                  reference_area,
+                                                  elastic_modulus,
+                                                  reference_pressure);
+          const double explicit_pressure_neighbor =
+            compute_pressure_value<dim, spacedim>(explicit_area_neighbor[q],
+                                                  reference_area,
+                                                  elastic_modulus,
+                                                  reference_pressure);
 
-          // Left and right states (old time level)
-          const double AL_old = A_L[q], QL_old = Q_L[q];
-          const double AR_old = A_R[q], QR_old = Q_R[q];
+          const double cL = compute_wave_speed<dim, spacedim>(explicit_area[q],
+                                                              reference_area,
+                                                              elastic_modulus,
+                                                              rho);
+          const double cR = compute_wave_speed<dim, spacedim>(
+            explicit_area_neighbor[q], reference_area, elastic_modulus, rho);
+          // Lax Friedrich Penalty
+          const double alpha =
+            std::max({std::abs(explicit_velocity[q] + cL),
+                      std::abs(explicit_velocity[q] - cL),
+                      std::abs(explicit_velocity_neighbor[q] + cR),
+                      std::abs(explicit_velocity_neighbor[q] - cR)});
 
-          for (unsigned int j = 0; j < nd; ++j)
+          for (unsigned int i = 0; i < nd; ++i)
             {
-              // New time level basis function values
-              const double AL_new = fe_iv[area_extractor].value(0, j, q);
-              const double AR_new = fe_iv[area_extractor].value(1, j, q);
-
-              // Compute numerical fluxes
-              const double flux_A =
-                compute_area_rusanov_flux<dim, spacedim>(AL_new,
-                                                         AR_new,
-                                                         AL_old,
-                                                         AR_old,
-                                                         reference_area,
-                                                         elastic_modulus,
-                                                         rho,
-                                                         b_dot_n);
-
-              const double flux_Q =
-                compute_momentum_rusanov_flux<dim, spacedim>(
-                  QL_old, QR_old, AL_old, AR_old, rho, b_dot_n);
-
-              for (unsigned int i = 0; i < nd; ++i)
+              for (unsigned int j = 0; j < nd; ++j)
                 {
-                  // Area equation: flux_A contribution
+                  const auto implicit_velocity =
+                    fe_iv[velocity_extractor].value(0, j, q);
+                  const auto implicit_velocity_neighbor =
+                    fe_iv[velocity_extractor].value(1, j, q);
+                  const auto implicit_area =
+                    fe_iv[area_extractor].value(0, j, q);
+                  const auto implicit_area_neighbor =
+                    fe_iv[area_extractor].value(1, j, q);
+
+                  const auto flux_area =
+                    compute_physical_area_flux<dim, spacedim>(
+                      explicit_velocity[q], implicit_area, b_vec);
+
+                  const auto flux_area_neighbor =
+                    compute_physical_area_flux<dim, spacedim>(
+                      explicit_velocity_neighbor[q],
+                      implicit_area_neighbor,
+                      b_vec_neighbor);
+
+                  const auto F_hat_area =
+                    0.5 * (flux_area_neighbor + flux_area) * normals[q] -
+                    0.5 * alpha * (implicit_area - implicit_area_neighbor);
+
+
                   face.cell_matrix(i, j) +=
-                    flux_A * fe_iv[area_extractor].jump_in_values(i, q) *
+                    F_hat_area * fe_iv[area_extractor].jump_in_values(i, q) *
                     JxW[q];
 
-                  // Momentum equation: flux_Q contribution
-                  face.cell_rhs(i) +=
-                    flux_Q * fe_iv[momentum_extractor].jump_in_values(i, q) *
-                    JxW[q];
+                  const auto flux_velocity =
+                    compute_physical_momentum_flux<dim, spacedim>(
+                      explicit_velocity[q], implicit_velocity, b_vec);
+
+                  const auto flux_velocity_neighbor =
+                    compute_physical_momentum_flux<dim, spacedim>(
+                      explicit_velocity_neighbor[q],
+                      implicit_velocity_neighbor,
+                      b_vec_neighbor);
+
+                  const auto F_hat_velocity =
+                    0.5 * (flux_velocity + flux_velocity_neighbor) *
+                      normals[q] -
+                    0.5 * alpha * (implicit_velocity - implicit_velocity_neighbor);
+
+                  face.cell_matrix(i, j) +=
+                    F_hat_velocity *
+                    fe_iv[velocity_extractor].jump_in_values(i, q) * JxW[q];
                 }
+             
+
+              const auto F_hat_pressure =
+                0.5 / rho *
+                (explicit_pressure*b_vec + explicit_pressure_neighbor*b_vec_neighbor)*normals[q];
+
+                face.cell_rhs(i) -=
+                F_hat_pressure *
+                fe_iv[velocity_extractor].jump_in_values(i, q) * JxW[q];
             }
         }
     };
 
-    // Boundary worker with periodic and Dirichlet support
+
+    // Boundary worker using header exact solution
     ExactSolutionBloodFlow<spacedim> exact_solution;
     exact_solution.set_time(time);
 
@@ -359,161 +420,93 @@ namespace dealii
       const auto        &normals = fe_face.get_normal_vectors();
       const unsigned int n_q     = fe_face.n_quadrature_points;
 
-      // Interior trace (left state)
-      std::vector<double> A_L(n_q), Q_L(n_q);
-      fe_face[area_extractor].get_function_values(solution_old, A_L);
-      fe_face[momentum_extractor].get_function_values(solution_old, Q_L);
+      // Interior trace at t^n
+      std::vector<double> explicit_area(n_q), explicit_velocity(n_q);
+      fe_face[area_extractor].get_function_values(solution, explicit_area);
+      fe_face[velocity_extractor].get_function_values(solution,
+                                                      explicit_velocity);
 
       copy.cell_matrix.reinit(fe_face.get_fe().dofs_per_cell,
                               fe_face.get_fe().dofs_per_cell);
       copy.cell_rhs.reinit(fe_face.get_fe().dofs_per_cell);
 
-      // Check boundary type
-      const auto boundary_id = cell->face(face_no)->boundary_id();
+      // Boundary data at t^n (explicit time)
+      exact_solution.set_time(time - time_step);
+      std::vector<Vector<double>> bc_explicit(n_q, Vector<double>(2));
+      exact_solution.vector_value_list(fe_face.get_quadrature_points(),
+                                       bc_explicit);
 
-      if (boundary_id == 0 || boundary_id == 1) // Periodic boundaries
+      // Boundary data at t^{n+1} (new time)
+      exact_solution.set_time(time);
+      std::vector<Vector<double>> bc_new(n_q, Vector<double>(2));
+      exact_solution.vector_value_list(fe_face.get_quadrature_points(), bc_new);
+
+      for (unsigned int q = 0; q < n_q; ++q)
         {
-          // For now, use exact solution as placeholder
-          std::vector<Vector<double>> bc(n_q, Vector<double>(2));
-          exact_solution.vector_value_list(fe_face.get_quadrature_points(), bc);
+          const double b_dot_n =
+            compute_tangent_normal_product<dim, spacedim>(cell, normals[q]);
 
-          for (unsigned int q = 0; q < n_q; ++q)
-            {
-              const double b_dot_n =
-                compute_tangent_normal_product<dim, spacedim>(cell, normals[q]);
+          // Extract boundary values at t^n
+          const double A_explicit = bc_explicit[q][0]; // Area component
+          const double U_ext_explicit = bc_explicit[q][1]; // Velocity component
 
-              // States
-              const double AL_old = A_L[q], QL_old = Q_L[q];
-              const double AR_old = bc[q](0),
-                           QR_old = bc[q](1); // From periodic neighbor
+          // Extract boundary values at t^{n+1}
+          const double A_ext_new = bc_new[q][0]; // Area component
+          const double U_ext_new = bc_new[q][1]; // Velocity component
 
-              for (unsigned int j = 0; j < fe_face.get_fe().dofs_per_cell; ++j)
-                {
-                  // New time level basis values
-                  const double AL_new = fe_face[area_extractor].value(j, q);
-                  const double AR_new =
-                    bc[q](0); // Prescribed boundary (or from periodic neighbor)
+          // Compute boundary pressure at t^n
+          const double P_ext_explicit =
+            compute_pressure_value<dim, spacedim>(A_ext_explicit,
+                                                  reference_area,
+                                                  elastic_modulus,
+                                                  reference_pressure);
 
-                  // Compute fluxes
-                  const double flux_A =
-                    compute_area_rusanov_flux<dim, spacedim>(AL_new,
-                                                             AR_new,
-                                                             AL_old,
-                                                             AR_old,
-                                                             reference_area,
-                                                             elastic_modulus,
-                                                             rho,
-                                                             b_dot_n);
+          // Compute wave speed at boundary
+          const double c_ext = compute_wave_speed<dim, spacedim>(
+            A_ext_explicit, reference_area, elastic_modulus, rho);
 
-                  const double flux_Q =
-                    compute_momentum_rusanov_flux<dim, spacedim>(
-                      QL_old, QR_old, AL_old, AR_old, rho, b_dot_n);
+          const double h     = cell->diameter();
+          const double alpha = theta * h / (2 * time_step);
+         
+          if (an > 0)
+          {
+          for (unsigned int j = 0; j < fe_face.get_fe().dofs_per_cell; ++j)
+             for (unsigned int i = 0; i < fe_face.get_fe().dofs_per_cell; ++i)
+                
+              // Semi-implicit flux contributions
+              const double implicit_area = fe_face[area_extractor].value(j, q);
+              const double implicit_velocity = fe_face[velocity_extractor].value(j, q);
 
-                  for (unsigned int i = 0; i < fe_face.get_fe().dofs_per_cell;
-                       ++i)
-                    {
-                      // 1) Area equation: flux_A contribution
-                      copy.cell_matrix(i, j) +=
-                        flux_A * fe_face[area_extractor].value(i, q) * JxW[q];
+               // f_hat_area = physical_flux_area*normals[q]
+                  // Advective matrix terms (one-sided flux with exterior state)
+                  copy.cell_matrix(i, j) +=
+                    F_hat_area*
+                    fe_face[area_extractor].value(i, q) * JxW[q];
 
-                      // 2) -<A^{n+1}P(A^n)/ρ, φ_Q> (implicit in matrix)
-                      const double P_boundary_old =
-                        compute_pressure_value<dim, spacedim>(
-                          AR_old,
-                          reference_area,
-                          elastic_modulus,
-                          reference_pressure);
-                      copy.cell_matrix(i, j) -=
-                        (AR_new * P_boundary_old / rho) *
-                        fe_face[momentum_extractor].value(i, q) * JxW[q];
-                    }
+                 // f_hat_velocity = physical_flux_momemntum*normals[q] + p/rho
+                  // Advective matrix terms (one-sided flux with exterior state)
+                  copy.cell_matrix(i, j) +=
+                    F_hat_velocity*
+                    fe_face[velocity_extractor].value(i, q) * JxW[q];   
 
-                  // RHS contributions
-
-                  // 1) -<Q^{n+1}, φ_A>
-                  copy.cell_rhs(j) -=
-                    QR_old * fe_face[area_extractor].value(j, q) * JxW[q];
-
-                  // 2) Momentum flux contribution
-                  copy.cell_rhs(j) +=
-                    flux_Q * fe_face[momentum_extractor].value(j, q) * JxW[q];
                 }
-            }
-        }
-      else // Dirichlet boundary
-        {
-          // Boundary data from exact solution
-          std::vector<Vector<double>> bc(n_q, Vector<double>(2));
-          exact_solution.vector_value_list(fe_face.get_quadrature_points(), bc);
 
-          for (unsigned int q = 0; q < n_q; ++q)
-            {
-              const double b_dot_n =
-                compute_tangent_normal_product<dim, spacedim>(cell, normals[q]);
+              // RHS forcing from boundary data
+              copy.cell_rhs(j) -= (U_ext_explicit * A_ext_new * b_dot_n) *
+                                  fe_face[area_extractor].value(j, q) * JxW[q];
 
-              // States
-              const double AL_old = A_L[q], QL_old = Q_L[q];
-              const double AR_old = bc[q](0),
-                           QR_old = bc[q](1); // Prescribed values
+              copy.cell_rhs(j) -= 0.5 * (U_ext_explicit * U_ext_new * b_dot_n) *
+                                  fe_face[velocity_extractor].value(j, q) *
+                                  JxW[q];
 
-              for (unsigned int j = 0; j < fe_face.get_fe().dofs_per_cell; ++j)
-                {
-                  // New time level basis values
-                  const double AL_new = fe_face[area_extractor].value(j, q);
-                  const double AR_new = bc[q](0); // Prescribed boundary value
-
-                  // Compute fluxes
-                  const double flux_A =
-                    compute_area_rusanov_flux<dim, spacedim>(AL_new,
-                                                             AR_new,
-                                                             AL_old,
-                                                             AR_old,
-                                                             reference_area,
-                                                             elastic_modulus,
-                                                             rho,
-                                                             b_dot_n);
-
-                  const double flux_Q =
-                    compute_momentum_rusanov_flux<dim, spacedim>(
-                      QL_old, QR_old, AL_old, AR_old, rho, b_dot_n);
-
-                  for (unsigned int i = 0; i < fe_face.get_fe().dofs_per_cell;
-                       ++i)
-                    {
-                      // Matrix contributions (implicit terms)
-                      // 1) Area equation flux
-                      copy.cell_matrix(i, j) +=
-                        flux_A * fe_face[area_extractor].value(i, q) * JxW[q];
-
-                      // 2) -<A^{n+1}P(A^n)/ρ, φ_Q>
-                      const double P_boundary_old =
-                        compute_pressure_value<dim, spacedim>(
-                          AR_old,
-                          reference_area,
-                          elastic_modulus,
-                          reference_pressure);
-                      copy.cell_matrix(i, j) -=
-                        (AR_new * P_boundary_old / rho) *
-                        fe_face[momentum_extractor].value(i, q) * JxW[q];
-                    }
-
-                  // RHS contributions (explicit terms)
-                  for (unsigned int i = 0; i < fe_face.get_fe().dofs_per_cell;
-                       ++i)
-                    {
-                      // 1) -<Q^{n+1}, φ_A>
-                      copy.cell_rhs(i) -=
-                        QR_old * fe_face[area_extractor].value(i, q) * JxW[q];
-
-                      // 2) -<Q^n*Q^n/(A^n*ρ), φ_Q> (from momentum flux)
-                      copy.cell_rhs(i) +=
-                        flux_Q * fe_face[momentum_extractor].value(i, q) *
-                        JxW[q];
-                    }
-                }
+              copy.cell_rhs(j) -= (1.0 / rho) * P_ext_explicit * b_dot_n *
+                                  fe_face[velocity_extractor].value(j, q) *
+                                  JxW[q];
             }
         }
     };
+
+
 
     // Copier lambda
     const AffineConstraints<double> constraints;
@@ -539,6 +532,11 @@ namespace dealii
                                                      quadrature,
                                                      quadrature_face);
     BloodFlowCopyData                   copy_data;
+
+    auto null_boundary = [](const auto        &cell,
+                            const unsigned int face_no,
+                            auto              &scratch,
+                            auto              &copy) {};
 
     MeshWorker::mesh_loop(dof_handler.begin_active(),
                           dof_handler.end(),
@@ -590,7 +588,7 @@ namespace dealii
 
     std::vector<std::string> solution_names(2);
     solution_names[0] = "area";
-    solution_names[1] = "momentum";
+    solution_names[1] = "velocity";
 
     std::vector<DataComponentInterpretation::DataComponentInterpretation>
       data_component_interpretation(
@@ -650,7 +648,7 @@ namespace dealii
   BloodFlowSystem<dim, spacedim>::compute_errors(unsigned int k)
   {
     const ComponentSelectFunction<spacedim> area_mask(0, 1.0, 2);
-    const ComponentSelectFunction<spacedim> momentum_mask(1, 1.0, 2);
+    const ComponentSelectFunction<spacedim> velocity_mask(1, 1.0, 2);
 
     Vector<float> difference_per_cell(triangulation.n_active_cells());
 
@@ -684,28 +682,28 @@ namespace dealii
                                         difference_per_cell,
                                         VectorTools::H1_seminorm);
 
-    // momentum L2 error
+    // Velocity L2 error
     VectorTools::integrate_difference(dof_handler,
                                       solution,
                                       exact_solution,
                                       difference_per_cell,
                                       QGauss<dim>(fe_degree + 3),
                                       VectorTools::L2_norm,
-                                      &momentum_mask);
-    const double momentum_L2_error =
+                                      &velocity_mask);
+    const double Velocity_L2_error =
       VectorTools::compute_global_error(triangulation,
                                         difference_per_cell,
                                         VectorTools::L2_norm);
 
-    // momentum H1 error
+    // Velocity H1 error
     VectorTools::integrate_difference(dof_handler,
                                       solution,
                                       exact_solution,
                                       difference_per_cell,
                                       QGauss<dim>(fe_degree + 3),
                                       VectorTools::H1_seminorm,
-                                      &momentum_mask);
-    const double momentum_H1_error =
+                                      &velocity_mask);
+    const double Velocity_H1_error =
       VectorTools::compute_global_error(triangulation,
                                         difference_per_cell,
                                         VectorTools::H1_seminorm);
@@ -713,8 +711,8 @@ namespace dealii
     // Variables to store previous errors for convergence rate calculation
     static double last_Area_L2_error     = 0;
     static double last_Area_H1_error     = 0;
-    static double last_momentum_L2_error = 0;
-    static double last_momentum_H1_error = 0;
+    static double last_Velocity_L2_error = 0;
+    static double last_Velocity_H1_error = 0;
 
     // Output results with convergence rates
     std::cout << std::scientific << std::setprecision(3);
@@ -735,19 +733,19 @@ namespace dealii
                              std::log(2.0))
               << std::endl;
 
-    std::cout << " momentum L2 error:  " << std::setw(12) << momentum_L2_error
+    std::cout << " Velocity L2 error:  " << std::setw(12) << Velocity_L2_error
               << "   Conv_rate: " << std::setw(6)
               << (k == 0 ?
                     0.0 :
-                    std::log(last_momentum_L2_error / momentum_L2_error) /
+                    std::log(last_Velocity_L2_error / Velocity_L2_error) /
                       std::log(2.0))
               << std::endl;
 
-    std::cout << " momentum H1 error:  " << std::setw(12) << momentum_H1_error
+    std::cout << " Velocity H1 error:  " << std::setw(12) << Velocity_H1_error
               << "   Conv_rate: " << std::setw(6)
               << (k == 0 ?
                     0.0 :
-                    std::log(last_momentum_H1_error / momentum_H1_error) /
+                    std::log(last_Velocity_H1_error / Velocity_H1_error) /
                       std::log(2.0))
               << std::endl;
 
@@ -758,10 +756,9 @@ namespace dealii
     // Update previous error values
     last_Area_L2_error     = Area_L2_error;
     last_Area_H1_error     = Area_H1_error;
-    last_momentum_L2_error = momentum_L2_error;
-    last_momentum_H1_error = momentum_H1_error;
+    last_Velocity_L2_error = Velocity_L2_error;
+    last_Velocity_H1_error = Velocity_H1_error;
   }
-
 
   template <int dim, int spacedim>
   void
@@ -812,48 +809,54 @@ namespace dealii
         for (unsigned int step = 1; step <= n_time_steps; ++step)
           {
             time += time_step;
-            exact_solution.set_time(time);
-
             std::cout << "Step " << step << "  t=" << time << std::endl;
 
-            // Assemble system matrix
-            assemble_system();
+            // Initialize Picard iteration
+            solution = solution_old; // u^(0) := u^n
+            Vector<double> solution_picard_explicit(solution.size());
+            unsigned int   picard_iter = 0;
+            bool           converged   = false;
 
-            // Form time-stepping system matrix: M/dt + A
-            system_matrix_time.copy_from(system_matrix);
-            system_matrix_time.add(1.0 / time_step, mass_matrix);
-
-            // Form right-hand side: M/dt * u_old + right_hand
-            mass_matrix.vmult(tmp_vector, solution_old);
-            tmp_vector *= (1.0 / time_step);
-            tmp_vector += right_hand_side;
-
-            // Solve time step
-            if (use_direct_solver)
+            // Picard loop
+            do
               {
-                SparseDirectUMFPACK direct;
-                direct.initialize(system_matrix_time);
-                direct.vmult(solution, tmp_vector);
-              }
-            else
-              {
-                SolverControl               solver_control(1000, 1e-14);
-                SolverGMRES<Vector<double>> gmres(solver_control);
-                PreconditionSSOR<>          preconditioner;
-                const double                omega =
-                  1.4; // SSOR relaxation parameter (typical range: 1.0-2.0)
-                preconditioner.initialize(system_matrix_time, omega);
-                gmres.solve(system_matrix_time,
-                            solution,
-                            tmp_vector,
-                            preconditioner);
+                solution_picard_explicit = solution; // save previous iterate
 
-                std::cout << "  GMRES converged in "
-                          << solver_control.last_step() << " iterations."
-                          << std::endl;
-              }
+                // Assemble using current Picard guess
+                assemble_system(); // uses solution as U_explicit
 
-            std::cout << "norm of vector " << solution.l2_norm() << std::endl;
+                // Build time-step system: (M/dt + A) u = M/dt u^n + RHS
+                system_matrix_time.copy_from(mass_matrix);
+                system_matrix_time *= (1.0 / time_step);
+                system_matrix_time.add(1.0, system_matrix);
+
+                mass_matrix.vmult(tmp_vector, solution_old);
+                tmp_vector *= (1.0 / time_step);
+                tmp_vector += right_hand_side;
+
+                // Solve linear system for new iterate
+                solve(); // result in 'solution'
+
+                // solution = omega * solution_new + (1 - omega) * explicit
+                solution.sadd(omega, 1.0 - omega, solution_picard_explicit);
+
+                // Compute Picard residual
+                Vector<double> diff = solution;
+                diff.add(-1.0, solution_picard_explicit);
+                const double picard_residual = diff.l2_norm();
+
+                std::cout << "  Picard iter " << picard_iter
+                          << "   residual = " << picard_residual << std::endl;
+
+                ++picard_iter;
+
+                if (picard_residual < picard_tolerance ||
+                    picard_iter >= max_picard_iterations)
+                  converged = true;
+              }
+            while (!converged && picard_iter < max_picard_iterations);
+            std::cout << "  Picard converged in " << picard_iter
+                      << " iterations.\n";
 
             solution_old = solution;
             compute_pressure();
