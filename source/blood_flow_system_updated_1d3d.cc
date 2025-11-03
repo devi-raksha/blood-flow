@@ -103,14 +103,6 @@ namespace dealii
     pressure.reinit(dof_handler.n_dofs());
   }
 
-template <int dim, int spacedim, typename CellIterator>
-Tensor<1, spacedim>
-compute_directional_derivative(const CellIterator &cell)
-{
-  return (cell->vertex(1) - cell->vertex(0)) /
-         cell->vertex(1).distance(cell->vertex(0));
-}
-
   template <int dim, int spacedim>
   void
   BloodFlowSystem<dim, spacedim>::assemble_mass_matrix()
@@ -184,11 +176,10 @@ compute_directional_derivative(const CellIterator &cell)
     system_matrix   = 0;
     right_hand_side = 0;
 
-    // Define extractors
     const FEValuesExtractors::Scalar area_extractor(0);
     const FEValuesExtractors::Scalar velocity_extractor(1);
 
-    // Cell worker - implicit volume + source
+    // ========== CELL WORKER ==========
     auto cell_worker = [&](const Iterator                      &cell,
                            BloodFlowScratchData<dim, spacedim> &scratch_data,
                            BloodFlowCopyData                   &copy_data) {
@@ -201,69 +192,86 @@ compute_directional_derivative(const CellIterator &cell)
       const auto &JxW      = fe_v.get_JxW_values();
       const auto &q_points = fe_v.get_quadrature_points();
 
-      // Get A^n U^n values at quadrature points
+      // Explicit values at t^n
       std::vector<double> explicit_area(fe_v.n_quadrature_points);
       std::vector<double> explicit_velocity(fe_v.n_quadrature_points);
 
       fe_v[area_extractor].get_function_values(solution, explicit_area);
       fe_v[velocity_extractor].get_function_values(solution, explicit_velocity);
 
-      // Unit tangent vector along the embedded 1D edge
-      const auto b_vec = compute_directional_derivative<dim, spacedim>(cell);
+      const auto b_vec = compute_directional_vector(cell);
 
-      // Set time for RHS functions
-      rhs_A_function->set_time(time); // f_a(x,t^{n+1}) from area equation
-      rhs_U_function->set_time(time); // f_u(x,t^{n+1}) from momentum equation
+      rhs_A_function->set_time(time);
+      rhs_U_function->set_time(time);
 
       for (unsigned int point = 0; point < fe_v.n_quadrature_points; ++point)
         {
           const double rhs_A_value = rhs_A_function->value(q_points[point]);
           const double rhs_U_value = rhs_U_function->value(q_points[point]);
 
+          // Compute explicit pressure and derivative
+          const double explicit_pressure =
+            compute_pressure_value<dim, spacedim>(explicit_area[point],
+                                                  reference_area,
+                                                  elastic_modulus,
+                                                  reference_pressure);
+          const double dpdA =
+            compute_pressure_derivative<dim, spacedim>(explicit_area[point],
+                                                       reference_area,
+                                                       elastic_modulus);
+
           for (unsigned int i = 0; i < n_dofs; ++i)
             {
               for (unsigned int j = 0; j < n_dofs; ++j)
                 {
+                  // ===== AREA EQUATION =====
+                  // -∫ F_A · ∇φ_A dx (semi-implicit: A implicit, U explicit)
                   const auto implicit_area =
                     fe_v[area_extractor].value(j, point);
-                  const auto implicit_velocity =
-                    fe_v[velocity_extractor].value(j, point);
-
-                  const auto flux_A = compute_physical_area_flux<dim, spacedim>(
-                    implicit_area, explicit_velocity[point], b_vec)*normals[point];
+                  const auto flux_A =
+                    compute_physical_area_flux(cell,
+                                               implicit_area,
+                                               explicit_velocity[point]);
 
                   copy_data.cell_matrix(i, j) -=
                     flux_A * fe_v[area_extractor].gradient(i, point) *
                     JxW[point];
 
-                  // U-U block: nonlinear convection + viscosity
-                  const auto flux_U =
-                    compute_physical_momentum_flux<dim, spacedim>(
-                      implicit_velocity, explicit_velocity[point], b_vec);
-                      const double nonlinear_conv =
-                        -flux_U * fe_v[velocity_extractor].gradient(i, point);
-
-                  const double reaction =
-                    viscosity_c * fe_v[velocity_extractor].value(i, point) *
+                  // ===== MOMENTUM EQUATION =====
+                  const auto implicit_velocity =
                     fe_v[velocity_extractor].value(j, point);
 
+                  // Convection: -∫ F_U · ∇φ_U dx
+                  const auto flux_U =
+                    compute_physical_momentum_flux(cell,
+                                                   implicit_velocity,
+                                                   explicit_velocity[point]);
+                  copy_data.cell_matrix(i, j) -=
+                    flux_U * fe_v[velocity_extractor].gradient(i, point) *
+                    JxW[point];
+
+                  // Reaction (viscosity): ∫ c U φ_U dx
                   copy_data.cell_matrix(i, j) +=
-                    (nonlinear_conv + reaction) * JxW[point];
+                    viscosity_c * fe_v[velocity_extractor].value(i, point) *
+                    implicit_velocity * JxW[point];
+
+                  // Pressure gradient coupling: -∫ (1/ρ) P(A) ·\nabla φ_U dx
+                  // This term couples area gradient to velocity
+                  const double implicit_pressure =
+                    compute_pressure_value<dim, spacedim>(implicit_area,
+                                                          reference_area,
+                                                          elastic_modulus,
+                                                          reference_pressure);
+
+                  const double pressure_coupling =
+                    (1.0 / rho) * implicit_pressure *
+                    (b_vec * fe_v[velocity_extractor].gradient(i, point));
+
+
+                  copy_data.cell_matrix(i, j) += pressure_coupling * JxW[point];
                 }
 
-              // Compute pressure using header function
-              const double explicit_P =
-                compute_pressure_value<dim, spacedim>(explicit_area[point],
-                                                      reference_area,
-                                                      elastic_modulus,
-                                                      reference_pressure);
-
-              // pressure  RHS
-              copy_data.cell_rhs(i) +=
-                (1.0 / rho) * explicit_P * b_vec *
-                fe_v[velocity_extractor].gradient(i, point) * JxW[point];
-
-              // Right-hand side terms
+              // RHS: source terms
               copy_data.cell_rhs(i) +=
                 rhs_A_value * fe_v[area_extractor].value(i, point) * JxW[point];
               copy_data.cell_rhs(i) +=
@@ -273,7 +281,7 @@ compute_directional_derivative(const CellIterator &cell)
         }
     };
 
-    // Face worker - handles interior face integrals using header flux functions
+    // ========== FACE WORKER (Interior Faces) ==========
     auto face_worker = [&](const Iterator                      &cell,
                            const unsigned int                   f,
                            const unsigned int                   sf,
@@ -289,11 +297,7 @@ compute_directional_derivative(const CellIterator &cell)
       const auto &normals    = fe_iv.get_fe_face_values(0).get_normal_vectors();
       const unsigned int n_q = fe_iv.get_fe_face_values(0).n_quadrature_points;
 
-      const auto b_vec = compute_directional_derivative<dim, spacedim>(cell);
-      const auto b_vec_neighbor =
-        compute_directional_derivative<dim, spacedim>(ncell);
-
-      // Extract solution values
+      // Explicit values
       std::vector<double> explicit_area(n_q), explicit_velocity(n_q),
         explicit_area_neighbor(n_q), explicit_velocity_neighbor(n_q);
 
@@ -313,27 +317,32 @@ compute_directional_derivative(const CellIterator &cell)
       face.cell_matrix.reinit(nd, nd);
       face.cell_rhs.reinit(nd);
 
+      const auto b_vec          = compute_directional_vector(cell);
+      const auto b_vec_neighbor = compute_directional_vector(ncell);
+
       for (unsigned int q = 0; q < n_q; ++q)
         {
-          // Compute pressures and wave speeds using header functions
+          // Compute pressures
           const double explicit_pressure =
             compute_pressure_value<dim, spacedim>(explicit_area[q],
                                                   reference_area,
                                                   elastic_modulus,
                                                   reference_pressure);
+
           const double explicit_pressure_neighbor =
             compute_pressure_value<dim, spacedim>(explicit_area_neighbor[q],
                                                   reference_area,
                                                   elastic_modulus,
                                                   reference_pressure);
 
+          // Wave speeds for Lax-Friedrichs penalty
           const double cL = compute_wave_speed<dim, spacedim>(explicit_area[q],
                                                               reference_area,
                                                               elastic_modulus,
                                                               rho);
           const double cR = compute_wave_speed<dim, spacedim>(
             explicit_area_neighbor[q], reference_area, elastic_modulus, rho);
-          // Lax Friedrich Penalty
+
           const double alpha =
             std::max({std::abs(explicit_velocity[q] + cL),
                       std::abs(explicit_velocity[q] - cL),
@@ -344,169 +353,212 @@ compute_directional_derivative(const CellIterator &cell)
             {
               for (unsigned int j = 0; j < nd; ++j)
                 {
-                  const auto implicit_velocity =
-                    fe_iv[velocity_extractor].value(0, j, q);
-                  const auto implicit_velocity_neighbor =
-                    fe_iv[velocity_extractor].value(1, j, q);
                   const auto implicit_area =
                     fe_iv[area_extractor].value(0, j, q);
                   const auto implicit_area_neighbor =
                     fe_iv[area_extractor].value(1, j, q);
+                  const auto implicit_velocity =
+                    fe_iv[velocity_extractor].value(0, j, q);
+                  const auto implicit_velocity_neighbor =
+                    fe_iv[velocity_extractor].value(1, j, q);
 
+                  // ===== AREA FLUX =====
                   const auto flux_area =
-                    compute_physical_area_flux<dim, spacedim>(
-                      explicit_velocity[q], implicit_area, b_vec);
+                    compute_physical_area_flux(cell,
+                                               implicit_area,
+                                               explicit_velocity[q]) *
+                    normals[q];
 
                   const auto flux_area_neighbor =
-                    compute_physical_area_flux<dim, spacedim>(
-                      explicit_velocity_neighbor[q],
-                      implicit_area_neighbor,
-                      b_vec_neighbor);
+                    compute_physical_area_flux(ncell,
+                                               implicit_area_neighbor,
+                                               explicit_velocity_neighbor[q]) *
+                    normals[q];
 
-                  const auto F_hat_area =
-                    0.5 * (flux_area_neighbor + flux_area) * normals[q] -
+                  // Lax-Friedrichs numerical flux
+                  const double F_hat_area =
+                    0.5 * (flux_area + flux_area_neighbor) -
                     0.5 * alpha * (implicit_area - implicit_area_neighbor);
-
 
                   face.cell_matrix(i, j) +=
                     F_hat_area * fe_iv[area_extractor].jump_in_values(i, q) *
                     JxW[q];
 
+                  // ===== VELOCITY FLUX =====
                   const auto flux_velocity =
-                    compute_physical_momentum_flux<dim, spacedim>(
-                      explicit_velocity[q], implicit_velocity, b_vec);
+                    compute_physical_momentum_flux(cell,
+                                                   implicit_velocity,
+                                                   explicit_velocity[q]) *
+                    normals[q];
 
                   const auto flux_velocity_neighbor =
-                    compute_physical_momentum_flux<dim, spacedim>(
-                      explicit_velocity_neighbor[q],
+                    compute_physical_momentum_flux(
+                      ncell,
                       implicit_velocity_neighbor,
-                      b_vec_neighbor);
+                      explicit_velocity_neighbor[q]) *
+                    normals[q];
 
-                  const auto F_hat_velocity =
-                    0.5 * (flux_velocity + flux_velocity_neighbor) *
-                      normals[q] -
-                    0.5 * alpha * (implicit_velocity - implicit_velocity_neighbor);
+                  const double F_hat_velocity =
+                    0.5 * (flux_velocity + flux_velocity_neighbor) -
+                    0.5 * alpha *
+                      (implicit_velocity - implicit_velocity_neighbor);
 
                   face.cell_matrix(i, j) +=
                     F_hat_velocity *
                     fe_iv[velocity_extractor].jump_in_values(i, q) * JxW[q];
+
+                  // ===== PRESSURE FLUX =====
+
+                  const double implicit_pressure =
+                    compute_pressure_value<dim, spacedim>(implicit_area,
+                                                          reference_area,
+                                                          elastic_modulus,
+                                                          reference_pressure);
+                  const double implicit_pressure_neighbor =
+                    compute_pressure_value<dim, spacedim>(
+                      implicit_area_neighbor,
+                      reference_area,
+                      elastic_modulus,
+                      reference_pressure);
+
+                  const double F_hat_pressure =
+                    0.5 / rho *
+                    (implicit_pressure * b_vec +
+                     implicit_pressure_neighbor * b_vec_neighbor) *
+                    normals[q];
+
+                  face.cell_matrix(i, j) +=
+                    F_hat_pressure *
+                    fe_iv[velocity_extractor].jump_in_values(i, q) * JxW[q];
                 }
-             
 
-              const auto F_hat_pressure =
-                0.5 / rho *
-                (explicit_pressure*b_vec + explicit_pressure_neighbor*b_vec_neighbor)*normals[q];
+              // ===== PRESSURE (RHS) =====
+              // const double F_hat_pressure =
+              //   0.5 / rho *
+              //   (explicit_pressure * b_vec +
+              //    explicit_pressure_neighbor * b_vec_neighbor) *
+              //   normals[q];
 
-                face.cell_rhs(i) -=
-                F_hat_pressure *
-                fe_iv[velocity_extractor].jump_in_values(i, q) * JxW[q];
+              // face.cell_rhs(i) +=
+              //   F_hat_pressure *
+              //   fe_iv[velocity_extractor].jump_in_values(i, q) * JxW[q];
             }
         }
     };
 
+    // ========== BOUNDARY WORKER ==========
+  ExactSolutionBloodFlow<spacedim> exact_solution;
+  exact_solution.set_time(time);
 
-    // Boundary worker using header exact solution
-    ExactSolutionBloodFlow<spacedim> exact_solution;
-    exact_solution.set_time(time);
+  auto boundary_worker = [&](const Iterator                      &cell,
+                           const unsigned int                   face_no,
+                           BloodFlowScratchData<dim, spacedim> &scratch,
+                           BloodFlowCopyData                   &copy) {
+  scratch.fe_interface_values.reinit(cell, face_no);
+  const auto &fe_face = scratch.fe_interface_values.get_fe_face_values(0);
 
-    auto boundary_worker = [&](const Iterator                      &cell,
-                               const unsigned int                   face_no,
-                               BloodFlowScratchData<dim, spacedim> &scratch,
-                               BloodFlowCopyData                   &copy) {
-      scratch.fe_interface_values.reinit(cell, face_no);
-      const auto &fe_face = scratch.fe_interface_values.get_fe_face_values(0);
+  const auto        &JxW     = fe_face.get_JxW_values();
+  const auto        &normals = fe_face.get_normal_vectors();
+  const unsigned int n_q     = fe_face.n_quadrature_points;
 
-      const auto        &JxW     = fe_face.get_JxW_values();
-      const auto        &normals = fe_face.get_normal_vectors();
-      const unsigned int n_q     = fe_face.n_quadrature_points;
+  // Interior trace (explicit for convection)
+  std::vector<double> explicit_area(n_q), explicit_velocity(n_q);
+  fe_face[area_extractor].get_function_values(solution, explicit_area);
+  fe_face[velocity_extractor].get_function_values(solution, explicit_velocity);
 
-      // Interior trace at t^n
-      std::vector<double> explicit_area(n_q), explicit_velocity(n_q);
-      fe_face[area_extractor].get_function_values(solution, explicit_area);
-      fe_face[velocity_extractor].get_function_values(solution,
-                                                      explicit_velocity);
+  // Boundary (exact) values
+  exact_solution.set_time(time);
+  std::vector<Vector<double>> bc(n_q, Vector<double>(2));
+  exact_solution.vector_value_list(fe_face.get_quadrature_points(), bc);
 
-      copy.cell_matrix.reinit(fe_face.get_fe().dofs_per_cell,
-                              fe_face.get_fe().dofs_per_cell);
-      copy.cell_rhs.reinit(fe_face.get_fe().dofs_per_cell);
+  const auto b_vec = compute_directional_vector(cell);
 
-      // Boundary data at t^n (explicit time)
-      exact_solution.set_time(time - time_step);
-      std::vector<Vector<double>> bc_explicit(n_q, Vector<double>(2));
-      exact_solution.vector_value_list(fe_face.get_quadrature_points(),
-                                       bc_explicit);
+  for (unsigned int q = 0; q < n_q; ++q)
+    {
 
-      // Boundary data at t^{n+1} (new time)
-      exact_solution.set_time(time);
-      std::vector<Vector<double>> bc_new(n_q, Vector<double>(2));
-      exact_solution.vector_value_list(fe_face.get_quadrature_points(), bc_new);
+      const double A_bd = bc[q][0];
+      const double U_bd = bc[q][1];
 
-      for (unsigned int q = 0; q < n_q; ++q)
+      const double b_dot_n = b_vec * normals[q];
+
+      // Local wave speed and eigenvalues
+      const double cL = compute_wave_speed<dim, spacedim>(
+        explicit_area[q], reference_area, elastic_modulus, rho);
+      const double lambda1 = explicit_velocity[q] - cL;
+      const double lambda2 = explicit_velocity[q] + cL;
+
+      const bool is_inflow  = (lambda1 < 0.0 || lambda2 < 0.0);
+      const bool is_outflow = !is_inflow;
+
+     
+      for (unsigned int i = 0; i < fe_face.get_fe().dofs_per_cell; ++i)
         {
-          const double b_dot_n =
-            compute_tangent_normal_product<dim, spacedim>(cell, normals[q]);
-
-          // Extract boundary values at t^n
-          const double A_explicit = bc_explicit[q][0]; // Area component
-          const double U_ext_explicit = bc_explicit[q][1]; // Velocity component
-
-          // Extract boundary values at t^{n+1}
-          const double A_ext_new = bc_new[q][0]; // Area component
-          const double U_ext_new = bc_new[q][1]; // Velocity component
-
-          // Compute boundary pressure at t^n
-          const double P_ext_explicit =
-            compute_pressure_value<dim, spacedim>(A_ext_explicit,
-                                                  reference_area,
-                                                  elastic_modulus,
-                                                  reference_pressure);
-
-          // Compute wave speed at boundary
-          const double c_ext = compute_wave_speed<dim, spacedim>(
-            A_ext_explicit, reference_area, elastic_modulus, rho);
-
-          const double h     = cell->diameter();
-          const double alpha = theta * h / (2 * time_step);
-         
-          if (an > 0)
-          {
           for (unsigned int j = 0; j < fe_face.get_fe().dofs_per_cell; ++j)
-             for (unsigned int i = 0; i < fe_face.get_fe().dofs_per_cell; ++i)
-                
-              // Semi-implicit flux contributions
-              const double implicit_area = fe_face[area_extractor].value(j, q);
-              const double implicit_velocity = fe_face[velocity_extractor].value(j, q);
+            {
+              const double implicit_area =
+                fe_face[area_extractor].value(j, q);
+              const double implicit_velocity =
+                fe_face[velocity_extractor].value(j, q);
 
-               // f_hat_area = physical_flux_area*normals[q]
-                  // Advective matrix terms (one-sided flux with exterior state)
+              // --- Compute implicit pressure ---
+              const double implicit_pressure =
+                compute_pressure_value<dim, spacedim>(
+                  implicit_area, reference_area, elastic_modulus, reference_pressure);
+
+              const double p_bd =
+                compute_pressure_value<dim, spacedim>(
+                  A_bd, reference_area, elastic_modulus, reference_pressure);
+
+              // ===== AREA FLUX =====
+              const auto flux_area =
+                compute_physical_area_flux(cell, implicit_area, explicit_velocity[q]) * normals[q];
+              const auto flux_area_bd =
+               compute_physical_area_flux(cell, A_bd, U_bd) * normals[q];
+
+              const double F_hat_area = flux_area;
+              const double F_hat_area_bd = flux_area_bd;
+               
+              // ===== VELOCITY FLUX (includes pressure term) =====
+              const auto flux_velocity =
+                compute_physical_momentum_flux(cell, implicit_velocity, explicit_velocity[q]) * normals[q];
+              const auto flux_velocity_bd =
+               compute_physical_momentum_flux(cell, U_bd, U_bd) * normals[q];
+
+              // Add implicit pressure contribution 
+              const double F_hat_pressure =
+                (1.0 /  rho) *
+                (implicit_pressure) * b_dot_n;
+
+               const double F_hat_pressure_bd =
+                (1.0 /  rho) *
+                (p_bd) * b_dot_n; 
+
+              const double F_hat_velocity = flux_velocity
+                + F_hat_pressure;
+              
+               const double F_hat_velocity_bd = flux_velocity_bd + F_hat_pressure_bd;;
+               
+
+              if (is_outflow)
+                {
+                  // Outflow - add to LHS
                   copy.cell_matrix(i, j) +=
-                    F_hat_area*
-                    fe_face[area_extractor].value(i, q) * JxW[q];
-
-                 // f_hat_velocity = physical_flux_momemntum*normals[q] + p/rho
-                  // Advective matrix terms (one-sided flux with exterior state)
-                  copy.cell_matrix(i, j) +=
-                    F_hat_velocity*
-                    fe_face[velocity_extractor].value(i, q) * JxW[q];   
-
+                    (F_hat_area * fe_face[area_extractor].value(i, q) +
+                     F_hat_velocity * fe_face[velocity_extractor].value(i, q)) *
+                    JxW[q];
                 }
-
-              // RHS forcing from boundary data
-              copy.cell_rhs(j) -= (U_ext_explicit * A_ext_new * b_dot_n) *
-                                  fe_face[area_extractor].value(j, q) * JxW[q];
-
-              copy.cell_rhs(j) -= 0.5 * (U_ext_explicit * U_ext_new * b_dot_n) *
-                                  fe_face[velocity_extractor].value(j, q) *
-                                  JxW[q];
-
-              copy.cell_rhs(j) -= (1.0 / rho) * P_ext_explicit * b_dot_n *
-                                  fe_face[velocity_extractor].value(j, q) *
-                                  JxW[q];
+              else
+                {
+                  // Inflow - enforce BC in RHS
+                  copy.cell_rhs(i) -=
+                    (F_hat_area_bd * fe_face[area_extractor].value(i, q) +
+                     F_hat_velocity_bd * fe_face[velocity_extractor].value(i, q)) *
+                    JxW[q];
+                }
             }
         }
-    };
-
-
+    }
+};
 
     // Copier lambda
     const AffineConstraints<double> constraints;

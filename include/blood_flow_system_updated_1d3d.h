@@ -84,35 +84,6 @@ namespace dealii
   }
 
   /**
-   * Compute characteristic value Ul+ cl using velocity and wave speed 
-   */
-  template <int dim, int spacedim>
-  double
-  compute_plus_eigen(const double explicit_velocity,
-                     const double wave_speed_explicit
-                     )
-  {
-    
-    return explicit_velocity + wave_speed_explicit;
-  }
-
-
-    /**
-   * Compute characteristic value Ul- cl using velocity and wave speed 
-   */
-  template <int dim, int spacedim>
-  double
-  compute_diff_eigen(const double explicit_velocity,
-                     const double wave_speed_explicit
-                     )
-  {
-    
-    return explicit_velocity - wave_speed_explicit;
-  }
-
-
-
-  /**
    * Compute pressure using the tube law
    */
   template <int dim, int spacedim>
@@ -145,212 +116,45 @@ namespace dealii
   // FLUX COMPUTATION FUNCTIONS
   //====================================================================
 
-  /**
-   * Compute physical flux for area equation: F_A = A * U * (b · n)
-   */
-  template <int dim, int spacedim>
-  Tensor<1, spacedim>
-  compute_physical_area_flux(const double implicit_area,
-                             const double explicit_velocity,
-                             const Tensor<1, spacedim> &b)
-  {
-    return implicit_area * explicit_velocity * b;
-  }
-
-  /**
-   * Semi-implicit area flux: F_A = 0.5 * (A_old * U_new + U_old * A_new) * (b ·
-   * n)
-   */
-  template <int dim, int spacedim>
-  double
-  compute_physical_area_flux_semi_implicit(const double area_old,
-                                           const double velocity_old,
-                                           const double area_new,
-                                           const double velocity_new,
-                                           const double b_dot_n)
-  {
-    return 0.5 * (area_old * velocity_new + velocity_old * area_new) * b_dot_n;
-  }
-
-  /**
-   * Compute physical flux for momentum equation: F_U = (0.5 * U^2 + P/ρ) * (b ·
-   * n)
-   */
-  template <int dim, int spacedim>
-  double
-  compute_physical_momentum_flux(const double implicit_velocity,
-                                 const double explicit_velocity,
-                                const Tensor<1, spacedim> &b)
-  {
-    return (0.5 * implicit_velocity * explicit_velocity) * b;
-  }
-
-  /**
-   * Semi-implicit momentum flux: F_U = U_old * U_new + P(A_new)/ρ
-   */
-  template <int dim, int spacedim>
-  double
-  compute_physical_momentum_flux_semi_implicit(const double velocity_old,
-                                               const double velocity_new,
-                                               const double pressure_new,
-                                               const double rho,
-                                               const double b_dot_n)
-  {
-    return (velocity_old * velocity_new + pressure_new / rho) * b_dot_n;
-  }
-
-  /**
-   * Compute Rusanov penalty parameter
-   */
-  template <int dim, int spacedim>
-  double
-  compute_rusanov_penalty(const double velocity_left,
-                          const double velocity_right,
-                          const double wave_speed_left,
-                          const double wave_speed_right)
-  {
-    const double s1 = std::abs(velocity_left - wave_speed_left);
-    const double s2 = std::abs(velocity_left + wave_speed_left);
-    const double s3 = std::abs(velocity_right - wave_speed_right);
-    const double s4 = std::abs(velocity_right + wave_speed_right);
-    return 0.5 * std::max({s1, s2, s3, s4});
-  }
-
   // /**
-  //  * Compute numerical Rusanov flux for interior faces
+  //  * Compute physical flux for area equation: F_A = A * U * (b · n)
   //  */
   // template <int dim, int spacedim>
-  // std::pair<double, double>
-  // compute_numerical_flux_rusanov(const double area_left,
-  //                                const double velocity_left,
-  //                                const double area_right,
-  //                                const double velocity_right,
-  //                                const double pressure_left,
-  //                                const double pressure_right,
-  //                                const double wave_speed_left,
-  //                                const double wave_speed_right,
-  //                                const double rho,
-  //                                const double b_dot_n)
+  // double
+  // compute_physical_area_flux(const double implicit_area,
+  //                            const double explicit_velocity,
+  //                            const auto b_vec)
   // {
-  //   // Physical fluxes
-  //   const double FA_L = compute_physical_area_flux<dim, spacedim>(area_left,
-  //                                                                 velocity_left,
-  //                                                                 b_dot_n);
-  //   const double FA_R =
-  //     compute_physical_area_flux<dim, spacedim>(area_right,
-  //                                               velocity_right,
-  //                                               b_dot_n);
-  //   const double FU_L = compute_physical_momentum_flux<dim, spacedim>(
-  //     velocity_left, pressure_left, rho, b_dot_n);
-  //   const double FU_R = compute_physical_momentum_flux<dim, spacedim>(
-  //     velocity_right, pressure_right, rho, b_dot_n);
+  //   return implicit_area * explicit_velocity * b_vec;
+  // }
 
-  //   // Rusanov penalty parameter
-  //   const double alpha = compute_rusanov_penalty<dim, spacedim>(
-  //     velocity_left, velocity_right, wave_speed_left, wave_speed_right);
+ 
 
-  //   // Rusanov fluxes
-  //   const double flux_A =
-  //     0.5 * (FA_L + FA_R) - alpha * (area_right - area_left);
-  //   const double flux_U =
-  //     0.5 * (FU_L + FU_R) - alpha * (velocity_right - velocity_left);
-
-  //   return std::make_pair(flux_A, flux_U);
+  // /**
+  //  * Compute physical flux for momentum equation: F_U = (0.5 * U^2)
+  //  */
+  // template <int dim, int spacedim>
+  // double
+  // compute_physical_momentum_flux(const double implicit_velocity,
+  //                                const double explicit_velocity,
+  //                               const double b_vec)
+  // {
+  //   return (0.5 * implicit_velocity * explicit_velocity) * b_vec;
   // }
 
   // /**
-  //  * Semi-implicit Rusanov flux for interior faces
+  //  * Compute tangent-normal product b·n
   //  */
-  // template <int dim, int spacedim>
-  // std::pair<double, double>
-  // compute_numerical_flux_rusanov_semi_implicit(const double area_left_old,
-  //                                              const double velocity_left_old,
-  //                                              const double area_right_old,
-  //                                              const double velocity_right_old,
-  //                                              const double area_left_new,
-  //                                              const double velocity_left_new,
-  //                                              const double area_right_new,
-  //                                              const double velocity_right_new,
-  //                                              const double pressure_left,
-  //                                              const double pressure_right,
-  //                                              const double wave_speed_left,
-  //                                              const double wave_speed_right,
-  //                                              const double rho,
-  //                                              const double b_dot_n)
+  // template <int dim, int spacedim, typename CellIterator>
+  // double
+  // compute_tangent_normal_product(const CellIterator        &cell,
+  //                                const Tensor<1, spacedim> &normal)
   // {
-  //   // Semi-implicit physical fluxes
-  //   const double FA_L =
-  //     compute_physical_area_flux_semi_implicit<dim, spacedim>(area_left_old,
-  //                                                             velocity_left_old,
-  //                                                             area_left_new,
-  //                                                             velocity_left_new,
-  //                                                             b_dot_n);
-  //   const double FA_R = compute_physical_area_flux_semi_implicit<dim, spacedim>(
-  //     area_right_old,
-  //     velocity_right_old,
-  //     area_right_new,
-  //     velocity_right_new,
-  //     b_dot_n);
-  //   const double FU_L =
-  //     compute_physical_momentum_flux_semi_implicit<dim, spacedim>(
-  //       velocity_left_old, velocity_left_new, pressure_left, rho, b_dot_n);
-  //   const double FU_R =
-  //     compute_physical_momentum_flux_semi_implicit<dim, spacedim>(
-  //       velocity_right_old, velocity_right_new, pressure_right, rho, b_dot_n);
-
-  //   // Rusanov penalty parameter (use new values)
-  //   const double alpha = compute_rusanov_penalty<dim, spacedim>(
-  //     velocity_left_new, velocity_right_new, wave_speed_left, wave_speed_right);
-
-  //   // Rusanov fluxes
-  //   const double flux_A =
-  //     0.5 * (FA_L + FA_R) - alpha * (area_right_new - area_left_new);
-  //   const double flux_U =
-  //     0.5 * (FU_L + FU_R) - alpha * (velocity_right_new - velocity_left_new);
-
-  //   return std::make_pair(flux_A, flux_U);
+  //   const auto b_vec = (cell->vertex(1) - cell->vertex(0)) /
+  //                      cell->vertex(1).distance(cell->vertex(0));
+  //   return b_vec * normal;
   // }
 
-  /**
-   * Compute directional derivative
-   */
-
-template <int dim, int spacedim, typename CellIterator>
-Tensor<1, spacedim>
-compute_directional_derivative(const CellIterator &cell)
-{
-  return (cell->vertex(1) - cell->vertex(0)) /
-         cell->vertex(1).distance(cell->vertex(0));
-}
-
-
-  /**
-   * Compute tangent-normal product b·n
-   */
-  template <int dim, int spacedim, typename CellIterator>
-  double
-  compute_tangent_normal_product(const CellIterator        &cell,
-                                 const Tensor<1, spacedim> &normal)
-  {
-    const auto b_vec = (cell->vertex(1) - cell->vertex(0)) /
-                       cell->vertex(1).distance(cell->vertex(0));
-    return b_vec * normal;
-  }
-
-  /**
-   * Compute penalty parameter for stabilization
-   */
-  template <int dim, int spacedim>
-  double
-  compute_penalty_parameter(const double wave_speed_left,
-                            const double wave_speed_right,
-                            const double h_face,
-                            const double theta)
-  {
-    return theta *
-           std::max(std::abs(wave_speed_left), std::abs(wave_speed_right)) /
-           h_face;
-  }
 
   //====================================================================
   // EXACT SOLUTION AND MANUFACTURED SOLUTION
@@ -673,6 +477,63 @@ compute_directional_derivative(const CellIterator &cell)
     compute_errors(unsigned int k);
     void
     run_convergence_study();
+
+    private:
+    // --------------------------------------------------
+    // ===  Geometry and Flux helper functions  ===
+    // --------------------------------------------------
+
+    /**
+     * Compute the unit tangent vector b along the 1D vessel axis.
+     */
+    Tensor<1, spacedim>
+    compute_directional_vector(
+      const typename DoFHandler<dim, spacedim>::active_cell_iterator &cell) const
+    {
+      return (cell->vertex(1) - cell->vertex(0)) /
+             cell->vertex(1).distance(cell->vertex(0));
+    }
+
+    /**
+     * Compute the physical flux for the area equation:
+     *   F_A = A * U * b
+     */
+    Tensor<1, spacedim>
+    compute_physical_area_flux(
+      const typename DoFHandler<dim, spacedim>::active_cell_iterator &cell,
+      const double implicit_area,
+      const double explicit_velocity) const
+    {
+      const Tensor<1, spacedim> b = compute_directional_vector(cell);
+      return implicit_area * explicit_velocity * b;
+    }
+
+    /**
+     * Compute the physical flux for the momentum equation:
+     *   F_U = 0.5 * U⁻ * U⁺ * b
+     * (extend later with +P(A)*b if needed)
+     */
+    Tensor<1, spacedim>
+    compute_physical_momentum_flux(
+      const typename DoFHandler<dim, spacedim>::active_cell_iterator &cell,
+      const double implicit_velocity,
+      const double explicit_velocity) const
+    {
+      const Tensor<1, spacedim> b = compute_directional_vector(cell);
+      return 0.5 * implicit_velocity * explicit_velocity * b;
+    }
+
+    /**
+     * Compute tangent-normal projection: (b · n)
+     */
+    double
+    compute_tangent_normal_product(
+      const typename DoFHandler<dim, spacedim>::active_cell_iterator &cell,
+      const Tensor<1, spacedim> &normal) const
+    {
+      const Tensor<1, spacedim> b = compute_directional_vector(cell);
+      return b * normal;
+    }
 
 
     // Exact solution typedef for easy access
