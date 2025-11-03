@@ -6,6 +6,7 @@
 #include <deal.II/base/types.h>
 
 #include <deal.II/lac/dynamic_sparsity_pattern.h>
+#include <deal.II/lac/sparse_direct.h>
 
 #include <deal.II/meshworker/mesh_loop.h>
 
@@ -26,6 +27,9 @@ namespace dealii
     , time_step(1.0)
     , time(0.0)
     , n_time_steps(0)
+    , initial_condition("Initial condition", 2)
+    , rhs_function("RHS function", 2)
+    , exact_solution("Exact solution", 2)
   {
     add_parameter("Finite element degree", fe_degree);
     add_parameter("Problem constants", constants);
@@ -47,6 +51,13 @@ namespace dealii
     add_parameter("Pressure boundary expression", pressure_bc_expression);
     add_parameter("Omega (relaxation parameter)", omega);
     add_parameter("Picard iterations", max_picard_iterations);
+
+    initial_condition.declare_parameters_call_back.connect(
+      [&]() { this->prm.set("Function expression", "1e-4; 0.0"); });
+    rhs_function.declare_parameters_call_back.connect(
+      [&]() { this->prm.set("Function expression", "0.0; 0.0"); });
+    exact_solution.declare_parameters_call_back.connect(
+      [&]() { this->prm.set("Function expression", "1e-4; 0.0"); });
   }
 
   template <int dim, int spacedim>
@@ -68,26 +79,23 @@ namespace dealii
         fe = std::make_unique<FESystem<dim, spacedim>>(
           FE_DGQ<dim, spacedim>(fe_degree), 2);
 
-        // Initialize RHS functions with current parameters
-        rhs_A_function = std::make_unique<RHS_A_BloodFlow<spacedim>>();
-        rhs_U_function = std::make_unique<RHS_U_BloodFlow<spacedim>>();
 
-        // Update RHS function parameters
-        rhs_U_function->set_rho(rho);
-        rhs_U_function->set_elastic_modulus(elastic_modulus);
-        rhs_U_function->set_viscosity_c(viscosity_c);
+        // // Update RHS function parameters
+        // rhs_U_function->set_rho(rho);
+        // rhs_U_function->set_elastic_modulus(elastic_modulus);
+        // rhs_U_function->set_viscosity_c(viscosity_c);
 
-        std::string vars;
-        if (spacedim == 1)
-          vars = "x";
-        else if (spacedim == 2)
-          vars = "x,y";
-        else
-          vars = "x,y,z";
-        std::map<std::string, double> const_map;
-        initial_A.initialize(vars, initial_A_expression, const_map);
-        initial_U.initialize(vars, initial_U_expression, const_map);
-        pressure_bc.initialize(vars, pressure_bc_expression, const_map);
+        // std::string vars;
+        // if (spacedim == 1)
+        //   vars = "x";
+        // else if (spacedim == 2)
+        //   vars = "x,y";
+        // else
+        //   vars = "x,y,z";
+        // std::map<std::string, double> const_map;
+        // initial_A.initialize(vars, initial_A_expression, const_map);
+        // initial_U.initialize(vars, initial_U_expression, const_map);
+        // pressure_bc.initialize(vars, pressure_bc_expression, const_map);
       }
 
     dof_handler.distribute_dofs(*fe);
@@ -201,13 +209,12 @@ namespace dealii
 
       const auto b_vec = compute_directional_vector(cell);
 
-      rhs_A_function->set_time(time);
-      rhs_U_function->set_time(time);
+      rhs_function.set_time(time);
 
       for (unsigned int point = 0; point < fe_v.n_quadrature_points; ++point)
         {
-          const double rhs_A_value = rhs_A_function->value(q_points[point]);
-          const double rhs_U_value = rhs_U_function->value(q_points[point]);
+          const double rhs_A_value = rhs_function.value(q_points[point], 0);
+          const double rhs_U_value = rhs_function.value(q_points[point], 1);
 
           // Compute explicit pressure and derivative
           const double explicit_pressure =
@@ -257,8 +264,9 @@ namespace dealii
 
                   // Pressure gradient coupling: -∫ (1/ρ) P(A) ·\nabla φ_U dx
                   // -P(explicit_A)= -P(A^n)+(-A+A^n)*dP/dA
-                  // This term couples area gradient to velocity
-                  // 1) -1/rho*A*dpdA*(b·∇φ_U)
+                  // -P(implicit_A) ~ -P(explicit_A) + (implicit_A -
+                  // explicit_A)*dP/dA This term couples area gradient to
+                  // velocity 1) -1/rho*A*dpdA*(b·∇φ_U)
 
                   const double pressure_term =
                     (1.0 / rho) * dpdA * implicit_area *
@@ -341,10 +349,9 @@ namespace dealii
 
           // Compute explicit pressure and derivative
           const double dpdA_neighbor =
-            compute_pressure_value<dim, spacedim>(explicit_area_neighbor[q],
-                                                  reference_area,
-                                                  elastic_modulus,
-                                                  reference_pressure);
+            compute_pressure_derivative<dim, spacedim>(
+              explicit_area_neighbor[q], reference_area, elastic_modulus);
+
           const double dpdA =
             compute_pressure_derivative<dim, spacedim>(explicit_area[q],
                                                        reference_area,
@@ -358,15 +365,15 @@ namespace dealii
                                                               rho);
           const double cR = compute_wave_speed<dim, spacedim>(
             explicit_area_neighbor[q], reference_area, elastic_modulus, rho);
-        
-          const double h = cell->diameter();
+
+          // const double h = cell->diameter();
 
           const double alpha =
             std::max({std::abs(explicit_velocity[q] + cL),
                       std::abs(explicit_velocity[q] - cL),
                       std::abs(explicit_velocity_neighbor[q] + cR),
-                      std::abs(explicit_velocity_neighbor[q] - cR)}) 
-                      + theta* h / (2*time_step);
+                      std::abs(explicit_velocity_neighbor[q] - cR)}); // +
+          //  theta * h / (2 * time_step);
 
           for (unsigned int i = 0; i < nd; ++i)
             {
@@ -457,7 +464,7 @@ namespace dealii
     };
 
     // ========== BOUNDARY WORKER ==========
-    ExactSolutionBloodFlow<spacedim> exact_solution;
+    // ExactSolutionBloodFlow<spacedim> exact_solution;
     exact_solution.set_time(time);
 
     auto boundary_worker = [&](const Iterator                      &cell,
@@ -498,8 +505,10 @@ namespace dealii
                                                   reference_pressure);
 
           // Compute explicit pressure and derivative
-          const double dpdA_bd = compute_pressure_value<dim, spacedim>(
-            A_bd, reference_area, elastic_modulus, reference_pressure);
+          const double dpdA_bd =
+            compute_pressure_derivative<dim, spacedim>(A_bd,
+                                                       reference_area,
+                                                       elastic_modulus);
           const double dpdA =
             compute_pressure_derivative<dim, spacedim>(explicit_area[q],
                                                        reference_area,
@@ -512,7 +521,7 @@ namespace dealii
                                                               elastic_modulus,
                                                               rho);
           const double lambda1 = explicit_velocity[q] - cL;
-          const double lambda2 = explicit_velocity[q] + cL;
+          // const double lambda2 = explicit_velocity[q] + cL;
 
           const bool is_inflow  = (lambda1 < 0.0);
           const bool is_outflow = !is_inflow;
@@ -620,11 +629,6 @@ namespace dealii
                                                      quadrature_face);
     BloodFlowCopyData                   copy_data;
 
-    auto null_boundary = [](const auto        &cell,
-                            const unsigned int face_no,
-                            auto              &scratch,
-                            auto              &copy) {};
-
     MeshWorker::mesh_loop(dof_handler.begin_active(),
                           dof_handler.end(),
                           cell_worker,
@@ -635,8 +639,7 @@ namespace dealii
                             MeshWorker::assemble_boundary_faces |
                             MeshWorker::assemble_own_interior_faces_once,
                           boundary_worker,
-                          face_worker
-                          );
+                          face_worker);
   }
 
   template <int dim, int spacedim>
@@ -646,7 +649,7 @@ namespace dealii
     if (use_direct_solver)
       {
         SparseDirectUMFPACK system_matrix_inverse;
-        system_matrix_inverse.initialize(system_matrix);
+        system_matrix_inverse.initialize(system_matrix_time);
         system_matrix_inverse.vmult(solution, right_hand_side);
       }
     else
@@ -655,8 +658,11 @@ namespace dealii
         SolverGMRES<Vector<double>> solver(solver_control);
         PreconditionSSOR<>          preconditioner;
         const double                omega = 1.4;
-        preconditioner.initialize(system_matrix, omega);
-        solver.solve(system_matrix, solution, right_hand_side, preconditioner);
+        preconditioner.initialize(system_matrix_time, omega);
+        solver.solve(system_matrix_time,
+                     solution,
+                     right_hand_side,
+                     preconditioner);
         std::cout << "  Solver converged in " << solver_control.last_step()
                   << " iterations." << std::endl;
       }
@@ -740,10 +746,9 @@ namespace dealii
 
     Vector<float> difference_per_cell(triangulation.n_active_cells());
 
-    // Create exact solution at current time
-    ExactSolutionBloodFlow<spacedim> exact_solution;
+    // // Create exact solution at current time
+    // ExactSolutionBloodFlow<spacedim> exact_solution;
     exact_solution.set_time(time);
-
     // Area L2 error
     VectorTools::integrate_difference(dof_handler,
                                       solution,
@@ -871,19 +876,18 @@ namespace dealii
 
         setup_system();
 
-        ExactSolutionBloodFlow<spacedim> exact_solution;
-        exact_solution.set_time(0.0);
-
         // Project initial conditions
         AffineConstraints<double> constraints;
         constraints.close();
         VectorTools::project(dof_handler,
                              constraints,
                              QGauss<dim>(fe_degree + 1),
-                             exact_solution,
+                             initial_condition,
                              solution);
 
         solution_old = solution;
+
+        output_results(0);
 
         // Run time stepping to final_time
         time = 0.0;
@@ -913,8 +917,10 @@ namespace dealii
                 // Assemble using current Picard guess
                 assemble_system(); // uses solution as U_explicit
 
-                // Build time-step system: (M/dt + A) u = M/dt u^n + RHS
+                // Build time-step system: (M/dt + A(u^(n+1,m))) u^(n+1,m+1) =
+                // M/dt u^n + RHS
                 system_matrix_time.copy_from(mass_matrix);
+
                 system_matrix_time *= (1.0 / time_step);
                 system_matrix_time.add(1.0, system_matrix);
 

@@ -4,6 +4,7 @@
 #include <deal.II/base/function.h>
 #include <deal.II/base/function_parser.h>
 #include <deal.II/base/parameter_acceptor.h>
+#include <deal.II/base/parsed_function.h>
 #include <deal.II/base/quadrature_lib.h>
 #include <deal.II/base/timer.h>
 
@@ -128,7 +129,7 @@ namespace dealii
   //   return implicit_area * explicit_velocity * b_vec;
   // }
 
- 
+
 
   // /**
   //  * Compute physical flux for momentum equation: F_U = (0.5 * U^2)
@@ -163,115 +164,116 @@ namespace dealii
   /**
    * Exact solution class for manufactured solution
    */
-  template <int spacedim>
-  class ExactSolutionBloodFlow : public Function<spacedim>
-  {
-  private:
-    // Parameters for manufactured solution
-    double r0, a0, L, T0, atilde, qtilde;
+  // template <int spacedim>
+  // class ExactSolutionBloodFlow : public Function<spacedim>
+  // {
+  // private:
+  //   // Parameters for manufactured solution
+  //   double r0, a0, L, T0, atilde, qtilde;
 
-  public:
-    ExactSolutionBloodFlow()
-      : Function<spacedim>(2) // 2 components: area and velocity
-      , r0(BloodFlowParameters::DEFAULT_R0)
-      , a0(numbers::PI * r0 * r0)
-      , L(BloodFlowParameters::DEFAULT_L)
-      , T0(BloodFlowParameters::DEFAULT_T0)
-      , atilde(0.1 * a0)
-      , qtilde(0.0)
-    {}
+  // public:
+  //   ExactSolutionBloodFlow()
+  //     : Function<spacedim>(2) // 2 components: area and velocity
+  //     , r0(BloodFlowParameters::DEFAULT_R0)
+  //     , a0(numbers::PI * r0 * r0)
+  //     , L(BloodFlowParameters::DEFAULT_L)
+  //     , T0(BloodFlowParameters::DEFAULT_T0)
+  //     , atilde(0.1 * a0)
+  //     , qtilde(0.0)
+  //   {}
 
-    virtual double
-    value(const Point<spacedim> &p, const unsigned int component) const override
-    {
-      const double x = p[0];
-      const double t = this->get_time();
+  //   virtual double
+  //   value(const Point<spacedim> &p, const unsigned int component) const
+  //   override
+  //   {
+  //     const double x = p[0];
+  //     const double t = this->get_time();
 
-      if (component == 0) // area A
-        return a0 + atilde * std::sin(2.0 * numbers::PI * x / L) *
-                      std::cos(2.0 * numbers::PI * t / T0);
-      else // velocity U
-        return qtilde - (atilde * L / T0) *
-                          std::cos(2.0 * numbers::PI * x / L) *
-                          std::sin(2.0 * numbers::PI * t / T0);
-    }
+  //     if (component == 0) // area A
+  //       return a0 + atilde * std::sin(2.0 * numbers::PI * x / L) *
+  //                     std::cos(2.0 * numbers::PI * t / T0);
+  //     else // velocity U
+  //       return qtilde - (atilde * L / T0) *
+  //                         std::cos(2.0 * numbers::PI * x / L) *
+  //                         std::sin(2.0 * numbers::PI * t / T0);
+  //   }
 
-    virtual void
-    vector_value(const Point<spacedim> &p,
-                 Vector<double>        &values) const override
-    {
-      Assert(values.size() == 2, ExcDimensionMismatch(values.size(), 2));
-      values[0] = value(p, 0);
-      values[1] = value(p, 1);
-    }
+  //   virtual void
+  //   vector_value(const Point<spacedim> &p,
+  //                Vector<double>        &values) const override
+  //   {
+  //     Assert(values.size() == 2, ExcDimensionMismatch(values.size(), 2));
+  //     values[0] = value(p, 0);
+  //     values[1] = value(p, 1);
+  //   }
 
-    virtual Tensor<1, spacedim>
-    gradient(const Point<spacedim> &p,
-             const unsigned int     component) const override
-    {
-      const double x = p[0];
-      const double t = this->get_time();
+  //   virtual Tensor<1, spacedim>
+  //   gradient(const Point<spacedim> &p,
+  //            const unsigned int     component) const override
+  //   {
+  //     const double x = p[0];
+  //     const double t = this->get_time();
 
-      Tensor<1, spacedim> grad;
+  //     Tensor<1, spacedim> grad;
 
-      if (component == 0) // area A gradient
-        {
-          grad[0] = atilde * (2.0 * numbers::PI / L) *
-                    std::cos(2.0 * numbers::PI * x / L) *
-                    std::cos(2.0 * numbers::PI * t / T0);
-        }
-      else if (component == 1) // velocity U gradient
-        {
-          grad[0] = (atilde * L / T0) * (2.0 * numbers::PI / L) *
-                    std::sin(2.0 * numbers::PI * x / L) *
-                    std::sin(2.0 * numbers::PI * t / T0);
-        }
+  //     if (component == 0) // area A gradient
+  //       {
+  //         grad[0] = atilde * (2.0 * numbers::PI / L) *
+  //                   std::cos(2.0 * numbers::PI * x / L) *
+  //                   std::cos(2.0 * numbers::PI * t / T0);
+  //       }
+  //     else if (component == 1) // velocity U gradient
+  //       {
+  //         grad[0] = (atilde * L / T0) * (2.0 * numbers::PI / L) *
+  //                   std::sin(2.0 * numbers::PI * x / L) *
+  //                   std::sin(2.0 * numbers::PI * t / T0);
+  //       }
 
-      return grad;
-    }
+  //     return grad;
+  //   }
 
-    virtual void
-    vector_gradient(const Point<spacedim>            &p,
-                    std::vector<Tensor<1, spacedim>> &gradients) const override
-    {
-      Assert(gradients.size() == 2, ExcDimensionMismatch(gradients.size(), 2));
-      gradients[0] = gradient(p, 0);
-      gradients[1] = gradient(p, 1);
-    }
+  //   virtual void
+  //   vector_gradient(const Point<spacedim>            &p,
+  //                   std::vector<Tensor<1, spacedim>> &gradients) const
+  //                   override
+  //   {
+  //     Assert(gradients.size() == 2, ExcDimensionMismatch(gradients.size(),
+  //     2)); gradients[0] = gradient(p, 0); gradients[1] = gradient(p, 1);
+  //   }
 
-    virtual void
-    vector_value_list(const std::vector<Point<spacedim>> &points,
-                      std::vector<Vector<double>> &value_list) const override
-    {
-      const unsigned int n = points.size();
-      Assert(value_list.size() == n,
-             ExcDimensionMismatch(value_list.size(), n));
-      for (unsigned int i = 0; i < n; ++i)
-        vector_value(points[i], value_list[i]);
-    }
+  //   virtual void
+  //   vector_value_list(const std::vector<Point<spacedim>> &points,
+  //                     std::vector<Vector<double>> &value_list) const override
+  //   {
+  //     const unsigned int n = points.size();
+  //     Assert(value_list.size() == n,
+  //            ExcDimensionMismatch(value_list.size(), n));
+  //     for (unsigned int i = 0; i < n; ++i)
+  //       vector_value(points[i], value_list[i]);
+  //   }
 
-    // Getters for parameters
-    double
-    get_reference_area() const
-    {
-      return a0;
-    }
-    double
-    get_amplitude() const
-    {
-      return atilde;
-    }
-    double
-    get_length() const
-    {
-      return L;
-    }
-    double
-    get_period() const
-    {
-      return T0;
-    }
-  };
+  //   // Getters for parameters
+  //   double
+  //   get_reference_area() const
+  //   {
+  //     return a0;
+  //   }
+  //   double
+  //   get_amplitude() const
+  //   {
+  //     return atilde;
+  //   }
+  //   double
+  //   get_length() const
+  //   {
+  //     return L;
+  //   }
+  //   double
+  //   get_period() const
+  //   {
+  //     return T0;
+  //   }
+  // };
 
   //====================================================================
   // RIGHT-HAND SIDE FUNCTIONS (MANUFACTURED SOLUTION)
@@ -280,106 +282,108 @@ namespace dealii
   /**
    * RHS A-forcing term f_a(x,t) for manufactured solution
    */
-  template <int spacedim>
-  class RHS_A_BloodFlow : public Function<spacedim>
-  {
-  private:
-    double r0, a0, L, T0, atilde, qtilde;
+  // template <int spacedim>
+  // class RHS_A_BloodFlow : public Function<spacedim>
+  // {
+  // private:
+  //   double r0, a0, L, T0, atilde, qtilde;
 
-  public:
-    RHS_A_BloodFlow()
-      : Function<spacedim>(1)
-      , r0(BloodFlowParameters::DEFAULT_R0)
-      , a0(numbers::PI * r0 * r0)
-      , L(BloodFlowParameters::DEFAULT_L)
-      , T0(BloodFlowParameters::DEFAULT_T0)
-      , atilde(0.1 * a0)
-      , qtilde(0.0)
-    {}
+  // public:
+  //   RHS_A_BloodFlow()
+  //     : Function<spacedim>(1)
+  //     , r0(BloodFlowParameters::DEFAULT_R0)
+  //     , a0(numbers::PI * r0 * r0)
+  //     , L(BloodFlowParameters::DEFAULT_L)
+  //     , T0(BloodFlowParameters::DEFAULT_T0)
+  //     , atilde(0.1 * a0)
+  //     , qtilde(0.0)
+  //   {}
 
-    virtual double
-    value(const Point<spacedim> &p,
-          const unsigned int /*component*/ = 0) const override
-    {
-      const double x = p[0];
-      const double t = this->get_time();
+  //   virtual double
+  //   value(const Point<spacedim> &p,
+  //         const unsigned int /*component*/ = 0) const override
+  //   {
+  //     const double x = p[0];
+  //     const double t = this->get_time();
 
-      // Forcing term from manufactured solution
-      return std::sin(2.0 * numbers::PI * x / L) *
-               std::sin(2.0 * numbers::PI * t / T0) *
-               (-2.0 * numbers::PI / T0 * atilde +
-                (a0 + atilde * std::sin(2.0 * numbers::PI * x / L) *
-                        std::cos(2.0 * numbers::PI * t / T0)) *
-                  2.0 * numbers::PI / T0 * atilde) +
-             atilde * std::cos(2.0 * numbers::PI * x / L) *
-               std::cos(2.0 * numbers::PI * t / T0) * (2.0 * numbers::PI / L) *
-               (qtilde - (atilde * L / T0) *
-                           std::cos(2.0 * numbers::PI * x / L) *
-                           std::sin(2.0 * numbers::PI * t / T0));
-    }
-  };
+  //     // Forcing term from manufactured solution
+  //     return std::sin(2.0 * numbers::PI * x / L) *
+  //              std::sin(2.0 * numbers::PI * t / T0) *
+  //              (-2.0 * numbers::PI / T0 * atilde +
+  //               (a0 + atilde * std::sin(2.0 * numbers::PI * x / L) *
+  //                       std::cos(2.0 * numbers::PI * t / T0)) *
+  //                 2.0 * numbers::PI / T0 * atilde) +
+  //            atilde * std::cos(2.0 * numbers::PI * x / L) *
+  //              std::cos(2.0 * numbers::PI * t / T0) * (2.0 * numbers::PI / L)
+  //              * (qtilde - (atilde * L / T0) *
+  //                          std::cos(2.0 * numbers::PI * x / L) *
+  //                          std::sin(2.0 * numbers::PI * t / T0));
+  //   }
+  // };
 
-  /**
-   * RHS U-forcing term f_u(x,t) for manufactured solution
-   */
-  template <int spacedim>
-  class RHS_U_BloodFlow : public Function<spacedim>
-  {
-  private:
-    double r0, a0, L, T0, atilde, rho, elastic_modulus, viscosity_c, m;
+  // /**
+  //  * RHS U-forcing term f_u(x,t) for manufactured solution
+  //  */
+  // template <int spacedim>
+  // class RHS_U_BloodFlow : public Function<spacedim>
+  // {
+  // private:
+  //   double r0, a0, L, T0, atilde, rho, elastic_modulus, viscosity_c, m;
 
-  public:
-    RHS_U_BloodFlow()
-      : Function<spacedim>(1)
-      , r0(BloodFlowParameters::DEFAULT_R0)
-      , a0(numbers::PI * r0 * r0)
-      , L(BloodFlowParameters::DEFAULT_L)
-      , T0(BloodFlowParameters::DEFAULT_T0)
-      , atilde(0.1 * a0)
-      , rho(BloodFlowParameters::DEFAULT_RHO)
-      , elastic_modulus(BloodFlowParameters::DEFAULT_ELASTIC_MODULUS)
-      , viscosity_c(BloodFlowParameters::DEFAULT_VISCOSITY_C)
-      , m(BloodFlowParameters::TUBE_LAW_EXPONENT)
-    {}
+  // public:
+  //   RHS_U_BloodFlow()
+  //     : Function<spacedim>(1)
+  //     , r0(BloodFlowParameters::DEFAULT_R0)
+  //     , a0(numbers::PI * r0 * r0)
+  //     , L(BloodFlowParameters::DEFAULT_L)
+  //     , T0(BloodFlowParameters::DEFAULT_T0)
+  //     , atilde(0.1 * a0)
+  //     , rho(BloodFlowParameters::DEFAULT_RHO)
+  //     , elastic_modulus(BloodFlowParameters::DEFAULT_ELASTIC_MODULUS)
+  //     , viscosity_c(BloodFlowParameters::DEFAULT_VISCOSITY_C)
+  //     , m(BloodFlowParameters::TUBE_LAW_EXPONENT)
+  //   {}
 
-    virtual double
-    value(const Point<spacedim> &p,
-          const unsigned int /*component*/ = 0) const override
-    {
-      const double x = p[0];
-      const double t = this->get_time();
-      const double A = a0 + atilde * std::sin(2.0 * numbers::PI * x / L) *
-                              std::cos(2.0 * numbers::PI * t / T0);
+  //   virtual double
+  //   value(const Point<spacedim> &p,
+  //         const unsigned int /*component*/ = 0) const override
+  //   {
+  //     const double x = p[0];
+  //     const double t = this->get_time();
+  //     const double A = a0 + atilde * std::sin(2.0 * numbers::PI * x / L) *
+  //                             std::cos(2.0 * numbers::PI * t / T0);
 
-      return std::cos(2.0 * numbers::PI * x / L) *
-               std::cos(2.0 * numbers::PI * t / T0) *
-               (-L * L / (T0 * T0) + elastic_modulus / (rho * std::pow(a0, m)) *
-                                       std::pow(A, m - 1)) +
-             (atilde - (atilde * L / T0) * std::cos(2.0 * numbers::PI * x / L) *
-                         std::sin(2.0 * numbers::PI * t / T0)) *
-               ((2.0 * numbers::PI / T0) * atilde *
-                  std::sin(2.0 * numbers::PI * x / L) *
-                  std::sin(2.0 * numbers::PI * t / T0) +
-                viscosity_c);
-    }
+  //     return std::cos(2.0 * numbers::PI * x / L) *
+  //              std::cos(2.0 * numbers::PI * t / T0) *
+  //              (-L * L / (T0 * T0) + elastic_modulus / (rho * std::pow(a0,
+  //              m)) *
+  //                                      std::pow(A, m - 1)) +
+  //            (atilde - (atilde * L / T0) * std::cos(2.0 * numbers::PI * x /
+  //            L) *
+  //                        std::sin(2.0 * numbers::PI * t / T0)) *
+  //              ((2.0 * numbers::PI / T0) * atilde *
+  //                 std::sin(2.0 * numbers::PI * x / L) *
+  //                 std::sin(2.0 * numbers::PI * t / T0) +
+  //               viscosity_c);
+  //   }
 
-    // Setters for runtime parameter updates
-    void
-    set_rho(double new_rho)
-    {
-      rho = new_rho;
-    }
-    void
-    set_elastic_modulus(double new_E)
-    {
-      elastic_modulus = new_E;
-    }
-    void
-    set_viscosity_c(double new_c)
-    {
-      viscosity_c = new_c;
-    }
-  };
+  //   // Setters for runtime parameter updates
+  //   void
+  //   set_rho(double new_rho)
+  //   {
+  //     rho = new_rho;
+  //   }
+  //   void
+  //   set_elastic_modulus(double new_E)
+  //   {
+  //     elastic_modulus = new_E;
+  //   }
+  //   void
+  //   set_viscosity_c(double new_c)
+  //   {
+  //     viscosity_c = new_c;
+  //   }
+  // };
 
   //====================================================================
   // SCRATCH AND COPY DATA STRUCTURES
@@ -478,7 +482,7 @@ namespace dealii
     void
     run_convergence_study();
 
-    private:
+  private:
     // --------------------------------------------------
     // ===  Geometry and Flux helper functions  ===
     // --------------------------------------------------
@@ -488,7 +492,8 @@ namespace dealii
      */
     Tensor<1, spacedim>
     compute_directional_vector(
-      const typename DoFHandler<dim, spacedim>::active_cell_iterator &cell) const
+      const typename DoFHandler<dim, spacedim>::active_cell_iterator &cell)
+      const
     {
       return (cell->vertex(1) - cell->vertex(0)) /
              cell->vertex(1).distance(cell->vertex(0));
@@ -536,9 +541,6 @@ namespace dealii
     }
 
 
-    // Exact solution typedef for easy access
-    using ExactSolution = ExactSolutionBloodFlow<spacedim>;
-
     //   private:
     // Mesh and finite elements
     Triangulation<dim, spacedim>                  triangulation;
@@ -569,7 +571,7 @@ namespace dealii
     double       final_time      = 1.0;
     double       time            = 0.0;
     unsigned int n_time_steps    = 0;
-    double omega                 = 1;
+    double       omega           = 1;
     double       rho             = BloodFlowParameters::DEFAULT_RHO;
     double       viscosity_c     = BloodFlowParameters::DEFAULT_VISCOSITY_C;
     double       reference_area  = BloodFlowParameters::DEFAULT_REFERENCE_AREA;
@@ -588,14 +590,12 @@ namespace dealii
     std::string initial_U_expression   = "0.0";
     std::string pressure_bc_expression = "0.0";
 
-    // Function parsers
-    FunctionParser<spacedim> initial_A;
-    FunctionParser<spacedim> initial_U;
-    FunctionParser<spacedim> pressure_bc;
+    // // Function parsers
+    // FunctionParser<spacedim> initial_A;
+    // FunctionParser<spacedim> initial_U;
+    // FunctionParser<spacedim> pressure_bc;
 
     // RHS functions
-    std::unique_ptr<RHS_A_BloodFlow<spacedim>> rhs_A_function;
-    std::unique_ptr<RHS_U_BloodFlow<spacedim>> rhs_U_function;
 
     // Allow access to private members for any function whose name contains
     // "test"
@@ -607,6 +607,12 @@ namespace dealii
     // contains test
     friend auto
     test(...) -> void;
+
+
+    ParameterAcceptorProxy<Functions::ParsedFunction<spacedim>>
+      initial_condition;
+    ParameterAcceptorProxy<Functions::ParsedFunction<spacedim>> rhs_function;
+    ParameterAcceptorProxy<Functions::ParsedFunction<spacedim>> exact_solution;
   };
 
 } // namespace dealii
