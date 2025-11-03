@@ -274,11 +274,11 @@ namespace dealii
 
               // 2)(pressure term with explicit pressure)
               //  1/rho(-P(explicit_A)+ explicit_A*dpdA)*(b·∇φ_U)
-              // copy_data.cell_rhs(i) -=
-              //   (1.0 / rho) *
-              //   (explicit_pressure - explicit_area[point] * dpdA) *
-              //   (b_vec * fe_v[velocity_extractor].gradient(i, point)) *
-              //   JxW[point];
+              copy_data.cell_rhs(i) -=
+                (1.0 / rho) *
+                (explicit_pressure - explicit_area[point] * dpdA) *
+                (b_vec * fe_v[velocity_extractor].gradient(i, point)) *
+                JxW[point];
 
               // RHS: source terms
               copy_data.cell_rhs(i) +=
