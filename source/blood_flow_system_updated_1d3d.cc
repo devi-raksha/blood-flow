@@ -46,9 +46,6 @@ namespace dealii
     add_parameter("Reference pressure", reference_pressure);
     add_parameter("Theta (penalty parameter)", theta);
     add_parameter("Eta (stability parameter)", eta);
-    add_parameter("Initial condition A expression", initial_A_expression);
-    add_parameter("Initial condition U expression", initial_U_expression);
-    add_parameter("Pressure boundary expression", pressure_bc_expression);
     add_parameter("Omega (relaxation parameter)", omega);
     add_parameter("Picard iterations", max_picard_iterations);
 
@@ -277,11 +274,11 @@ namespace dealii
 
               // 2)(pressure term with explicit pressure)
               //  1/rho(-P(explicit_A)+ explicit_A*dpdA)*(b·∇φ_U)
-              copy_data.cell_rhs(i) -=
-                (1.0 / rho) *
-                (explicit_pressure - explicit_area[point] * dpdA) *
-                (b_vec * fe_v[velocity_extractor].gradient(i, point)) *
-                JxW[point];
+              // copy_data.cell_rhs(i) -=
+              //   (1.0 / rho) *
+              //   (explicit_pressure - explicit_area[point] * dpdA) *
+              //   (b_vec * fe_v[velocity_extractor].gradient(i, point)) *
+              //   JxW[point];
 
               // RHS: source terms
               copy_data.cell_rhs(i) +=

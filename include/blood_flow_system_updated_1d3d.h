@@ -584,12 +584,6 @@ namespace dealii
     unsigned int max_picard_iterations = 10;
     double       picard_tolerance      = 1e-8;
 
-    // Function expressions for initial and boundary conditions
-    std::string initial_A_expression =
-      "3.141592653589793e-4 + 3.141592653589793e-5 * sin(2*3.141592653589793*x)";
-    std::string initial_U_expression   = "0.0";
-    std::string pressure_bc_expression = "0.0";
-
     // // Function parsers
     // FunctionParser<spacedim> initial_A;
     // FunctionParser<spacedim> initial_U;
