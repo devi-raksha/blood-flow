@@ -1,0 +1,311 @@
+\documentclass[11pt]{article}
+\usepackage{amsmath,amssymb,amsthm,mathtools}
+\usepackage[a4paper,margin=1in]{geometry}
+\usepackage{bm}
+\usepackage{xcolor}
+\usepackage{hyperref}
+\newtheorem{theorem}{Theorem}
+\newtheorem{remark}[theorem]{Remark}
+\title{DG formulation and Newton linearization
+for a 1D embedded Blood Flow system with Lax--Friedrichs flux}
+\author{}
+\date{}
+
+\newcommand{\R}{\mathbb{R}}
+\newcommand{\avg}[1]{\left\{\!\!\left\{#1\right\}\!\!\right\}}
+\newcommand{\jump}[1]{\left[\!\left[#1\right]\!\right]}
+\newcommand{\dt}{\Delta t}
+\newcommand{\Vh}{V_h}
+\newcommand{\Th}{\mathcal{T}_h}
+\newcommand{\Fh}{\mathcal{F}_h}
+\newcommand{\Kh}{K}
+\newcommand{\norm}[1]{\left\lVert #1\right\rVert}
+
+\begin{document}
+\maketitle
+
+
+\section{Model problem and geometry}
+
+We consider the one-dimensional blood flow equations embedded along a
+centerline $\Gamma\subset\R^{\text{spacedim}}$, parameterized by a unit tangent
+vector $\bm b(\bm x)$:
+\begin{align}
+  \partial_t A + \bm b\!\cdot\!\nabla (A U) &= 0,
+  && \text{(Area equation)}, \label{eq:area-eq}\\[2mm]
+  \partial_t U + \bm b\!\cdot\!\nabla\!\left(\frac{U^2}{2}\right)
+  + \frac{1}{\rho}\bm b\!\cdot\!\nabla P(A)
+  + c\,U &= 0,
+  && \text{(Momentum equation).} \label{eq:momentum-eq}
+\end{align}
+Here $A$ and $U$ denote the cross-sectional area and mean velocity,
+respectively.
+The direction vector of each 1D element is
+\[
+  \bm b = \frac{\bm x_1 - \bm x_0}{\lVert \bm x_1 - \bm x_0\rVert},
+  \qquad
+  \beta = \bm b\!\cdot\!\bm n
+\]
+is its projection on the outward normal $\bm n$.
+The pressure $P(A)$ is governed by a constitutive \emph{tube law},
+for example
+\[
+  P(A) = P_0 + E\!\left[\!\left(\frac{A}{A_0}\right)^m - 1\!\right],
+  \qquad
+  \frac{dP}{dA} = E\,m\,\frac{A^{m-1}}{A_0^m},
+\]
+and the wave speed is
+\[
+  c = \sqrt{\frac{A}{\rho}\frac{dP}{dA}}.
+\]
+
+The compact vector form of the system is
+\begin{equation}
+  \partial_t \mathbf{W} + \bm b\!\cdot\!\nabla \mathbf{F}(\mathbf{W})
+  = S(\mathbf{W}),
+  \qquad
+  \mathbf{W} =
+  \begin{pmatrix} A \\[1mm] U \end{pmatrix},
+  \quad
+  S(\mathbf{W}) =
+  \begin{pmatrix} 0 \\[1mm] -cU \end{pmatrix},
+  \label{eq:model-vector}
+\end{equation}
+with the physical flux
+\[
+  \mathbf{F}(\mathbf{W}) =
+  \begin{pmatrix}
+    A U \\[2mm]
+    \dfrac{U^2}{2} + \dfrac{1}{\rho} P(A)
+  \end{pmatrix}.
+\]
+
+
+\section{Discontinuous Galerkin weak formulation}
+
+
+Let $\Th$ denote a partition of $\Gamma$ into 1D elements $K$, and for
+polynomial degree $k\ge0$ define the discontinuous finite element space
+\[
+  \Vh = \{v\in L^2(\Gamma): v|_K \in \mathbb P_k(K),\ \forall K\in\Th\}.
+\]
+For an interior face $F\in\Fh^\circ$ with unit normal $\bm n$,
+the jump and average operators are
+\[
+  \jump{v}=v^- - v^+,
+  \qquad
+  \avg{v}=\tfrac12(v^-+v^+),
+\]
+and on boundary faces $F\subset\partial\Gamma$ we set
+$\avg{v}=v$ and $\jump{v}=v$.
+
+We seek $(A_h,U_h)\in\Vh\times\Vh$ such that for all test functions
+$(\phi_A,\phi_U)\in\Vh\times\Vh$ and each element $K\in\Th$,
+\begin{align}
+\int_K \frac{A_h^{n+1}-A_h^n}{\dt}\phi_A
+- \int_K (A_h^{n+1}U_h^{n+1})\,\bm b\!\cdot\!\nabla\phi_A
++ \int_{\partial K}\!\!\widehat{(A U)}^{\text{LF}}\phi_A^-\,d\ell
+&= 0, \label{eq:dg-weak-A}\\[2mm]
+\int_K \frac{U_h^{n+1}-U_h^n}{\dt}\phi_U
+- \int_K
+  \!\left(\frac{(U_h^{n+1})^2}{2}
+          + \frac{1}{\rho}P(A_h^{n+1})\right)
+    \bm b\!\cdot\!\nabla\phi_U
++ \int_{\partial K}\!\!\widehat{\!\left(
+    \frac{U^2}{2} + \frac{1}{\rho}P(A)
+  \right)\!}^{\text{LF}}\phi_U^-\,d\ell
+&= -\int_K c\,U_h^{n+1}\phi_U .
+\label{eq:dg-weak-U}
+\end{align}
+The numerical fluxes $\widehat{\mathbf{F}}^{\text{LF}}$ are the
+Lax--Friedrichs fluxes defined by
+\[
+  \widehat{\mathbf{F}}^{\text{LF}}(W^-,W^+)\!\cdot\!\bm n
+  = \tfrac12\beta\!\left[\mathbf{F}(W^-)+\mathbf{F}(W^+)\right]
+  - \tfrac{\alpha}{2}(W^+ - W^-),
+  \qquad
+  \alpha = \max(|U|\pm c),
+\]
+applied componentwise to the area and momentum equations.
+
+
+\section{Newton iteration in time}
+
+At each time step $t_{n+1}$, we must solve the nonlinear DG system
+\eqref{eq:dg-weak-A}--\eqref{eq:dg-weak-U}.
+Using the backward Euler discretization, the discrete residual is defined as
+\[
+  \mathcal{R}^{n+1}(\mathbf{W}_h^{n+1})
+  :=
+  \frac{\mathbf{W}_h^{n+1} - \mathbf{W}_h^n}{\dt}
+  + \bm b\!\cdot\!\nabla\mathbf{F}(\mathbf{W}_h^{n+1})
+  - S(\mathbf{W}_h^{n+1}),
+\]
+and we seek $\mathbf{W}_h^{n+1}$ such that
+$\mathcal{R}^{n+1}(\mathbf{W}_h^{n+1}) = 0$ in the weak DG sense.
+
+\subsection*{Linearization by Newton’s method}
+
+Let $\mathbf{W}_h^{n+1,(k)}$ denote the current Newton iterate at time level $t_{n+1}$,
+and define the Newton correction
+\[
+  \delta\mathbf{W}_h^{n+1,(k)} :=
+  \mathbf{W}_h^{n+1,(k+1)} - \mathbf{W}_h^{n+1,(k)}.
+\]
+Then the first-order Taylor expansion of the residual at $t_{n+1}$ gives
+\[
+  \boxed{
+  \mathcal{R}^{n+1}\!\left(\mathbf{W}_h^{n+1,(k)} + \delta\mathbf{W}_h^{n+1,(k)}\right)
+  \approx
+  \mathcal{R}^{n+1}\!\left(\mathbf{W}_h^{n+1,(k)}\right)
+  + \mathcal{J}^{(k)}\,\delta\mathbf{W}_h^{n+1,(k)}.}
+\]
+The corresponding Newton correction equation reads
+\[
+  \mathcal{J}^{(k)}\,\delta\mathbf{W}_h^{n+1,(k)}
+  = -\mathcal{R}^{n+1}\!\left(\mathbf{W}_h^{n+1,(k)}\right),
+\]
+followed by the update
+\[
+  \boxed{
+  \mathbf{W}_h^{n+1,(k+1)}
+  = \mathbf{W}_h^{n+1,(k)} + \omega\,\delta\mathbf{W}_h^{n+1,(k)},
+  \qquad 0 < \omega \le 1.}
+\]
+
+The Jacobian operator is obtained by differentiating
+$\mathcal{R}^{n+1}(\mathbf{W})$ with respect to $\mathbf{W}$:
+\[
+  \mathcal{J}^{(k)}
+  = \frac{\partial\mathcal{R}^{n+1}}{\partial\mathbf{W}}(\mathbf{W}_h^{n+1,(k)})
+  = \frac{1}{\dt}\mathbf{I}
+    + \bm b\!\cdot\!\nabla
+      \!\left(\frac{\partial\mathbf{F}}{\partial\mathbf{W}}(\mathbf{W}_h^{n+1,(k)})\right)
+    - \frac{\partial S}{\partial\mathbf{W}}(\mathbf{W}_h^{n+1,(k)}).
+\]
+The flux Jacobian matrix evaluated at the current iterate is
+\[
+  \mathbf{H}^{(k)}
+  = \frac{\partial\mathbf{F}}{\partial\mathbf{W}}(\mathbf{W}_h^{n+1,(k)})
+  =
+  \begin{pmatrix}
+    U_h^{n+1,(k)} & A_h^{n+1,(k)} \\[1mm]
+    \dfrac{\big(c_h^{n+1,(k)}\big)^{2}}{A_h^{n+1,(k)}} & U_h^{n+1,(k)}
+  \end{pmatrix},
+  \qquad
+  c_h^{n+1,(k)}
+  = \sqrt{\frac{A_h^{n+1,(k)}}{\rho}\frac{dP}{dA}\!\big(A_h^{n+1,(k)}\big)}.
+\]
+
+\subsection*{Weak form of the Newton correction}
+
+Hence, at iteration $k$ and time level $t_{n+1}$, the linearized (Newton) problem reads:
+
+Find $\delta\mathbf{W}_h^{n+1,(k)}=(\delta A_h^{n+1,(k)},\delta U_h^{n+1,(k)})\in\Vh\times\Vh$
+such that for all test functions $(\phi_A,\phi_U)\in\Vh\times\Vh$,
+\begin{align}
+\int_K
+  \frac{1}{\dt}\,\delta\mathbf{W}_h^{n+1,(k)}\!\cdot\!\bm\phi
+  &+ \bm b\!\cdot\!\nabla\!\big(\mathbf{H}^{(k)}\delta\mathbf{W}_h^{n+1,(k)}\big)\!\cdot\!\bm\phi
+  \,dx  - \!\left(
+     \frac{\partial S}{\partial\mathbf{W}}(\mathbf{W}_h^{n+1,(k)})\,
+     \delta\mathbf{W}_h^{n+1,(k)}
+    \right)\!\cdot\!\bm\phi
+  \,dx
+= \nonumber \\
+&-\!\!\int_K
+  \left(
+    \frac{\mathbf{W}_h^{n+1,(k)} - \mathbf{W}_h^n}{\dt}
+    + \bm b\!\cdot\!\nabla\mathbf{F}(\mathbf{W}_h^{n+1,(k)})
+    - S(\mathbf{W}_h^{n+1,(k)})
+  \right)\!\cdot\!\bm\phi\,dx.
+\label{eq:newton-weak-nk}
+\end{align}
+
+Componentwise, since
+\[
+  \mathbf{H}^{(k)}\,\delta\mathbf{W}_h^{n+1,(k)}
+  =
+  \begin{pmatrix}
+    U_h^{n+1,(k)}\,\delta A_h^{n+1,(k)}
+    + A_h^{n+1,(k)}\,\delta U_h^{n+1,(k)} \\[2mm]
+    \dfrac{(c_h^{n+1,(k)})^{2}}{A_h^{n+1,(k)}}\,\delta A_h^{n+1,(k)}
+    + U_h^{n+1,(k)}\,\delta U_h^{n+1,(k)}
+  \end{pmatrix},
+\]
+the two scalar weak equations become:
+
+\paragraph{(i) Area equation:}
+\begin{align}
+\int_K
+  \frac{\delta A_h^{n+1,(k)}}{\dt}\phi_A
+  &+ \bm b\!\cdot\!\nabla
+    \big(
+      U_h^{n+1,(k)}\,\delta A_h^{n+1,(k)}
+      + A_h^{n+1,(k)}\,\delta U_h^{n+1,(k)}
+    \big)\phi_A\,dx
+= \nonumber \\
+&-\!\!\int_K
+  \left[
+    \frac{A_h^{n+1,(k)} - A_h^n}{\dt}
+    + \bm b\!\cdot\!\nabla
+      \big(A_h^{n+1,(k)}U_h^{n+1,(k)}\big)
+  \right]\phi_A\,dx.
+\label{eq:newton-A-nk}
+\end{align}
+
+\paragraph{(ii) Momentum equation:}
+\begin{align}
+\int_K
+  \frac{\delta U_h^{n+1,(k)}}{\dt}\phi_U
+  &+ \bm b\!\cdot\!\nabla
+    \!\left(
+      \frac{(c_h^{n+1,(k)})^2}{A_h^{n+1,(k)}}\,\delta A_h^{n+1,(k)}
+      + U_h^{n+1,(k)}\,\delta U_h^{n+1,(k)}
+    \right)\!\phi_U\,dx
+  \nonumber\\
+  &-\!\int_K
+     c\,\delta U_h^{n+1,(k)}\,\phi_U\,dx
+= \nonumber \\
+&-\!\!\int_K
+  \left[
+    \frac{U_h^{n+1,(k)} - U_h^n}{\dt}
+    + \bm b\!\cdot\!\nabla
+      \!\left(
+        \frac{(U_h^{n+1,(k)})^2}{2}
+        + \frac{1}{\rho}P(A_h^{n+1,(k)})
+      \right)
+    - c\,U_h^{n+1,(k)}
+  \right]\phi_U\,dx.
+\label{eq:newton-U-nk}
+\end{align}
+
+
+
+\begin{remark}
+\begin{itemize}
+    \item {Newton update.}
+Once the corrections $(\delta A_h^{n+1,(k)},\,\delta U_h^{n+1,(k)})$ are computed,
+the iterates are updated as
+\[
+  A_h^{n+1,(k+1)} = A_h^{n+1,(k)} + \delta A_h^{n+1,(k)}, 
+  \qquad
+  U_h^{n+1,(k+1)} = U_h^{n+1,(k)} + \delta U_h^{n+1,(k)}.
+\]
+The process is repeated until 
+$\|\delta\mathbf{W}_h^{n+1,(k)}\|$ falls below a prescribed tolerance.
+\item The increment $\delta\mathbf{W}_h^{n+1,(k)}$ represents the Newton correction at
+time level $t_{n+1}$ and iteration $k$, while the Jacobian
+$\mathcal{J}^{(k)}$ is obtained by differentiating the discrete residual
+$\mathcal{R}^{n+1}(\mathbf{W})$ with respect to $\mathbf{W}$.
+The term $\mathbf{H}^{(k)}\delta\mathbf{W}_h^{n+1,(k)}$ originates from the
+first-order Taylor expansion of the nonlinear flux
+$\mathbf{F}(\mathbf{W})$ about $\mathbf{W}_h^{n+1,(k)}$.
+\end{itemize}
+
+\end{remark}
+
+
+
+
+\end{document}
