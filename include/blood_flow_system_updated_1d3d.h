@@ -113,48 +113,38 @@ namespace dealii
     return elastic_modulus * m * std::pow(ratio, m - 1.0) / reference_area;
   }
 
-  //====================================================================
-  // FLUX COMPUTATION FUNCTIONS
-  //====================================================================
+  // -----------------------------------------------------------------------------
+  // Compute Lax–Friedrichs penalty parameter alpha
+  // alpha = max(|U_L \pm c_L|, |U_R \pm c_R|)
+  // -----------------------------------------------------------------------------
+  template <int dim, int spacedim>
+  inline double
+  compute_LF_penalty(const double area_L,
+                     const double area_R,
+                     const double U_L,
+                     const double U_R,
+                     const double reference_area,
+                     const double elastic_modulus,
+                     const double density)
+  {
+    // Compute left and right wave speeds
+    const double cL = compute_wave_speed<dim, spacedim>(area_L,
+                                                        reference_area,
+                                                        elastic_modulus,
+                                                        density);
+    const double cR = compute_wave_speed<dim, spacedim>(area_R,
+                                                        reference_area,
+                                                        elastic_modulus,
+                                                        density);
 
-  // /**
-  //  * Compute physical flux for area equation: F_A = A * U * (b · n)
-  //  */
-  // template <int dim, int spacedim>
-  // double
-  // compute_physical_area_flux(const double implicit_area,
-  //                            const double explicit_velocity,
-  //                            const auto b_vec)
-  // {
-  //   return implicit_area * explicit_velocity * b_vec;
-  // }
+    // Compute four characteristic speeds and return maximum magnitude
+    const double alpha = std::max({std::abs(U_L + cL),
+                                   std::abs(U_L - cL),
+                                   std::abs(U_R + cR),
+                                   std::abs(U_R - cR)});
 
-
-
-  // /**
-  //  * Compute physical flux for momentum equation: F_U = (0.5 * U^2)
-  //  */
-  // template <int dim, int spacedim>
-  // double
-  // compute_physical_momentum_flux(const double implicit_velocity,
-  //                                const double explicit_velocity,
-  //                               const double b_vec)
-  // {
-  //   return (0.5 * implicit_velocity * explicit_velocity) * b_vec;
-  // }
-
-  // /**
-  //  * Compute tangent-normal product b·n
-  //  */
-  // template <int dim, int spacedim, typename CellIterator>
-  // double
-  // compute_tangent_normal_product(const CellIterator        &cell,
-  //                                const Tensor<1, spacedim> &normal)
-  // {
-  //   const auto b_vec = (cell->vertex(1) - cell->vertex(0)) /
-  //                      cell->vertex(1).distance(cell->vertex(0));
-  //   return b_vec * normal;
-  // }
+    return alpha;
+  }
 
 
   //====================================================================
@@ -472,6 +462,10 @@ namespace dealii
     void
     assemble_system();
     void
+    assemble_jacobian();
+    void
+    compute_residual_vector();
+    void
     solve();
     void
     output_results(const unsigned int cycle) const;
@@ -514,6 +508,24 @@ namespace dealii
     }
 
     /**
+     * Compute the physical flux for the jacobian area equation:
+     *   F_A =  (current_velocity[point] * trial_A +
+                    current_area[point] * trial_U) * b;
+     */
+    Tensor<1, spacedim>
+    compute_physical_area_jacobian_flux(
+      const typename DoFHandler<dim, spacedim>::active_cell_iterator &cell,
+      const double current_area,
+      const double trial_velocity,
+      const double current_velocity,
+      const double trial_area) const
+    {
+      const Tensor<1, spacedim> b = compute_directional_vector(cell);
+      return (current_area * trial_velocity + current_velocity * trial_area) *
+             b;
+    }
+
+    /**
      * Compute the physical flux for the momentum equation:
      *   F_U = 0.5 * U⁻ * U⁺ * b
      * (extend later with +P(A)*b if needed)
@@ -526,6 +538,25 @@ namespace dealii
     {
       const Tensor<1, spacedim> b = compute_directional_vector(cell);
       return 0.5 * implicit_velocity * explicit_velocity * b;
+    }
+
+    /**
+     * Compute the physical flux for the jacobian area equation:
+     *   F_u =  ((c^2/A)*trial_A + U*trial_U)*b;
+     */
+    Tensor<1, spacedim>
+    compute_physical_momentum_jacobian_flux(
+      const typename DoFHandler<dim, spacedim>::active_cell_iterator &cell,
+      const double                                                    c_squared,
+      const double current_area,
+      const double trial_area,
+      const double current_velocity,
+      const double trial_velocity) const
+    {
+      const Tensor<1, spacedim> b = compute_directional_vector(cell);
+      return (c_squared / current_area * trial_area +
+              current_velocity * trial_velocity) *
+             b;
     }
 
     /**
@@ -552,12 +583,15 @@ namespace dealii
     SparseMatrix<double> system_matrix;
     SparseMatrix<double> mass_matrix;
     SparseMatrix<double> system_matrix_time;
+    SparseMatrix<double> jacobian_matrix;
     Vector<double>       solution;
     Vector<double>       solution_old;
     Vector<double>       right_hand_side;
     Vector<double>       pressure;
     Vector<double>       tmp_vector;
 
+    Vector<double> residual_vector;
+    Vector<double> newton_update;
     // Parameters
     unsigned int fe_degree            = 1;
     std::string  constants            = "1.0";
@@ -581,8 +615,8 @@ namespace dealii
     double eta                = BloodFlowParameters::DEFAULT_ETA;
 
     // Picard iteration parameters
-    unsigned int max_picard_iterations = 10;
-    double       picard_tolerance      = 1e-8;
+    unsigned int max_newton_iterations = 20;
+    double       newton_tolerance      = 1e-8;
 
     // // Function parsers
     // FunctionParser<spacedim> initial_A;

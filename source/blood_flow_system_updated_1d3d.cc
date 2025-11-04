@@ -14,6 +14,7 @@
 #include <deal.II/numerics/vector_tools.h>
 
 #include <algorithm>
+#include <cmath>
 #include <iomanip>
 
 namespace dealii
@@ -47,7 +48,9 @@ namespace dealii
     add_parameter("Theta (penalty parameter)", theta);
     add_parameter("Eta (stability parameter)", eta);
     add_parameter("Omega (relaxation parameter)", omega);
-    add_parameter("Picard iterations", max_picard_iterations);
+    // add_parameter("Picard iterations", max_picard_iterations);
+    add_parameter("Newton iterations", max_newton_iterations);
+    add_parameter("Newton tolerance", newton_tolerance);
 
     initial_condition.declare_parameters_call_back.connect(
       [&]() { this->prm.set("Function expression", "1e-4; 0.0"); });
@@ -57,6 +60,10 @@ namespace dealii
       [&]() { this->prm.set("Function expression", "1e-4; 0.0"); });
   }
 
+  // ========================================================================
+  // INITIALIZE PARAMETERS
+  // ========================================================================
+
   template <int dim, int spacedim>
   void
   BloodFlowSystem<dim, spacedim>::initialize_params(const std::string &filename)
@@ -65,6 +72,10 @@ namespace dealii
                                   "last_used_parameters.prm",
                                   ParameterHandler::Short);
   }
+
+  // ========================================================================
+  // SETUP SYSTEM
+  // ========================================================================
 
   template <int dim, int spacedim>
   void
@@ -102,12 +113,18 @@ namespace dealii
     sparsity_pattern.copy_from(dsp);
     system_matrix.reinit(sparsity_pattern);
     mass_matrix.reinit(sparsity_pattern);
+    jacobian_matrix.reinit(sparsity_pattern); // for Newton iteration
     solution.reinit(dof_handler.n_dofs());
     solution_old.reinit(dof_handler.n_dofs());
     right_hand_side.reinit(dof_handler.n_dofs());
+    residual_vector.reinit(dof_handler.n_dofs()); // for Newton residual
+    newton_update.reinit(dof_handler.n_dofs());   // for Newton update
     pressure.reinit(dof_handler.n_dofs());
   }
 
+  // ========================================================================
+  // ASSEMBLE MASS MATRIX
+  // ========================================================================
   template <int dim, int spacedim>
   void
   BloodFlowSystem<dim, spacedim>::assemble_mass_matrix()
@@ -172,6 +189,9 @@ namespace dealii
                           MeshWorker::assemble_own_cells);
   }
 
+  // ========================================================================
+  // ASSEMBLE SYSTEM with Newton Jacobian Linearization
+  // ========================================================================
   template <int dim, int spacedim>
   void
   BloodFlowSystem<dim, spacedim>::assemble_system()
@@ -197,14 +217,14 @@ namespace dealii
       const auto &JxW      = fe_v.get_JxW_values();
       const auto &q_points = fe_v.get_quadrature_points();
 
-      // Explicit values at t^n
-      std::vector<double> explicit_area(fe_v.n_quadrature_points);
-      std::vector<double> explicit_velocity(fe_v.n_quadrature_points);
+      // Current Newton Iteration Values
+      std::vector<double> current_area(fe_v.n_quadrature_points);
+      std::vector<double> current_velocity(fe_v.n_quadrature_points);
 
-      fe_v[area_extractor].get_function_values(solution, explicit_area);
-      fe_v[velocity_extractor].get_function_values(solution, explicit_velocity);
+      fe_v[area_extractor].get_function_values(solution, current_area);
+      fe_v[velocity_extractor].get_function_values(solution, current_velocity);
 
-      const auto b_vec = compute_directional_vector(cell);
+      // const auto b_vec = compute_directional_vector(cell);
 
       rhs_function.set_time(time);
 
@@ -213,72 +233,77 @@ namespace dealii
           const double rhs_A_value = rhs_function.value(q_points[point], 0);
           const double rhs_U_value = rhs_function.value(q_points[point], 1);
 
-          // Compute explicit pressure and derivative
-          const double explicit_pressure =
-            compute_pressure_value<dim, spacedim>(explicit_area[point],
-                                                  reference_area,
-                                                  elastic_modulus,
-                                                  reference_pressure);
+          // // Compute explicit pressure and derivative
+          // const double current_pressure =
+          //   compute_pressure_value<dim, spacedim>(current_area[point],
+          //                                         reference_area,
+          //                                         elastic_modulus,
+          //                                         reference_pressure);
           const double dpdA =
-            compute_pressure_derivative<dim, spacedim>(explicit_area[point],
+            compute_pressure_derivative<dim, spacedim>(current_area[point],
                                                        reference_area,
                                                        elastic_modulus);
+          const double c_squared = current_area[point] / rho * dpdA;
 
           for (unsigned int i = 0; i < n_dofs; ++i)
             {
               for (unsigned int j = 0; j < n_dofs; ++j)
                 {
-                  // ===== AREA EQUATION =====
-                  // -∫ F_A · ∇φ_A dx (semi-implicit: A implicit, U explicit)
-                  const auto implicit_area =
-                    fe_v[area_extractor].value(j, point);
-                  const auto flux_A =
-                    compute_physical_area_flux(cell,
-                                               implicit_area,
-                                               explicit_velocity[point]);
-
-                  copy_data.cell_matrix(i, j) -=
-                    flux_A * fe_v[area_extractor].gradient(i, point) *
-                    JxW[point];
-
-                  // ===== MOMENTUM EQUATION =====
-                  const auto implicit_velocity =
+                  // ===== AREA EQUATION Jacobian =====
+                  const auto trial_area = fe_v[area_extractor].value(j, point);
+                  const auto trial_velocity =
                     fe_v[velocity_extractor].value(j, point);
 
-                  // Convection: -∫ F_U · ∇φ_U dx
-                  const auto flux_U =
-                    compute_physical_momentum_flux(cell,
-                                                   implicit_velocity,
-                                                   explicit_velocity[point]);
+                  // Mass term: (1/dt) * trial_A *
+                  // fe_face[area_extractor].value(i, q)
+                  copy_data.cell_matrix(i, j) +=
+                    (1.0 / time_step) * trial_area *
+                    fe_v[area_extractor].value(i, point) * JxW[point];
+
+                  // Flux Jacobian: -b·∇(H_A * trial_W)
+                  // H_A = [U, A] so H_A·[trial_A, trial_U] = U*trial_A +
+                  // A*trial_U
+                  const auto flux_jacobian_A =
+                    compute_physical_area_jacobian_flux(cell,
+                                                        current_area[point],
+                                                        trial_velocity,
+                                                        current_velocity[point],
+                                                        trial_area);
+
                   copy_data.cell_matrix(i, j) -=
-                    flux_U * fe_v[velocity_extractor].gradient(i, point) *
+                    flux_jacobian_A *
+                     fe_v[area_extractor].gradient(i, point) *
                     JxW[point];
 
-                  // Reaction (viscosity): ∫ c U φ_U dx
+                  // ===== MOMENTUM EQUATION Jacobian=====
+                  // Mass term: (1/dt) * trial_U *
+                  // fe_face[velocity_extractor].value(i, q)
                   copy_data.cell_matrix(i, j) +=
+                    (1.0 / time_step) * trial_velocity *
+                    fe_v[velocity_extractor].value(i, point) * JxW[point];
+
+                  // Flux Jacobian: -b·∇(H_U * trial_W)
+                  // H_U = [c^2 /A, U] so H_U·[trial_A, trial_U] =
+                  // (c^2/A)*trial_A + U*trial_U
+                  const auto flux_jacobian_U =
+                    compute_physical_momentum_jacobian_flux(
+                      cell,
+                      c_squared,
+                      current_area[point],
+                      trial_area,
+                      current_velocity[point],
+                      trial_velocity);
+
+                  copy_data.cell_matrix(i, j) -=
+                    flux_jacobian_U *
+                    fe_v[velocity_extractor].gradient(i, point) *
+                    JxW[point];
+
+                  // Reaction (viscosity): ∫ c U phi_U dx
+                  copy_data.cell_matrix(i, j) -=
                     viscosity_c * fe_v[velocity_extractor].value(i, point) *
-                    implicit_velocity * JxW[point];
-
-                  // Pressure gradient coupling: -∫ (1/ρ) P(A) ·\nabla φ_U dx
-                  // -P(explicit_A)= -P(A^n)+(-A+A^n)*dP/dA
-                  // -P(implicit_A) ~ -P(explicit_A) + (implicit_A -
-                  // explicit_A)*dP/dA This term couples area gradient to
-                  // velocity 1) -1/rho*A*dpdA*(b·∇φ_U)
-
-                  const double pressure_term =
-                    (1.0 / rho) * dpdA * implicit_area *
-                    (b_vec * fe_v[velocity_extractor].gradient(i, point));
-
-                  copy_data.cell_matrix(i, j) -= pressure_term * JxW[point];
+                    trial_velocity * JxW[point];
                 }
-
-              // 2)(pressure term with explicit pressure)
-              //  1/rho(-P(explicit_A)+ explicit_A*dpdA)*(b·∇φ_U)
-              copy_data.cell_rhs(i) -=
-                (1.0 / rho) *
-                (explicit_pressure - explicit_area[point] * dpdA) *
-                (b_vec * fe_v[velocity_extractor].gradient(i, point)) *
-                JxW[point];
 
               // RHS: source terms
               copy_data.cell_rhs(i) +=
@@ -306,18 +331,18 @@ namespace dealii
       const auto &normals    = fe_iv.get_fe_face_values(0).get_normal_vectors();
       const unsigned int n_q = fe_iv.get_fe_face_values(0).n_quadrature_points;
 
-      // Explicit values
-      std::vector<double> explicit_area(n_q), explicit_velocity(n_q),
-        explicit_area_neighbor(n_q), explicit_velocity_neighbor(n_q);
+      // Current Newton iterate values on both sides
+      std::vector<double> current_area(n_q), current_velocity(n_q),
+        current_area_neighbor(n_q), current_velocity_neighbor(n_q);
 
       fe_iv.get_fe_face_values(0)[area_extractor].get_function_values(
-        solution, explicit_area);
+        solution, current_area);
       fe_iv.get_fe_face_values(0)[velocity_extractor].get_function_values(
-        solution, explicit_velocity);
+        solution, current_velocity);
       fe_iv.get_fe_face_values(1)[area_extractor].get_function_values(
-        solution, explicit_area_neighbor);
+        solution, current_area_neighbor);
       fe_iv.get_fe_face_values(1)[velocity_extractor].get_function_values(
-        solution, explicit_velocity_neighbor);
+        solution, current_velocity_neighbor);
 
       copy.face_data.emplace_back();
       auto              &face = copy.face_data.back();
@@ -327,141 +352,193 @@ namespace dealii
       face.cell_rhs.reinit(nd);
 
       const auto b_vec          = compute_directional_vector(cell);
-      const auto b_vec_neighbor = compute_directional_vector(ncell);
+      
 
       for (unsigned int q = 0; q < n_q; ++q)
         {
+          
           // Compute pressures
-          const double explicit_pressure =
-            compute_pressure_value<dim, spacedim>(explicit_area[q],
+          const double current_pressure =
+            compute_pressure_value<dim, spacedim>(current_area[q],
                                                   reference_area,
                                                   elastic_modulus,
                                                   reference_pressure);
 
-          const double explicit_pressure_neighbor =
-            compute_pressure_value<dim, spacedim>(explicit_area_neighbor[q],
+          const double current_pressure_neighbor =
+            compute_pressure_value<dim, spacedim>(current_area_neighbor[q],
                                                   reference_area,
                                                   elastic_modulus,
                                                   reference_pressure);
 
-          // Compute explicit pressure and derivative
-          const double dpdA_neighbor =
-            compute_pressure_derivative<dim, spacedim>(
-              explicit_area_neighbor[q], reference_area, elastic_modulus);
+          // // Compute explicit pressure and derivative
+          // const double dpdA_neighbor =
+          //   compute_pressure_derivative<dim, spacedim>(current_area_neighbor[q],
+          //                                              reference_area,
+          //                                              elastic_modulus);
 
-          const double dpdA =
-            compute_pressure_derivative<dim, spacedim>(explicit_area[q],
-                                                       reference_area,
-                                                       elastic_modulus);
+          // const double dpdA =
+          //   compute_pressure_derivative<dim, spacedim>(current_area[q],
+          //                                              reference_area,
+          //                                              elastic_modulus);
 
 
           // Wave speeds for Lax-Friedrichs penalty
-          const double cL = compute_wave_speed<dim, spacedim>(explicit_area[q],
+          const double cL = compute_wave_speed<dim, spacedim>(current_area[q],
                                                               reference_area,
                                                               elastic_modulus,
                                                               rho);
           const double cR = compute_wave_speed<dim, spacedim>(
-            explicit_area_neighbor[q], reference_area, elastic_modulus, rho);
-
-          // const double h = cell->diameter();
+            current_area_neighbor[q], reference_area, elastic_modulus, rho);
 
           const double alpha =
-            std::max({std::abs(explicit_velocity[q] + cL),
-                      std::abs(explicit_velocity[q] - cL),
-                      std::abs(explicit_velocity_neighbor[q] + cR),
-                      std::abs(explicit_velocity_neighbor[q] - cR)}); // +
-          //  theta * h / (2 * time_step);
+            compute_LF_penalty<dim, spacedim>(current_area[q],
+                                              current_area_neighbor[q],
+                                              current_velocity[q],
+                                              current_velocity_neighbor[q],
+                                              reference_area,
+                                              elastic_modulus,
+                                              rho);
+
 
           for (unsigned int i = 0; i < nd; ++i)
             {
               for (unsigned int j = 0; j < nd; ++j)
                 {
-                  const auto implicit_area =
-                    fe_iv[area_extractor].value(0, j, q);
-                  const auto implicit_area_neighbor =
+                  const auto trial_area = fe_iv[area_extractor].value(0, j, q);
+                  const auto trial_area_neighbor =
                     fe_iv[area_extractor].value(1, j, q);
-                  const auto implicit_velocity =
+                  const auto trial_velocity =
                     fe_iv[velocity_extractor].value(0, j, q);
-                  const auto implicit_velocity_neighbor =
+                  const auto trial_velocity_neighbor =
                     fe_iv[velocity_extractor].value(1, j, q);
 
-                  // ===== AREA FLUX =====
-                  const auto flux_area =
-                    compute_physical_area_flux(cell,
-                                               implicit_area,
-                                               explicit_velocity[q]) *
+                  // ===== AREA FLUX Jacobian =====
+                  // F_hat_A = 0.5*(U_L*trial_A_L + A_L*trial_U_L +
+                  // U_R*trial_A_R + A_R*trial_U_R)
+                  //           - 0.5*alpha*(trial_A_L - trial_A_R)
+                  const auto flux_jac_A =
+                    compute_physical_area_jacobian_flux(cell,
+                                                        current_area[q],
+                                                        trial_velocity,
+                                                        current_velocity[q],
+                                                        trial_area) *
                     normals[q];
-
-                  const auto flux_area_neighbor =
-                    compute_physical_area_flux(ncell,
-                                               implicit_area_neighbor,
-                                               explicit_velocity_neighbor[q]) *
+                  const auto flux_jac_A_neighbor =
+                    compute_physical_area_jacobian_flux(
+                      ncell,
+                      current_area_neighbor[q],
+                      trial_velocity_neighbor,
+                      current_velocity_neighbor[q],
+                      trial_area_neighbor) *
                     normals[q];
 
                   // Lax-Friedrichs numerical flux
                   const double F_hat_area =
-                    0.5 * (flux_area + flux_area_neighbor) -
-                    0.5 * alpha * (implicit_area - implicit_area_neighbor);
+                    0.5 * (flux_jac_A + flux_jac_A_neighbor) -
+                    0.5 * alpha * (trial_area - trial_area_neighbor);
 
                   face.cell_matrix(i, j) +=
                     F_hat_area * fe_iv[area_extractor].jump_in_values(i, q) *
                     JxW[q];
 
-                  // ===== VELOCITY FLUX =====
-                  const auto flux_velocity =
-                    compute_physical_momentum_flux(cell,
-                                                   implicit_velocity,
-                                                   explicit_velocity[q]) *
+                  // ===== MOMENTUM FLUX JACOBIAN =====
+                  const double c_sq = std::pow(cL, 2);
+
+                  const double c_sq_neighbor = std::pow(cR, 2);
+
+
+                  const double flux_jac_U =
+                    compute_physical_momentum_jacobian_flux(cell,
+                                                            c_sq,
+                                                            current_area[q],
+                                                            trial_area,
+                                                            current_velocity[q],
+                                                            trial_velocity) *
                     normals[q];
 
-                  const auto flux_velocity_neighbor =
-                    compute_physical_momentum_flux(
+                  const double flux_jac_U_neighbor =
+                    compute_physical_momentum_jacobian_flux(
                       ncell,
-                      implicit_velocity_neighbor,
-                      explicit_velocity_neighbor[q]) *
+                      c_sq_neighbor,
+                      current_area_neighbor[q],
+                      trial_area_neighbor,
+                      current_velocity_neighbor[q],
+                      trial_velocity_neighbor) *
                     normals[q];
-
-                  const double F_hat_velocity =
-                    0.5 * (flux_velocity + flux_velocity_neighbor) -
-                    0.5 * alpha *
-                      (implicit_velocity - implicit_velocity_neighbor);
+                  const double F_hat_U =
+                    0.5 * (flux_jac_U + flux_jac_U_neighbor) -
+                    0.5 * alpha * (trial_velocity - trial_velocity_neighbor);
 
                   face.cell_matrix(i, j) +=
-                    F_hat_velocity *
-                    fe_iv[velocity_extractor].jump_in_values(i, q) * JxW[q];
-
-                  // ===== PRESSURE FLUX =====
-                  // F_pressure_lhs = (1/rho) A dP(A_explicit) (b·n)
-                  // flux_pressure_lhs =0.5 (1/rho) (A_implicit dP(A_explicit)+
-                  // A_implicit_neighbor*dP(A_explicit_neighbor))(b·n)
-                  const auto flux_pressure_lhs =
-                    0.5 / rho *
-                    (dpdA * implicit_area * b_vec +
-                     dpdA_neighbor * implicit_area_neighbor * b_vec_neighbor) *
-                    normals[q];
-                  face.cell_matrix(i, j) +=
-                    flux_pressure_lhs *
-                    fe_iv[velocity_extractor].jump_in_values(i, q) * JxW[q];
+                    F_hat_U * fe_iv[velocity_extractor].jump_in_values(i, q) *
+                    JxW[q];
                 }
 
-              // ===== PRESSURE (RHS) =====
-              const double F_hat_pressure =
-                0.5 / rho *
-                ((explicit_pressure - explicit_area[q] * dpdA) * b_vec +
-                 (explicit_pressure_neighbor -
-                  explicit_area_neighbor[q] * dpdA_neighbor) *
-                   b_vec_neighbor) *
+              // ===== RHS: AREA FLUX =====
+              // F_A = U*A (at left and right states)
+              // Lax-Friedrichs: 0.5*(F_A^L + F_A^R) - 0.5*alpha*(A^L - A^R)
+              const double F_area =
+                compute_physical_area_flux(cell,
+                                           current_area[q],
+                                           current_velocity[q]) *
                 normals[q];
 
+              const double F_area_neighbor =
+                compute_physical_area_flux(ncell,
+                                           current_area_neighbor[q],
+                                           current_velocity_neighbor[q]) *
+                normals[q];
+
+              const double F_hat_area_numerical =
+                0.5 * (F_area + F_area_neighbor) -
+                0.5 * alpha * (current_area[q] - current_area_neighbor[q]);
+
+              face.cell_rhs(i) += F_hat_area_numerical *
+                                  fe_iv[area_extractor].jump_in_values(i, q) *
+                                  JxW[q];
+
+              // ===== RHS: MOMENTUM FLUX - CONVECTIVE PART (U^2/2) =====
+              // F_U_conv = U^2/2 (at left and right states)
+              const double F_momentum =
+                compute_physical_momentum_flux(cell,
+                                               current_velocity[q],
+                                               current_velocity[q]) *
+                normals[q];
+              const double F_momentum_neighbor =
+                compute_physical_momentum_flux(ncell,
+                                               current_velocity_neighbor[q],
+                                               current_velocity_neighbor[q]) *
+                normals[q];
+
+              const double F_hat_momentum_numerical =
+                0.5 * (F_momentum + F_momentum_neighbor) -
+                0.5 * alpha *
+                  (current_velocity[q] - current_velocity_neighbor[q]);
+
               face.cell_rhs(i) +=
-                F_hat_pressure *
+                F_hat_momentum_numerical *
+                fe_iv[velocity_extractor].jump_in_values(i, q) * JxW[q];
+
+              // ===== RHS: PRESSURE FLUX -  IN RESIDUAL =====
+              // F_U_pressure = (1/ρ) * P(A)
+              // This term in the residual (RHS)
+              //
+              const double F_U_pressure = (1.0 / rho) * current_pressure;
+              const double F_U_pressure_neighbor =
+                (1.0 / rho) * current_pressure_neighbor;
+
+              const double F_hat_pressure_numerical =
+                0.5 * (F_U_pressure + F_U_pressure_neighbor) -
+                0.5 * alpha * (0.0); // Pressure doesn't have jump contribution
+
+              face.cell_rhs(i) +=
+                F_hat_pressure_numerical * (b_vec * normals[q]) *
                 fe_iv[velocity_extractor].jump_in_values(i, q) * JxW[q];
             }
         }
     };
 
     // ========== BOUNDARY WORKER ==========
-    // ExactSolutionBloodFlow<spacedim> exact_solution;
     exact_solution.set_time(time);
 
     auto boundary_worker = [&](const Iterator                      &cell,
@@ -475,13 +552,13 @@ namespace dealii
       const auto        &normals = fe_face.get_normal_vectors();
       const unsigned int n_q     = fe_face.n_quadrature_points;
 
-      // Interior trace (explicit for convection)
-      std::vector<double> explicit_area(n_q), explicit_velocity(n_q);
-      fe_face[area_extractor].get_function_values(solution, explicit_area);
+      // Interior trace (current Newton iterate)
+      std::vector<double> current_area(n_q), current_velocity(n_q);
+      fe_face[area_extractor].get_function_values(solution, current_area);
       fe_face[velocity_extractor].get_function_values(solution,
-                                                      explicit_velocity);
+                                                      current_velocity);
 
-      // Boundary (exact) values
+      // Boundary values (from exact solution as BC)
       exact_solution.set_time(time);
       std::vector<Vector<double>> bc(n_q, Vector<double>(2));
       exact_solution.vector_value_list(fe_face.get_quadrature_points(), bc);
@@ -490,116 +567,143 @@ namespace dealii
 
       for (unsigned int q = 0; q < n_q; ++q)
         {
-          const double A_bd = bc[q][0];
-          const double U_bd = bc[q][1];
-
+          const double A_bd    = bc[q](0);
+          const double U_bd    = bc[q](1);
           const double b_dot_n = b_vec * normals[q];
 
-          const double explicit_pressure =
-            compute_pressure_value<dim, spacedim>(explicit_area[q],
+          // Pressures
+          const double current_pressure =
+            compute_pressure_value<dim, spacedim>(current_area[q],
                                                   reference_area,
                                                   elastic_modulus,
                                                   reference_pressure);
+          const double pressure_bd = compute_pressure_value<dim, spacedim>(
+            A_bd, reference_area, elastic_modulus, reference_pressure);
 
-          // Compute explicit pressure and derivative
-          const double dpdA_bd =
-            compute_pressure_derivative<dim, spacedim>(A_bd,
-                                                       reference_area,
-                                                       elastic_modulus);
+          // Pressure derivatives
           const double dpdA =
-            compute_pressure_derivative<dim, spacedim>(explicit_area[q],
+            compute_pressure_derivative<dim, spacedim>(current_area[q],
                                                        reference_area,
                                                        elastic_modulus);
 
-
-          // Local wave speed and eigenvalues
-          const double cL = compute_wave_speed<dim, spacedim>(explicit_area[q],
+          // Wave speed at interior
+          const double cL = compute_wave_speed<dim, spacedim>(current_area[q],
                                                               reference_area,
                                                               elastic_modulus,
                                                               rho);
-          const double lambda1 = explicit_velocity[q] - cL;
-          // const double lambda2 = explicit_velocity[q] + cL;
 
-          const bool is_inflow  = (lambda1 < 0.0);
-          const bool is_outflow = !is_inflow;
+          // Flow direction
+          const double lambda1   = current_velocity[q] - cL;
+          const double lambda2   = current_velocity[q] + cL;
+          const bool   is_inflow = (lambda1 < 0.0 && lambda2 > 0.0);
 
-
+          // Test function loop
           for (unsigned int i = 0; i < fe_face.get_fe().dofs_per_cell; ++i)
             {
+              // ===== JACOBIAN MATRIX (LHS)  =====
+              // Trial function loop
               for (unsigned int j = 0; j < fe_face.get_fe().dofs_per_cell; ++j)
                 {
-                  const double implicit_area =
-                    fe_face[area_extractor].value(j, q);
-                  const double implicit_velocity =
+                  const double trial_A = fe_face[area_extractor].value(j, q);
+                  const double trial_U =
                     fe_face[velocity_extractor].value(j, q);
 
-                  const double p_bd = compute_pressure_value<dim, spacedim>(
-                    A_bd, reference_area, elastic_modulus, reference_pressure);
-
-                  // ===== AREA FLUX =====
-                  const auto F_hat_area =
-                    compute_physical_area_flux(cell,
-                                               implicit_area,
-                                               explicit_velocity[q]) *
-                    normals[q];
-                  const auto F_hat_area_bd =
-                    compute_physical_area_flux(cell, A_bd, U_bd) * normals[q];
-
-                  // ===== VELOCITY FLUX  =====
-                  const auto F_hat_velocity =
-                    compute_physical_momentum_flux(cell,
-                                                   implicit_velocity,
-                                                   explicit_velocity[q]) *
-                    normals[q];
-                  const auto F_hat_velocity_bd =
-                    compute_physical_momentum_flux(cell, U_bd, U_bd) *
-                    normals[q];
-
-                  // === PRESSURE FLUX =====
-
-                  const auto F_hat_pressure_LHS =
-                    (1.0 / rho) * (implicit_area)*dpdA * b_dot_n;
-
-                  const double F_hat_pressure_RHS =
-                    0.5 / rho * (explicit_pressure - explicit_area[q] * dpdA) *
-                    b_dot_n;
-
-
-                  const double F_hat_pressure_bd =
-                    (1.0 / rho) *
-                    (explicit_area[q] * dpdA_bd + p_bd - A_bd * dpdA_bd) *
-                    b_dot_n;
-
-                  if (is_outflow)
+                  if (!is_inflow) // Outflow BC only
                     {
-                      // Outflow - add to LHS
+                      // Area Jacobian  boundary term
+                      // - ∫_boundary (U deltaA + A deltaU) (b·n) phi_A ds
+                      const auto flux_jac_area =
+                        compute_physical_area_jacobian_flux(cell,
+                                                            current_area[q],
+                                                            trial_U,
+                                                            current_velocity[q],
+                                                            trial_A) *
+                        normals[q];
+
+                      // Momentum Jacobian from IBP boundary term
+                      // - ∫_boundary (c^2/A deltaA + U deltaU) (b·n) phi_U ds
+                      const double c_sq = current_area[q] / rho * dpdA;
+                      const auto   flux_jac_velocity =
+                        compute_physical_momentum_jacobian_flux(
+                          cell,
+                          c_sq,
+                          current_area[q],
+                          trial_A,
+                          current_velocity[q],
+                          trial_U) *
+                        normals[q];
+
                       copy.cell_matrix(i, j) +=
-                        (F_hat_area * fe_face[area_extractor].value(i, q) +
-                         F_hat_velocity *
-                           fe_face[velocity_extractor].value(i, q) +
-                         F_hat_pressure_LHS *
-                           fe_face[velocity_extractor].value(i, q)) *
-                        JxW[q];
-
-                      copy.cell_rhs(i) -=
-                        F_hat_pressure_RHS *
-                        fe_face[velocity_extractor].value(i, q) * JxW[q];
-                    }
-                  else
-                    {
-                      // Inflow - enforce BC in RHS
-                      copy.cell_rhs(i) -=
-                        (F_hat_area_bd * fe_face[area_extractor].value(i, q) +
-                         F_hat_velocity_bd *
-                           fe_face[velocity_extractor].value(i, q) +
-                         F_hat_pressure_bd *
+                        (flux_jac_area * fe_face[area_extractor].value(i, q) +
+                         flux_jac_velocity *
                            fe_face[velocity_extractor].value(i, q)) *
                         JxW[q];
                     }
                 }
+
+
+              // Compute boundary fluxes for RHS
+
+              if (is_inflow)
+                {
+                  // ===== INFLOW: Enforce boundary condition =====
+                  // Use boundary values from exact solution
+
+                  // Area flux at inflow: A_bd * U_bd
+                  const auto F_area_bd =
+                    compute_physical_area_flux(cell, A_bd, U_bd) * normals[q];
+                  copy.cell_rhs(i) -=
+                    F_area_bd * fe_face[area_extractor].value(i, q) * JxW[q];
+
+                  // Momentum convective flux at inflow: (U_bd)²/2
+                  const auto F_conv_bd =
+                    compute_physical_momentum_flux(cell, U_bd, U_bd) *
+                    normals[q];
+                  copy.cell_rhs(i) -= F_conv_bd *
+                                      fe_face[velocity_extractor].value(i, q) *
+                                      JxW[q];
+
+                  // Pressure flux at inflow: (1/ρ) P(A_bd)
+                  const double F_pressure_bd =
+                    (1.0 / rho) * pressure_bd * b_dot_n;
+                  copy.cell_rhs(i) -= F_pressure_bd *
+                                      fe_face[velocity_extractor].value(i, q) *
+                                      JxW[q];
+                }
+              else
+                {
+                  // Use current Newton iterate values
+
+                  // Area flux at outflow: A^(k) * U^(k)
+                  const auto F_area_out =
+                    compute_physical_area_flux(cell,
+                                               current_area[q],
+                                               current_velocity[q]) *
+                    normals[q];
+                  copy.cell_rhs(i) -=
+                    F_area_out * fe_face[area_extractor].value(i, q) * JxW[q];
+
+                  // Momentum convective flux at outflow: (U^(k))²/2
+                  const auto F_conv_out =
+                    compute_physical_momentum_flux(cell,
+                                                   current_velocity[q],
+                                                   current_velocity[q]) *
+                    normals[q];
+                  copy.cell_rhs(i) -= F_conv_out *
+                                      fe_face[velocity_extractor].value(i, q) *
+                                      JxW[q];
+
+                  // Pressure flux at outflow: (1/ρ) P(A^(k))
+                  const double F_pressure_out =
+                    (1.0 / rho) * current_pressure * b_dot_n;
+                  copy.cell_rhs(i) -= F_pressure_out *
+                                      fe_face[velocity_extractor].value(i, q) *
+                                      JxW[q];
+                }
             }
         }
     };
+
 
     // Copier lambda
     const AffineConstraints<double> constraints;
@@ -639,28 +743,76 @@ namespace dealii
                           face_worker);
   }
 
+  // ========================================================================
+  // COMPUTE RESIDUAL VECTOR FOR NEWTON
+  // ========================================================================
+
+  template <int dim, int spacedim>
+  void
+  BloodFlowSystem<dim, spacedim>::compute_residual_vector()
+  {
+    // R(W) = M/dt * (W - W_old) + K(W) - RHS
+    Vector<double> mass_times_W(dof_handler.n_dofs());
+    Vector<double> mass_times_W_old(dof_handler.n_dofs());
+
+    mass_matrix.vmult(mass_times_W, solution);
+    mass_matrix.vmult(mass_times_W_old, solution_old);
+
+    mass_times_W.add(-1.0, mass_times_W_old);
+    mass_times_W *= (1.0 / time_step);
+
+    // K(W) * W (system_matrix contains K'(W) evaluated at current iterate)
+    Vector<double> K_times_W(dof_handler.n_dofs());
+    system_matrix.vmult(K_times_W, solution);
+
+    residual_vector = mass_times_W;
+    residual_vector += K_times_W;
+    residual_vector -= right_hand_side;
+  }
+
+  // ========================================================================
+  // ASSEMBLE JACOBIAN MATRIX FOR NEWTON
+  // ========================================================================
+
+  template <int dim, int spacedim>
+  void
+  BloodFlowSystem<dim, spacedim>::assemble_jacobian()
+  {
+    // First assemble system at current Newton iterate
+    assemble_system(); // Fills system_matrix and right_hand_side
+
+    // Jacobian: J = M/dt + K'(W)
+    // where K'(W) is computed in assemble_system()
+    jacobian_matrix.copy_from(mass_matrix);
+    jacobian_matrix *= (1.0 / time_step);
+    jacobian_matrix.add(1.0, system_matrix);
+  }
+
+  // ========================================================================
+  // SOLVE LINEAR SYSTEM
+  // ========================================================================
+
   template <int dim, int spacedim>
   void
   BloodFlowSystem<dim, spacedim>::solve()
   {
     if (use_direct_solver)
       {
-        SparseDirectUMFPACK system_matrix_inverse;
-        system_matrix_inverse.initialize(system_matrix_time);
-        system_matrix_inverse.vmult(solution, right_hand_side);
+        SparseDirectUMFPACK inverse;
+        inverse.initialize(jacobian_matrix);           // use jacobian_matrix
+        inverse.vmult(newton_update, residual_vector); // use newton_update
       }
     else
       {
         SolverControl               solver_control(1000, 1e-14);
         SolverGMRES<Vector<double>> solver(solver_control);
         PreconditionSSOR<>          preconditioner;
-        const double                omega = 1.4;
-        preconditioner.initialize(system_matrix_time, omega);
-        solver.solve(system_matrix_time,
-                     solution,
-                     right_hand_side,
+        preconditioner.initialize(jacobian_matrix, 1.4);
+        solver.solve(jacobian_matrix,
+                     newton_update,
+                     residual_vector,
                      preconditioner);
-        std::cout << "  Solver converged in " << solver_control.last_step()
+        std::cout << "    Solver converged in " << solver_control.last_step()
                   << " iterations." << std::endl;
       }
   }
@@ -706,6 +858,10 @@ namespace dealii
     DataOutBase::write_pvd_record(pvd_output, pvd_output_records);
   }
 
+  // ========================================================================
+  // COMPUTE PRESSURE
+  // ========================================================================
+
   template <int dim, int spacedim>
   void
   BloodFlowSystem<dim, spacedim>::compute_pressure()
@@ -733,6 +889,11 @@ namespace dealii
           }
       }
   }
+
+  // ========================================================================
+  // COMPUTE ERRORS
+  // ========================================================================
+
 
   template <int dim, int spacedim>
   void
@@ -850,6 +1011,10 @@ namespace dealii
     last_Velocity_H1_error = Velocity_H1_error;
   }
 
+  // ========================================================================
+  // RUN CONVERGENCE STUDY WITH NEWTON ITERATION
+  // ========================================================================
+
   template <int dim, int spacedim>
   void
   BloodFlowSystem<dim, spacedim>::run_convergence_study()
@@ -900,54 +1065,53 @@ namespace dealii
             time += time_step;
             std::cout << "Step " << step << "  t=" << time << std::endl;
 
-            // Initialize Picard iteration
-            solution = solution_old; // u^(0) := u^n
+            // Newton iteration loop
+            solution = solution_old; // w^(0) := W^n
             Vector<double> solution_picard_explicit(solution.size());
-            unsigned int   picard_iter = 0;
+            unsigned int   newton_iter = 0;
             bool           converged   = false;
 
-            // Picard loop
+            // Newton loop
             do
               {
-                solution_picard_explicit = solution; // save previous iterate
+                // Assemble Jacobian and residual at current Newton iterate
+                assemble_jacobian();
 
-                // Assemble using current Picard guess
-                assemble_system(); // uses solution as U_explicit
+                // Compute residual vector R(W^(k))
+                compute_residual_vector();
 
-                // Build time-step system: (M/dt + A(u^(n+1,m))) u^(n+1,m+1) =
-                // M/dt u^n + RHS
-                system_matrix_time.copy_from(mass_matrix);
+                // Setup Newton RHS: J * delta_W = -R
+                residual_vector *= -1.0;
+                double newton_residual_norm = residual_vector.l2_norm();
 
-                system_matrix_time *= (1.0 / time_step);
-                system_matrix_time.add(1.0, system_matrix);
+                std::cout << " Newton iter " << newton_iter
+                          << "  residual = " << std::scientific
+                          << std::setprecision(6) << newton_residual_norm
+                          << std::endl;
+                // Check convergence
+                if (newton_residual_norm < newton_tolerance)
+                  {
+                    converged = true;
+                    std::cout << "  Newton converged in " << newton_iter
+                              << " iterations.\n";
+                    break;
+                  }
 
-                mass_matrix.vmult(tmp_vector, solution_old);
-                tmp_vector *= (1.0 / time_step);
-                tmp_vector += right_hand_side;
+                solve();
 
-                // Solve linear system for new iterate
-                solve(); // result in 'solution'
+                // Update: W^(k+1) = W^(k) + delta_W
+                solution.add(1.0, newton_update);
 
-                // solution = omega * solution_new + (1 - omega) * explicit
-                solution.sadd(omega, 1.0 - omega, solution_picard_explicit);
+                ++newton_iter;
 
-                // Compute Picard residual
-                Vector<double> diff = solution;
-                diff.add(-1.0, solution_picard_explicit);
-                const double picard_residual = diff.l2_norm();
-
-                std::cout << "  Picard iter " << picard_iter
-                          << "   residual = " << picard_residual << std::endl;
-
-                ++picard_iter;
-
-                if (picard_residual < picard_tolerance ||
-                    picard_iter >= max_picard_iterations)
-                  converged = true;
+                if (newton_iter >= max_newton_iterations)
+                  {
+                    std::cout << "  WARNING: Newton did not converge after "
+                              << max_newton_iterations << " iterations.\n";
+                    converged = true;
+                  }
               }
-            while (!converged && picard_iter < max_picard_iterations);
-            std::cout << "  Picard converged in " << picard_iter
-                      << " iterations.\n";
+            while (!converged);
 
             solution_old = solution;
             compute_pressure();
