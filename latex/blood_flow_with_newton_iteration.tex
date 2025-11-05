@@ -235,52 +235,174 @@ Componentwise, since
 \]
 the two scalar weak equations become:
 
-\paragraph{(i) Area equation:}
+\paragraph{(i) Area equation.}
 \begin{align}
 \int_K
-  \frac{\delta A_h^{n+1,(k)}}{\dt}\phi_A
-  &+ \bm b\!\cdot\!\nabla
-    \big(
+  \frac{\delta A_h^{n+1,(k)}}{\Delta t}\,\phi_A
+  &\;+\;
+  \bm b \!\cdot\! \nabla
+  \Big(
+    \underbrace{
       U_h^{n+1,(k)}\,\delta A_h^{n+1,(k)}
       + A_h^{n+1,(k)}\,\delta U_h^{n+1,(k)}
-    \big)\phi_A\,dx
-= \nonumber \\
-&-\!\!\int_K
+    }_{\text{flux--Jacobian--A}}
+  \Big)
+  \phi_A \,dx
+  \nonumber\\[4pt]
+  &=-
+  \int_K
   \left[
-    \frac{A_h^{n+1,(k)} - A_h^n}{\dt}
+    \frac{A_h^{n+1,(k)} - A_h^n}{\Delta t}
     + \bm b\!\cdot\!\nabla
-      \big(A_h^{n+1,(k)}U_h^{n+1,(k)}\big)
+      \Big(
+        \underbrace{
+          A_h^{n+1,(k)}U_h^{n+1,(k)}
+        }_{\text{physical--flux--A}}
+      \Big)
   \right]\phi_A\,dx.
-\label{eq:newton-A-nk}
+  \label{eq:newton-A-nk}
 \end{align}
 
-\paragraph{(ii) Momentum equation:}
+Integrating by parts the second term on both sides of \eqref{eq:newton-A-nk}, we obtain
 \begin{align}
 \int_K
-  \frac{\delta U_h^{n+1,(k)}}{\dt}\phi_U
-  &+ \bm b\!\cdot\!\nabla
-    \!\left(
-      \frac{(c_h^{n+1,(k)})^2}{A_h^{n+1,(k)}}\,\delta A_h^{n+1,(k)}
-      + U_h^{n+1,(k)}\,\delta U_h^{n+1,(k)}
-    \right)\!\phi_U\,dx
-  \nonumber\\
-  &-\!\int_K
-     c\,\delta U_h^{n+1,(k)}\,\phi_U\,dx
-= \nonumber \\
-&-\!\!\int_K
-  \left[
-    \frac{U_h^{n+1,(k)} - U_h^n}{\dt}
-    + \bm b\!\cdot\!\nabla
-      \!\left(
-        \frac{(U_h^{n+1,(k)})^2}{2}
-        + \frac{1}{\rho}P(A_h^{n+1,(k)})
-      \right)
-    - c\,U_h^{n+1,(k)}
-  \right]\phi_U\,dx.
-\label{eq:newton-U-nk}
+  \frac{\delta A_h^{n+1,(k)}}{\Delta t}\,\phi_A
+  &\;-\;
+  \int_K
+    \bm b\!\cdot\!
+    \big(\text{flux--Jacobian--A}\big)
+    \nabla\phi_A\,dx
+  \;+\;
+  \int_{\partial K}
+    \big(\text{LF--flux--Jacobian--A}\big)\,
+    \phi_A^{-}\,
+    (\bm b\!\cdot\! n)\,ds
+  \nonumber\\[4pt]
+  &=
+  -\int_K
+    \frac{A_h^{n+1,(k)} - A_h^n}{\Delta t}\,\phi_A\,dx
+  \;+\;
+  \int_K
+    \bm b\!\cdot\!\nabla\phi_A\,
+    \big(\text{physical--flux--A}\big)\,dx
+    \nonumber\\[4pt]
+ & \;-\; 
+ \int_{\partial K}
+    \big(\text{LF--physical--flux--A}\big)\,
+    \phi_A^{-}\,
+    (\bm b\!\cdot\! n)\,ds.
+  \label{eq:newton-A-nk1}
 \end{align}
 
+The numerical flux on faces is defined as
+\[
+\text{LF--flux--Jacobian--A} =
+\begin{cases}
+\displaystyle
+  \tfrac{1}{2}
+  \big(
+    \text{flux--Jacobian--A}^{-}
+    + \text{flux--Jacobian--A}^{+}
+  \big)
+  - \tfrac{1}{2}\alpha\,
+    \big(
+      \delta A_h^{-} - \delta A_h^{+}
+    \big),
+  & \text{on interior faces},\\[10pt]
+\text{flux--Jacobian--A}, & \text{on boundary faces},
+\end{cases}
+\]
+where $\alpha$ denotes the local Lax--Friedrichs penalty parameter.
 
+\vspace{1em}
+
+\paragraph{(ii) Momentum equation.}
+\begin{align}
+\int_K
+  \frac{\delta U_h^{n+1,(k)}}{\Delta t}\,\phi_U
+  &\;+\;
+  \bm b \!\cdot\! \nabla
+  \Big(
+    \underbrace{
+      \frac{(c_h^{n+1,(k)})^2}{A_h^{n+1,(k)}}\,
+      \delta A_h^{n+1,(k)}
+      + U_h^{n+1,(k)}\,\delta U_h^{n+1,(k)}
+    }_{\text{flux--Jacobian--U}}
+  \Big)
+  \phi_U\,dx
+  \nonumber\\[4pt]
+  &\;+\;
+  \int_K c\,\delta U_h^{n+1,(k)}\,\phi_U\,dx
+  \nonumber\\[4pt]
+  &=-
+  \int_K
+  \left[
+    \frac{U_h^{n+1,(k)} - U_h^n}{\Delta t}
+    + \bm b\!\cdot\!\nabla
+      \Big(
+        \underbrace{
+          \frac{(U_h^{n+1,(k)})^2}{2}
+          + \frac{1}{\rho}P(A_h^{n+1,(k)})
+        }_{\text{physical--flux--U}}
+      \Big)
+    + c\,U_h^{n+1,(k)}
+  \right]\phi_U\,dx.
+  \label{eq:newton-U-nk}
+\end{align}
+
+Integrating by parts as in the area equation, we obtain
+\begin{align}
+\int_K
+  \frac{\delta U_h^{n+1,(k)}}{\Delta t}\,\phi_U
+  &\;-\;
+  \int_K
+    \bm b\!\cdot\!
+    \big(\text{flux--Jacobian--U}\big)
+    \nabla\phi_U\,dx
+  \;+\;
+  \int_{\partial K}
+    \big(\text{LF--flux--Jacobian--U}\big)\,
+    \phi_U^{-}\,
+    (\bm b\!\cdot\! n)\,ds  \nonumber\\[4pt]
+  &
+  \;+\;
+  \int_K c\,\delta U_h^{n+1,(k)}\,\phi_U\,dx
+  =
+  -\int_K
+    \frac{U_h^{n+1,(k)} - U_h^n}{\Delta t}\,\phi_U\,dx
+  \;+\;
+  \int_K
+    \bm b\!\cdot\!\nabla\phi_U\,
+    \big(\text{physical--flux--U}\big)\,dx \nonumber\\[4pt]
+  &
+  \;-\;
+  \int_{\partial K}
+    \big(\text{LF--physical--flux--U}\big)\,
+    \phi_U^{-}\,
+    (\bm b\!\cdot\! n)\,ds
+  \;+\;
+  \int_K c\,U_h^{n+1,(k)}\,\phi_U\,dx.
+  \label{eq:newton-U-nk1}
+\end{align}
+
+The corresponding numerical flux is
+\[
+\text{LF--flux--Jacobian--U} =
+\begin{cases}
+\displaystyle
+  \tfrac{1}{2}
+  \big(
+    \text{flux--Jacobian--U}^{-}
+    + \text{flux--Jacobian--U}^{+}
+  \big)
+  - \tfrac{1}{2}\alpha\,
+    \big(
+      \delta U_h^{-} - \delta U_h^{+}
+    \big),
+  & \text{on interior faces},\\[10pt]
+\text{flux--Jacobian--U}, & \text{on boundary faces}.
+\end{cases}
+\]
 
 \begin{remark}
 \begin{itemize}

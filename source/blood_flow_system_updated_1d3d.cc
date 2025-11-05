@@ -271,8 +271,7 @@ namespace dealii
                                                         trial_area);
 
                   copy_data.cell_matrix(i, j) -=
-                    flux_jacobian_A *
-                     fe_v[area_extractor].gradient(i, point) *
+                    flux_jacobian_A * fe_v[area_extractor].gradient(i, point) *
                     JxW[point];
 
                   // ===== MOMENTUM EQUATION Jacobian=====
@@ -296,8 +295,7 @@ namespace dealii
 
                   copy_data.cell_matrix(i, j) -=
                     flux_jacobian_U *
-                    fe_v[velocity_extractor].gradient(i, point) *
-                    JxW[point];
+                    fe_v[velocity_extractor].gradient(i, point) * JxW[point];
 
                   // Reaction (viscosity): ∫ c U phi_U dx
                   copy_data.cell_matrix(i, j) -=
@@ -351,12 +349,8 @@ namespace dealii
       face.cell_matrix.reinit(nd, nd);
       face.cell_rhs.reinit(nd);
 
-      const auto b_vec          = compute_directional_vector(cell);
-      
-
       for (unsigned int q = 0; q < n_q; ++q)
         {
-          
           // Compute pressures
           const double current_pressure =
             compute_pressure_value<dim, spacedim>(current_area[q],
@@ -372,7 +366,8 @@ namespace dealii
 
           // // Compute explicit pressure and derivative
           // const double dpdA_neighbor =
-          //   compute_pressure_derivative<dim, spacedim>(current_area_neighbor[q],
+          //   compute_pressure_derivative<dim,
+          //   spacedim>(current_area_neighbor[q],
           //                                              reference_area,
           //                                              elastic_modulus);
 
@@ -493,21 +488,25 @@ namespace dealii
                 0.5 * (F_area + F_area_neighbor) -
                 0.5 * alpha * (current_area[q] - current_area_neighbor[q]);
 
-              face.cell_rhs(i) += F_hat_area_numerical *
+              face.cell_rhs(i) -= F_hat_area_numerical *
                                   fe_iv[area_extractor].jump_in_values(i, q) *
                                   JxW[q];
 
               // ===== RHS: MOMENTUM FLUX - CONVECTIVE PART (U^2/2) =====
-              // F_U_conv = U^2/2 (at left and right states)
+              // F_U_conv = U^2/2 + P/rho (at left and right states)
               const double F_momentum =
                 compute_physical_momentum_flux(cell,
                                                current_velocity[q],
-                                               current_velocity[q]) *
+                                               current_velocity[q],
+                                               current_pressure,
+                                               rho) *
                 normals[q];
               const double F_momentum_neighbor =
                 compute_physical_momentum_flux(ncell,
                                                current_velocity_neighbor[q],
-                                               current_velocity_neighbor[q]) *
+                                               current_velocity_neighbor[q],
+                                               current_pressure_neighbor,
+                                               rho) *
                 normals[q];
 
               const double F_hat_momentum_numerical =
@@ -515,24 +514,8 @@ namespace dealii
                 0.5 * alpha *
                   (current_velocity[q] - current_velocity_neighbor[q]);
 
-              face.cell_rhs(i) +=
+              face.cell_rhs(i) -=
                 F_hat_momentum_numerical *
-                fe_iv[velocity_extractor].jump_in_values(i, q) * JxW[q];
-
-              // ===== RHS: PRESSURE FLUX -  IN RESIDUAL =====
-              // F_U_pressure = (1/ρ) * P(A)
-              // This term in the residual (RHS)
-              //
-              const double F_U_pressure = (1.0 / rho) * current_pressure;
-              const double F_U_pressure_neighbor =
-                (1.0 / rho) * current_pressure_neighbor;
-
-              const double F_hat_pressure_numerical =
-                0.5 * (F_U_pressure + F_U_pressure_neighbor) -
-                0.5 * alpha * (0.0); // Pressure doesn't have jump contribution
-
-              face.cell_rhs(i) +=
-                F_hat_pressure_numerical * (b_vec * normals[q]) *
                 fe_iv[velocity_extractor].jump_in_values(i, q) * JxW[q];
             }
         }
@@ -563,13 +546,10 @@ namespace dealii
       std::vector<Vector<double>> bc(n_q, Vector<double>(2));
       exact_solution.vector_value_list(fe_face.get_quadrature_points(), bc);
 
-      const auto b_vec = compute_directional_vector(cell);
-
       for (unsigned int q = 0; q < n_q; ++q)
         {
-          const double A_bd    = bc[q](0);
-          const double U_bd    = bc[q](1);
-          const double b_dot_n = b_vec * normals[q];
+          const double A_bd = bc[q](0);
+          const double U_bd = bc[q](1);
 
           // Pressures
           const double current_pressure =
@@ -656,17 +636,10 @@ namespace dealii
                     F_area_bd * fe_face[area_extractor].value(i, q) * JxW[q];
 
                   // Momentum convective flux at inflow: (U_bd)²/2
-                  const auto F_conv_bd =
-                    compute_physical_momentum_flux(cell, U_bd, U_bd) *
-                    normals[q];
+                  const auto F_conv_bd = compute_physical_momentum_flux(
+                                           cell, U_bd, U_bd, pressure_bd, rho) *
+                                         normals[q];
                   copy.cell_rhs(i) -= F_conv_bd *
-                                      fe_face[velocity_extractor].value(i, q) *
-                                      JxW[q];
-
-                  // Pressure flux at inflow: (1/ρ) P(A_bd)
-                  const double F_pressure_bd =
-                    (1.0 / rho) * pressure_bd * b_dot_n;
-                  copy.cell_rhs(i) -= F_pressure_bd *
                                       fe_face[velocity_extractor].value(i, q) *
                                       JxW[q];
                 }
@@ -687,16 +660,11 @@ namespace dealii
                   const auto F_conv_out =
                     compute_physical_momentum_flux(cell,
                                                    current_velocity[q],
-                                                   current_velocity[q]) *
+                                                   current_velocity[q],
+                                                   current_pressure,
+                                                   rho) *
                     normals[q];
                   copy.cell_rhs(i) -= F_conv_out *
-                                      fe_face[velocity_extractor].value(i, q) *
-                                      JxW[q];
-
-                  // Pressure flux at outflow: (1/ρ) P(A^(k))
-                  const double F_pressure_out =
-                    (1.0 / rho) * current_pressure * b_dot_n;
-                  copy.cell_rhs(i) -= F_pressure_out *
                                       fe_face[velocity_extractor].value(i, q) *
                                       JxW[q];
                 }
