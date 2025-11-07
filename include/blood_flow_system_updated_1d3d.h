@@ -385,43 +385,34 @@ namespace dealii
      * Compute wave speed using the tube law
      */
     double
-    compute_wave_speed(const double area,
-                       const double reference_area,
-                       const double elastic_modulus,
-                       const double density) const
+    compute_wave_speed(const double area) const
     {
-      const double ratio = area / reference_area;
-      const double m     = par["tube_law_exponent"];
-      const double dpda =
-        elastic_modulus * m * std::pow(ratio, m - 1.0) / reference_area;
-      return std::sqrt(area / density * dpda);
+      const double ratio = area / par["a0"];
+      const double m     = par["m"];
+      const double dpda  = par["mu"] * m * std::pow(ratio, m - 1.0) / par["a0"];
+      return std::sqrt(area / par["rho"] * dpda);
     }
 
     /**
      * Compute pressure using the tube law
      */
     double
-    compute_pressure_value(const double area,
-                           const double reference_area,
-                           const double elastic_modulus,
-                           const double reference_pressure) const
+    compute_pressure_value(const double area) const
     {
-      const double ratio = area / reference_area;
-      const double m     = par["tube_law_exponent"];
-      return elastic_modulus * (std::pow(ratio, m) - 1.0) + reference_pressure;
+      const double ratio = area / par["a0"];
+      const double m     = par["m"];
+      return par["mu"] * (std::pow(ratio, m) - 1.0) + par["p0"];
     }
 
     /**
      * Compute pressure derivative dP/dA
      */
     double
-    compute_pressure_derivative(const double area,
-                                const double reference_area,
-                                const double elastic_modulus) const
+    compute_pressure_derivative(const double area) const
     {
-      const double ratio = area / reference_area;
-      const double m     = par["tube_law_exponent"];
-      return elastic_modulus * m * std::pow(ratio, m - 1.0) / reference_area;
+      const double ratio = area / par["a0"];
+      const double m     = par["m"];
+      return par["mu"] * m * std::pow(ratio, m - 1.0) / par["a0"];
     }
 
     /**
@@ -432,16 +423,11 @@ namespace dealii
     compute_LF_penalty(const double area_L,
                        const double area_R,
                        const double U_L,
-                       const double U_R,
-                       const double reference_area,
-                       const double elastic_modulus,
-                       const double density) const
+                       const double U_R) const
     {
       // Compute left and right wave speeds
-      const double cL =
-        compute_wave_speed(area_L, reference_area, elastic_modulus, density);
-      const double cR =
-        compute_wave_speed(area_R, reference_area, elastic_modulus, density);
+      const double cL = compute_wave_speed(area_L);
+      const double cR = compute_wave_speed(area_R);
 
       // Compute four characteristic speeds and return maximum magnitude
       const double alpha = std::max({std::abs(U_L + cL),

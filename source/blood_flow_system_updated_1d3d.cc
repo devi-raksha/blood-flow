@@ -254,9 +254,7 @@ namespace dealii
           //                          a0,
           //                          mu,
           //                          p0);
-          const double dpdA = compute_pressure_derivative(current_area[point],
-                                                          par["a0"],
-                                                          par["mu"]);
+          const double dpdA = compute_pressure_derivative(current_area[point]);
           const double c_squared = current_area[point] / par["rho"] * dpdA;
 
           for (unsigned int i = 0; i < n_dofs; ++i)
@@ -366,11 +364,11 @@ namespace dealii
       for (unsigned int q = 0; q < n_q; ++q)
         {
           // Compute pressures
-          const double current_pressure = compute_pressure_value(
-            current_area[q], par["a0"], par["mu"], par["p0"]);
+          const double current_pressure =
+            compute_pressure_value(current_area[q]);
 
-          const double current_pressure_neighbor = compute_pressure_value(
-            current_area_neighbor[q], par["a0"], par["mu"], par["p0"]);
+          const double current_pressure_neighbor =
+            compute_pressure_value(current_area_neighbor[q]);
 
           // // Compute explicit pressure and derivative
           // const double dpdA_neighbor =
@@ -386,22 +384,13 @@ namespace dealii
 
 
           // Wave speeds for Lax-Friedrichs penalty
-          const double cL = compute_wave_speed(current_area[q],
-                                               par["a0"],
-                                               par["mu"],
-                                               par["rho"]);
-          const double cR = compute_wave_speed(current_area_neighbor[q],
-                                               par["a0"],
-                                               par["mu"],
-                                               par["rho"]);
+          const double cL = compute_wave_speed(current_area[q]);
+          const double cR = compute_wave_speed(current_area_neighbor[q]);
 
           const double alpha = compute_LF_penalty(current_area[q],
                                                   current_area_neighbor[q],
                                                   current_velocity[q],
-                                                  current_velocity_neighbor[q],
-                                                  par["a0"],
-                                                  par["mu"],
-                                                  par["rho"]);
+                                                  current_velocity_neighbor[q]);
 
 
           for (unsigned int i = 0; i < nd; ++i)
@@ -561,20 +550,15 @@ namespace dealii
           const double U_bd = bc[q](1);
 
           // Pressures
-          const double current_pressure = compute_pressure_value(
-            current_area[q], par["a0"], par["mu"], par["p0"]);
-          const double pressure_bd =
-            compute_pressure_value(A_bd, par["a0"], par["mu"], par["p0"]);
+          const double current_pressure =
+            compute_pressure_value(current_area[q]);
+          const double pressure_bd = compute_pressure_value(A_bd);
 
           // Pressure derivatives
-          const double dpdA =
-            compute_pressure_derivative(current_area[q], par["a0"], par["mu"]);
+          const double dpdA = compute_pressure_derivative(current_area[q]);
 
           // Wave speed at interior
-          const double cL = compute_wave_speed(current_area[q],
-                                               par["a0"],
-                                               par["mu"],
-                                               par["rho"]);
+          const double cL = compute_wave_speed(current_area[q]);
 
           // Flow direction
           const double lambda1   = current_velocity[q] - cL;
@@ -852,9 +836,8 @@ namespace dealii
               fe->system_to_component_index(i).first;
             if (component == 0) // Area component
               {
-                const double area = solution[dof_indices[i]];
-                pressure[dof_indices[i]] =
-                  compute_pressure_value(area, par["a0"], par["mu"], par["p0"]);
+                const double area        = solution[dof_indices[i]];
+                pressure[dof_indices[i]] = compute_pressure_value(area);
               }
           }
       }
