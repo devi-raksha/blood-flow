@@ -1,0 +1,38 @@
+# macOS
+.DS_Store
+
+# Editor/IDE caches
+.vscode/
+.cache/
+
+# CMake (root)
+CMakeCache.txt
+CMakeFiles/
+CTestTestfile.cmake
+Makefile
+cmake_install.cmake
+
+# Local build directory
+build/
+
+# Tests build artifacts
+tests/CMakeFiles/
+tests/CTestTestfile.cmake
+tests/Makefile
+
+# LaTeX outputs
+latex/*.aux
+latex/*.fdb_latexmk
+latex/*.fls
+latex/*.log
+latex/*.out
+latex/*.pdf
+latex/*.synctex.gz
+latex/movie/
+latex/shock.mp4
+
+# Backup files
+source/*.bak
+
+# Local parameter files
+parameters_non_linear_conservation_law.prm
