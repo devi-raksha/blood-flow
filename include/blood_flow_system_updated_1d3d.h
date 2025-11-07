@@ -34,6 +34,9 @@
 
 #include <memory>
 
+#include "constants.h"
+#include "function.h"
+
 namespace dealii
 {
   using namespace dealii;
@@ -41,111 +44,7 @@ namespace dealii
   //====================================================================
   // PHYSICAL CONSTANTS AND PARAMETERS
   //====================================================================
-  namespace BloodFlowParameters
-  {
-    // Default physical parameters for blood flow
-    constexpr double DEFAULT_RHO = 1.06; // Density (g/cm³)
-    constexpr double DEFAULT_REFERENCE_AREA =
-      3.141592653589793e-4;                           // Reference area (cm²)
-    constexpr double DEFAULT_ELASTIC_MODULUS = 1.0e6; // Elastic modulus (Pa)
-    constexpr double DEFAULT_REFERENCE_PRESSURE =
-      0.0;                                      // Reference pressure (Pa)
-    constexpr double DEFAULT_VISCOSITY_C = 1.0; // Viscosity coefficient
-    constexpr double DEFAULT_THETA       = 1.0; // Penalty parameter
-    constexpr double DEFAULT_ETA         = 1.0; // Stability parameter
-
-    // Manufactured solution parameters
-    constexpr double DEFAULT_R0 = 9.99e-3; // Reference radius (m)
-    constexpr double DEFAULT_L  = 1.0;     // Domain length (m)
-    constexpr double DEFAULT_T0 = 1.0;     // Time period (s)
-
-    // Tube law exponent
-    constexpr double TUBE_LAW_EXPONENT = 0.5;
-  } // namespace BloodFlowParameters
-
-  //====================================================================
-  // PHYSICAL AND CONSTITUTIVE RELATIONS
-  //====================================================================
-
-  /**
-   * Compute wave speed using the tube law
-   */
-  template <int dim, int spacedim>
-  double
-  compute_wave_speed(const double area,
-                     const double reference_area,
-                     const double elastic_modulus,
-                     const double density)
-  {
-    const double ratio = area / reference_area;
-    const double m     = BloodFlowParameters::TUBE_LAW_EXPONENT;
-    const double dpda =
-      elastic_modulus * m * std::pow(ratio, m - 1.0) / reference_area;
-    return std::sqrt(area / density * dpda);
-  }
-
-  /**
-   * Compute pressure using the tube law
-   */
-  template <int dim, int spacedim>
-  double
-  compute_pressure_value(const double area,
-                         const double reference_area,
-                         const double elastic_modulus,
-                         const double reference_pressure)
-  {
-    const double ratio = area / reference_area;
-    const double m     = BloodFlowParameters::TUBE_LAW_EXPONENT;
-    return elastic_modulus * (std::pow(ratio, m) - 1.0) + reference_pressure;
-  }
-
-  /**
-   * Compute pressure derivative dP/dA
-   */
-  template <int dim, int spacedim>
-  double
-  compute_pressure_derivative(const double area,
-                              const double reference_area,
-                              const double elastic_modulus)
-  {
-    const double ratio = area / reference_area;
-    const double m     = BloodFlowParameters::TUBE_LAW_EXPONENT;
-    return elastic_modulus * m * std::pow(ratio, m - 1.0) / reference_area;
-  }
-
-  // -----------------------------------------------------------------------------
-  // Compute Lax–Friedrichs penalty parameter alpha
-  // alpha = max(|U_L \pm c_L|, |U_R \pm c_R|)
-  // -----------------------------------------------------------------------------
-  template <int dim, int spacedim>
-  inline double
-  compute_LF_penalty(const double area_L,
-                     const double area_R,
-                     const double U_L,
-                     const double U_R,
-                     const double reference_area,
-                     const double elastic_modulus,
-                     const double density)
-  {
-    // Compute left and right wave speeds
-    const double cL = compute_wave_speed<dim, spacedim>(area_L,
-                                                        reference_area,
-                                                        elastic_modulus,
-                                                        density);
-    const double cR = compute_wave_speed<dim, spacedim>(area_R,
-                                                        reference_area,
-                                                        elastic_modulus,
-                                                        density);
-
-    // Compute four characteristic speeds and return maximum magnitude
-    const double alpha = std::max({std::abs(U_L + cL),
-                                   std::abs(U_L - cL),
-                                   std::abs(U_R + cR),
-                                   std::abs(U_R - cR)});
-
-    return alpha;
-  }
-
+  using BloodFlowParameters = ParsedTools::Constants;
 
   //====================================================================
   // EXACT SOLUTION AND MANUFACTURED SOLUTION
@@ -164,10 +63,10 @@ namespace dealii
   // public:
   //   ExactSolutionBloodFlow()
   //     : Function<spacedim>(2) // 2 components: area and velocity
-  //     , r0(BloodFlowParameters::DEFAULT_R0)
+  //     , r0(BloodFlowParameters::R0)
   //     , a0(numbers::PI * r0 * r0)
-  //     , L(BloodFlowParameters::DEFAULT_L)
-  //     , T0(BloodFlowParameters::DEFAULT_T0)
+  //     , L(BloodFlowParameters::L)
+  //     , T0(BloodFlowParameters::T0)
   //     , atilde(0.1 * a0)
   //     , qtilde(0.0)
   //   {}
@@ -281,10 +180,10 @@ namespace dealii
   // public:
   //   RHS_A_BloodFlow()
   //     : Function<spacedim>(1)
-  //     , r0(BloodFlowParameters::DEFAULT_R0)
+  //     , r0(BloodFlowParameters::R0)
   //     , a0(numbers::PI * r0 * r0)
-  //     , L(BloodFlowParameters::DEFAULT_L)
-  //     , T0(BloodFlowParameters::DEFAULT_T0)
+  //     , L(BloodFlowParameters::L)
+  //     , T0(BloodFlowParameters::T0)
   //     , atilde(0.1 * a0)
   //     , qtilde(0.0)
   //   {}
@@ -323,14 +222,14 @@ namespace dealii
   // public:
   //   RHS_U_BloodFlow()
   //     : Function<spacedim>(1)
-  //     , r0(BloodFlowParameters::DEFAULT_R0)
+  //     , r0(BloodFlowParameters::R0)
   //     , a0(numbers::PI * r0 * r0)
-  //     , L(BloodFlowParameters::DEFAULT_L)
-  //     , T0(BloodFlowParameters::DEFAULT_T0)
+  //     , L(BloodFlowParameters::L)
+  //     , T0(BloodFlowParameters::T0)
   //     , atilde(0.1 * a0)
-  //     , rho(BloodFlowParameters::DEFAULT_RHO)
-  //     , elastic_modulus(BloodFlowParameters::DEFAULT_ELASTIC_MODULUS)
-  //     , viscosity_c(BloodFlowParameters::DEFAULT_VISCOSITY_C)
+  //     , rho(BloodFlowParameters::RHO)
+  //     , elastic_modulus(BloodFlowParameters::ELASTIC_MODULUS)
+  //     , viscosity_c(BloodFlowParameters::VISCOSITY_C)
   //     , m(BloodFlowParameters::TUBE_LAW_EXPONENT)
   //   {}
 
@@ -477,6 +376,82 @@ namespace dealii
     run_convergence_study();
 
   private:
+    ParsedTools::Constants par;
+    // --------------------------------------------------
+    // ===  Physical and Constitutive Relations  ===
+    // --------------------------------------------------
+
+    /**
+     * Compute wave speed using the tube law
+     */
+    double
+    compute_wave_speed(const double area,
+                       const double reference_area,
+                       const double elastic_modulus,
+                       const double density) const
+    {
+      const double ratio = area / reference_area;
+      const double m     = par["tube_law_exponent"];
+      const double dpda =
+        elastic_modulus * m * std::pow(ratio, m - 1.0) / reference_area;
+      return std::sqrt(area / density * dpda);
+    }
+
+    /**
+     * Compute pressure using the tube law
+     */
+    double
+    compute_pressure_value(const double area,
+                           const double reference_area,
+                           const double elastic_modulus,
+                           const double reference_pressure) const
+    {
+      const double ratio = area / reference_area;
+      const double m     = par["tube_law_exponent"];
+      return elastic_modulus * (std::pow(ratio, m) - 1.0) + reference_pressure;
+    }
+
+    /**
+     * Compute pressure derivative dP/dA
+     */
+    double
+    compute_pressure_derivative(const double area,
+                                const double reference_area,
+                                const double elastic_modulus) const
+    {
+      const double ratio = area / reference_area;
+      const double m     = par["tube_law_exponent"];
+      return elastic_modulus * m * std::pow(ratio, m - 1.0) / reference_area;
+    }
+
+    /**
+     * Compute Lax–Friedrichs penalty parameter alpha
+     * alpha = max(|U_L \pm c_L|, |U_R \pm c_R|)
+     */
+    double
+    compute_LF_penalty(const double area_L,
+                       const double area_R,
+                       const double U_L,
+                       const double U_R,
+                       const double reference_area,
+                       const double elastic_modulus,
+                       const double density) const
+    {
+      // Compute left and right wave speeds
+      const double cL =
+        compute_wave_speed(area_L, reference_area, elastic_modulus, density);
+      const double cR =
+        compute_wave_speed(area_R, reference_area, elastic_modulus, density);
+
+      // Compute four characteristic speeds and return maximum magnitude
+      const double alpha = std::max({std::abs(U_L + cL),
+                                     std::abs(U_L - cL),
+                                     std::abs(U_R + cR),
+                                     std::abs(U_R - cR)});
+
+      return alpha;
+    }
+
     // --------------------------------------------------
     // ===  Geometry and Flux helper functions  ===
     // --------------------------------------------------
@@ -602,21 +577,18 @@ namespace dealii
     unsigned int n_refinement_cycles  = 4;
     unsigned int n_global_refinements = 4;
 
-    // Physical parameters
-    double       time_step       = 0.01;
-    double       final_time      = 1.0;
-    double       time            = 0.0;
-    unsigned int n_time_steps    = 0;
-    double       omega           = 1;
-    double       rho             = BloodFlowParameters::DEFAULT_RHO;
-    double       viscosity_c     = BloodFlowParameters::DEFAULT_VISCOSITY_C;
-    double       reference_area  = BloodFlowParameters::DEFAULT_REFERENCE_AREA;
-    double       elastic_modulus = BloodFlowParameters::DEFAULT_ELASTIC_MODULUS;
-    double reference_pressure = BloodFlowParameters::DEFAULT_REFERENCE_PRESSURE;
-    double theta              = BloodFlowParameters::DEFAULT_THETA;
-    double eta                = BloodFlowParameters::DEFAULT_ETA;
+    // Time stepping parameters
+    double       time_step    = 0.01;
+    double       final_time   = 1.0;
+    double       time         = 0.0;
+    unsigned int n_time_steps = 0;
 
-    // Picard iteration parameters
+    // Numerical parameters
+    double omega = 1;
+    double theta = 0.5;
+    double eta   = 1.0;
+
+    // Newton iteration parameters
     unsigned int max_newton_iterations = 20;
     double       newton_tolerance      = 1e-8;
 
@@ -639,10 +611,9 @@ namespace dealii
     test(...) -> void;
 
 
-    ParameterAcceptorProxy<Functions::ParsedFunction<spacedim>>
-      initial_condition;
-    ParameterAcceptorProxy<Functions::ParsedFunction<spacedim>> rhs_function;
-    ParameterAcceptorProxy<Functions::ParsedFunction<spacedim>> exact_solution;
+    ParsedTools::Function<spacedim> initial_condition;
+    ParsedTools::Function<spacedim> rhs_function;
+    ParsedTools::Function<spacedim> exact_solution;
   };
 
 } // namespace dealii

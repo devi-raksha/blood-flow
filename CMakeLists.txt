@@ -42,6 +42,8 @@ SET(TARGET1_SRC
 
 set(TARGET2_SRC
   source/blood_flow_system_updated_1d3d.cc
+  source/constants.cc
+  source/function.cc
   main_updated_1d3d.cc
 )
 

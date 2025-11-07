@@ -22,15 +22,40 @@ namespace dealii
   // Main class implementation
   template <int dim, int spacedim>
   BloodFlowSystem<dim, spacedim>::BloodFlowSystem()
-    : triangulation()
+    : par("Blood Flow Parameters",
+          {"rho", "a0", "mu", "p0", "eta_c", "r0", "m"},
+          {1.06, 3.141592653589793e-4, 1.0e6, 0.0, 1.0, 9.99e-3, 0.5},
+          {"Density",
+           "Reference cross-sectional area",
+           "Elastic modulus of the vessel wall",
+           "Reference pressure",
+           "Viscosity coefficient",
+           "Reference radius",
+           "Tube law exponent"})
+    , triangulation()
     , dof_handler(triangulation)
     , fe(nullptr)
     , time_step(1.0)
     , time(0.0)
     , n_time_steps(0)
-    , initial_condition("Initial condition", 2)
-    , rhs_function("RHS function", 2)
-    , exact_solution("Exact solution", 2)
+    , initial_condition(
+        "Initial condition",
+        "1e-4; 0.0",
+        "Function expression",
+        par,
+        dealii::FunctionParser<spacedim>::default_variable_names() + ",t")
+    , rhs_function("RHS function",
+                   "0.0; 0.0",
+                   "Function expression",
+                   par,
+                   dealii::FunctionParser<spacedim>::default_variable_names() +
+                     ",t")
+    , exact_solution(
+        "Exact solution",
+        "1e-4; 0.0",
+        "Function expression",
+        par,
+        dealii::FunctionParser<spacedim>::default_variable_names() + ",t")
   {
     add_parameter("Finite element degree", fe_degree);
     add_parameter("Problem constants", constants);
@@ -40,24 +65,12 @@ namespace dealii
     add_parameter("Number of global refinement", n_global_refinements);
     add_parameter("Time step", time_step);
     add_parameter("Final time", final_time);
-    add_parameter("Density (rho)", rho);
-    add_parameter("Viscosity coefficient (c)", viscosity_c);
-    add_parameter("Reference area", reference_area);
-    add_parameter("Elastic modulus", elastic_modulus);
-    add_parameter("Reference pressure", reference_pressure);
     add_parameter("Theta (penalty parameter)", theta);
     add_parameter("Eta (stability parameter)", eta);
     add_parameter("Omega (relaxation parameter)", omega);
     // add_parameter("Picard iterations", max_picard_iterations);
     add_parameter("Newton iterations", max_newton_iterations);
     add_parameter("Newton tolerance", newton_tolerance);
-
-    initial_condition.declare_parameters_call_back.connect(
-      [&]() { this->prm.set("Function expression", "1e-4; 0.0"); });
-    rhs_function.declare_parameters_call_back.connect(
-      [&]() { this->prm.set("Function expression", "0.0; 0.0"); });
-    exact_solution.declare_parameters_call_back.connect(
-      [&]() { this->prm.set("Function expression", "1e-4; 0.0"); });
   }
 
   // ========================================================================
@@ -70,6 +83,8 @@ namespace dealii
   {
     ParameterAcceptor::initialize(filename,
                                   "last_used_parameters.prm",
+                                  ParameterHandler::Short,
+                                  this->prm,
                                   ParameterHandler::Short);
   }
 
@@ -90,8 +105,8 @@ namespace dealii
 
         // // Update RHS function parameters
         // rhs_U_function->set_rho(rho);
-        // rhs_U_function->set_elastic_modulus(elastic_modulus);
-        // rhs_U_function->set_viscosity_c(viscosity_c);
+        // rhs_U_function->set_mu(mu);
+        // rhs_U_function->set_eta_c(eta_c);
 
         // std::string vars;
         // if (spacedim == 1)
@@ -235,15 +250,14 @@ namespace dealii
 
           // // Compute explicit pressure and derivative
           // const double current_pressure =
-          //   compute_pressure_value<dim, spacedim>(current_area[point],
-          //                                         reference_area,
-          //                                         elastic_modulus,
-          //                                         reference_pressure);
-          const double dpdA =
-            compute_pressure_derivative<dim, spacedim>(current_area[point],
-                                                       reference_area,
-                                                       elastic_modulus);
-          const double c_squared = current_area[point] / rho * dpdA;
+          //   compute_pressure_value(current_area[point],
+          //                          a0,
+          //                          mu,
+          //                          p0);
+          const double dpdA = compute_pressure_derivative(current_area[point],
+                                                          par["a0"],
+                                                          par["mu"]);
+          const double c_squared = current_area[point] / par["rho"] * dpdA;
 
           for (unsigned int i = 0; i < n_dofs; ++i)
             {
@@ -299,7 +313,7 @@ namespace dealii
 
                   // Reaction (viscosity): ∫ c U phi_U dx
                   copy_data.cell_matrix(i, j) -=
-                    viscosity_c * fe_v[velocity_extractor].value(i, point) *
+                    par["eta_c"] * fe_v[velocity_extractor].value(i, point) *
                     trial_velocity * JxW[point];
                 }
 
@@ -352,47 +366,42 @@ namespace dealii
       for (unsigned int q = 0; q < n_q; ++q)
         {
           // Compute pressures
-          const double current_pressure =
-            compute_pressure_value<dim, spacedim>(current_area[q],
-                                                  reference_area,
-                                                  elastic_modulus,
-                                                  reference_pressure);
+          const double current_pressure = compute_pressure_value(
+            current_area[q], par["a0"], par["mu"], par["p0"]);
 
-          const double current_pressure_neighbor =
-            compute_pressure_value<dim, spacedim>(current_area_neighbor[q],
-                                                  reference_area,
-                                                  elastic_modulus,
-                                                  reference_pressure);
+          const double current_pressure_neighbor = compute_pressure_value(
+            current_area_neighbor[q], par["a0"], par["mu"], par["p0"]);
 
           // // Compute explicit pressure and derivative
           // const double dpdA_neighbor =
           //   compute_pressure_derivative<dim,
           //   spacedim>(current_area_neighbor[q],
-          //                                              reference_area,
-          //                                              elastic_modulus);
+          //                                              a0,
+          //                                              mu);
 
           // const double dpdA =
           //   compute_pressure_derivative<dim, spacedim>(current_area[q],
-          //                                              reference_area,
-          //                                              elastic_modulus);
+          //                                              a0,
+          //                                              mu);
 
 
           // Wave speeds for Lax-Friedrichs penalty
-          const double cL = compute_wave_speed<dim, spacedim>(current_area[q],
-                                                              reference_area,
-                                                              elastic_modulus,
-                                                              rho);
-          const double cR = compute_wave_speed<dim, spacedim>(
-            current_area_neighbor[q], reference_area, elastic_modulus, rho);
+          const double cL = compute_wave_speed(current_area[q],
+                                               par["a0"],
+                                               par["mu"],
+                                               par["rho"]);
+          const double cR = compute_wave_speed(current_area_neighbor[q],
+                                               par["a0"],
+                                               par["mu"],
+                                               par["rho"]);
 
-          const double alpha =
-            compute_LF_penalty<dim, spacedim>(current_area[q],
-                                              current_area_neighbor[q],
-                                              current_velocity[q],
-                                              current_velocity_neighbor[q],
-                                              reference_area,
-                                              elastic_modulus,
-                                              rho);
+          const double alpha = compute_LF_penalty(current_area[q],
+                                                  current_area_neighbor[q],
+                                                  current_velocity[q],
+                                                  current_velocity_neighbor[q],
+                                                  par["a0"],
+                                                  par["mu"],
+                                                  par["rho"]);
 
 
           for (unsigned int i = 0; i < nd; ++i)
@@ -499,14 +508,14 @@ namespace dealii
                                                current_velocity[q],
                                                current_velocity[q],
                                                current_pressure,
-                                               rho) *
+                                               par["rho"]) *
                 normals[q];
               const double F_momentum_neighbor =
                 compute_physical_momentum_flux(ncell,
                                                current_velocity_neighbor[q],
                                                current_velocity_neighbor[q],
                                                current_pressure_neighbor,
-                                               rho) *
+                                               par["rho"]) *
                 normals[q];
 
               const double F_hat_momentum_numerical =
@@ -552,25 +561,20 @@ namespace dealii
           const double U_bd = bc[q](1);
 
           // Pressures
-          const double current_pressure =
-            compute_pressure_value<dim, spacedim>(current_area[q],
-                                                  reference_area,
-                                                  elastic_modulus,
-                                                  reference_pressure);
-          const double pressure_bd = compute_pressure_value<dim, spacedim>(
-            A_bd, reference_area, elastic_modulus, reference_pressure);
+          const double current_pressure = compute_pressure_value(
+            current_area[q], par["a0"], par["mu"], par["p0"]);
+          const double pressure_bd =
+            compute_pressure_value(A_bd, par["a0"], par["mu"], par["p0"]);
 
           // Pressure derivatives
           const double dpdA =
-            compute_pressure_derivative<dim, spacedim>(current_area[q],
-                                                       reference_area,
-                                                       elastic_modulus);
+            compute_pressure_derivative(current_area[q], par["a0"], par["mu"]);
 
           // Wave speed at interior
-          const double cL = compute_wave_speed<dim, spacedim>(current_area[q],
-                                                              reference_area,
-                                                              elastic_modulus,
-                                                              rho);
+          const double cL = compute_wave_speed(current_area[q],
+                                               par["a0"],
+                                               par["mu"],
+                                               par["rho"]);
 
           // Flow direction
           const double lambda1   = current_velocity[q] - cL;
@@ -602,7 +606,7 @@ namespace dealii
 
                       // Momentum Jacobian from IBP boundary term
                       // - ∫_boundary (c^2/A deltaA + U deltaU) (b·n) phi_U ds
-                      const double c_sq = current_area[q] / rho * dpdA;
+                      const double c_sq = current_area[q] / par["rho"] * dpdA;
                       const auto   flux_jac_velocity =
                         compute_physical_momentum_jacobian_flux(
                           cell,
@@ -636,9 +640,10 @@ namespace dealii
                     F_area_bd * fe_face[area_extractor].value(i, q) * JxW[q];
 
                   // Momentum convective flux at inflow: (U_bd)²/2
-                  const auto F_conv_bd = compute_physical_momentum_flux(
-                                           cell, U_bd, U_bd, pressure_bd, rho) *
-                                         normals[q];
+                  const auto F_conv_bd =
+                    compute_physical_momentum_flux(
+                      cell, U_bd, U_bd, pressure_bd, par["rho"]) *
+                    normals[q];
                   copy.cell_rhs(i) -= F_conv_bd *
                                       fe_face[velocity_extractor].value(i, q) *
                                       JxW[q];
@@ -662,7 +667,7 @@ namespace dealii
                                                    current_velocity[q],
                                                    current_velocity[q],
                                                    current_pressure,
-                                                   rho) *
+                                                   par["rho"]) *
                     normals[q];
                   copy.cell_rhs(i) -= F_conv_out *
                                       fe_face[velocity_extractor].value(i, q) *
@@ -849,10 +854,7 @@ namespace dealii
               {
                 const double area = solution[dof_indices[i]];
                 pressure[dof_indices[i]] =
-                  compute_pressure_value<dim, spacedim>(area,
-                                                        reference_area,
-                                                        elastic_modulus,
-                                                        reference_pressure);
+                  compute_pressure_value(area, par["a0"], par["mu"], par["p0"]);
               }
           }
       }
