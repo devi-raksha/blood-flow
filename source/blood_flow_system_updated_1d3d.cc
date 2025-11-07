@@ -83,6 +83,10 @@ namespace dealii
                                   ParameterHandler::Short,
                                   this->prm,
                                   ParameterHandler::Short);
+
+    exact_solution.update_constants(par);
+    initial_condition.update_constants(par);
+    rhs_function.update_constants(par);
   }
 
   // ========================================================================
