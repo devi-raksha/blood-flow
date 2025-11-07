@@ -35,9 +35,6 @@ namespace dealii
     , triangulation()
     , dof_handler(triangulation)
     , fe(nullptr)
-    , time_step(1.0)
-    , time(0.0)
-    , n_time_steps(0)
     , initial_condition(
         "Functions",
         "1e-4; 0.0",
