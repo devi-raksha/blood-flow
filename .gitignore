@@ -29,10 +29,10 @@ latex/*.out
 latex/*.pdf
 latex/*.synctex.gz
 latex/movie/
-latex/shock.mp4
+latex/*.mp4
 
 # Backup files
 source/*.bak
 
 # Local parameter files
-parameters_non_linear_conservation_law.prm
+*.prm
