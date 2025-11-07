@@ -357,13 +357,7 @@ namespace dealii
     void
     setup_system();
     void
-    assemble_mass_matrix();
-    void
     assemble_system();
-    void
-    assemble_jacobian();
-    void
-    compute_residual_vector();
     void
     solve();
     void
@@ -544,13 +538,9 @@ namespace dealii
 
     // Linear system
     SparsityPattern      sparsity_pattern;
-    SparseMatrix<double> system_matrix;
-    SparseMatrix<double> mass_matrix;
-    SparseMatrix<double> system_matrix_time;
     SparseMatrix<double> jacobian_matrix;
     Vector<double>       solution;
     Vector<double>       solution_old;
-    Vector<double>       right_hand_side;
     Vector<double>       pressure;
     Vector<double>       tmp_vector;
 

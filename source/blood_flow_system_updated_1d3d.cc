@@ -102,24 +102,6 @@ namespace dealii
         // Two-component system: A (area) and U (velocity)
         fe = std::make_unique<FESystem<dim, spacedim>>(
           FE_DGQ<dim, spacedim>(fe_degree), 2);
-
-
-        // // Update RHS function parameters
-        // rhs_U_function->set_rho(rho);
-        // rhs_U_function->set_mu(mu);
-        // rhs_U_function->set_eta_c(eta_c);
-
-        // std::string vars;
-        // if (spacedim == 1)
-        //   vars = "x";
-        // else if (spacedim == 2)
-        //   vars = "x,y";
-        // else
-        //   vars = "x,y,z";
-        // std::map<std::string, double> const_map;
-        // initial_A.initialize(vars, initial_A_expression, const_map);
-        // initial_U.initialize(vars, initial_U_expression, const_map);
-        // pressure_bc.initialize(vars, pressure_bc_expression, const_map);
       }
 
     dof_handler.distribute_dofs(*fe);
@@ -127,86 +109,16 @@ namespace dealii
     DynamicSparsityPattern dsp(dof_handler.n_dofs());
     DoFTools::make_flux_sparsity_pattern(dof_handler, dsp);
     sparsity_pattern.copy_from(dsp);
-    system_matrix.reinit(sparsity_pattern);
-    mass_matrix.reinit(sparsity_pattern);
     jacobian_matrix.reinit(sparsity_pattern); // for Newton iteration
     solution.reinit(dof_handler.n_dofs());
     solution_old.reinit(dof_handler.n_dofs());
-    right_hand_side.reinit(dof_handler.n_dofs());
     residual_vector.reinit(dof_handler.n_dofs()); // for Newton residual
     newton_update.reinit(dof_handler.n_dofs());   // for Newton update
     pressure.reinit(dof_handler.n_dofs());
   }
 
   // ========================================================================
-  // ASSEMBLE MASS MATRIX
-  // ========================================================================
-  template <int dim, int spacedim>
-  void
-  BloodFlowSystem<dim, spacedim>::assemble_mass_matrix()
-  {
-    mass_matrix = 0;
-    Vector<double> dummy_rhs(dof_handler.n_dofs());
-
-    const FEValuesExtractors::Scalar area_extractor(0);
-    const FEValuesExtractors::Scalar velocity_extractor(1);
-
-    auto cell_worker = [&](const auto                          &cell,
-                           BloodFlowScratchData<dim, spacedim> &scratch,
-                           BloodFlowCopyData                   &copy) {
-      const unsigned int n_dofs = scratch.fe_values.get_fe().n_dofs_per_cell();
-      copy.reinit(cell, n_dofs);
-      scratch.fe_values.reinit(cell);
-
-      const auto &fe_v = scratch.fe_values;
-      const auto &JxW  = fe_v.get_JxW_values();
-
-      for (unsigned int q = 0; q < fe_v.n_quadrature_points; ++q)
-        {
-          for (unsigned int i = 0; i < n_dofs; ++i)
-            {
-              for (unsigned int j = 0; j < n_dofs; ++j)
-                {
-                  // Mass matrix for area component
-                  copy.cell_matrix(i, j) += fe_v[area_extractor].value(i, q) *
-                                            fe_v[area_extractor].value(j, q) *
-                                            JxW[q];
-
-                  // Mass matrix for velocity component
-                  copy.cell_matrix(i, j) +=
-                    fe_v[velocity_extractor].value(i, q) *
-                    fe_v[velocity_extractor].value(j, q) * JxW[q];
-                }
-            }
-        }
-    };
-
-    // Execute assembly
-    const QGauss<dim>     quadrature(fe->tensor_degree() + 1);
-    const QGauss<dim - 1> quadrature_face(fe->tensor_degree() + 1);
-
-    BloodFlowScratchData<dim, spacedim> scratch_data(*fe,
-                                                     quadrature,
-                                                     quadrature_face);
-    BloodFlowCopyData                   copy_data;
-
-    const AffineConstraints<double> constraints;
-    auto                            copier = [&](const BloodFlowCopyData &c) {
-      constraints.distribute_local_to_global(
-        c.cell_matrix, c.cell_rhs, c.local_dof_indices, mass_matrix, dummy_rhs);
-    };
-
-    MeshWorker::mesh_loop(dof_handler.begin_active(),
-                          dof_handler.end(),
-                          cell_worker,
-                          copier,
-                          scratch_data,
-                          copy_data,
-                          MeshWorker::assemble_own_cells);
-  }
-
-  // ========================================================================
-  // ASSEMBLE SYSTEM with Newton Jacobian Linearization
+  // ASSEMBLE Jacobian Linearization and Residual
   // ========================================================================
   template <int dim, int spacedim>
   void
@@ -214,8 +126,8 @@ namespace dealii
   {
     using Iterator = typename DoFHandler<dim, spacedim>::active_cell_iterator;
 
-    system_matrix   = 0;
-    right_hand_side = 0;
+    jacobian_matrix = 0;
+    residual_vector = 0;
 
     const FEValuesExtractors::Scalar area_extractor(0);
     const FEValuesExtractors::Scalar velocity_extractor(1);
@@ -249,17 +161,34 @@ namespace dealii
           const double rhs_A_value = rhs_function.value(q_points[point], 0);
           const double rhs_U_value = rhs_function.value(q_points[point], 1);
 
-          // // Compute explicit pressure and derivative
-          // const double current_pressure =
-          //   compute_pressure_value(current_area[point],
-          //                          a0,
-          //                          mu,
-          //                          p0);
+          // Compute explicit pressure and derivative
+          const double current_pressure =
+            compute_pressure_value(current_area[point]);
           const double dpdA = compute_pressure_derivative(current_area[point]);
           const double c_squared = current_area[point] / par["rho"] * dpdA;
 
+          const auto current_flux_A =
+            compute_physical_area_flux(cell,
+                                       current_area[point],
+                                       current_velocity[point]);
+
+          const auto current_flux_U =
+            compute_physical_momentum_flux(cell,
+                                           current_velocity[point],
+                                           current_velocity[point],
+                                           current_pressure);
+
           for (unsigned int i = 0; i < n_dofs; ++i)
             {
+              const auto test_area = fe_v[area_extractor].value(i, point);
+              const auto test_velocity =
+                fe_v[velocity_extractor].value(i, point);
+
+              const auto test_area_grad =
+                fe_v[area_extractor].gradient(i, point);
+              const auto test_velocity_grad =
+                fe_v[velocity_extractor].gradient(i, point);
+
               for (unsigned int j = 0; j < n_dofs; ++j)
                 {
                   // ===== AREA EQUATION Jacobian =====
@@ -270,8 +199,7 @@ namespace dealii
                   // Mass term: (1/dt) * trial_A *
                   // fe_face[area_extractor].value(i, q)
                   copy_data.cell_matrix(i, j) +=
-                    (1.0 / time_step) * trial_area *
-                    fe_v[area_extractor].value(i, point) * JxW[point];
+                    (1.0 / time_step) * trial_area * test_area * JxW[point];
 
                   // Flux Jacobian: -b·∇(H_A * trial_W)
                   // H_A = [U, A] so H_A·[trial_A, trial_U] = U*trial_A +
@@ -284,15 +212,14 @@ namespace dealii
                                                         trial_area);
 
                   copy_data.cell_matrix(i, j) -=
-                    flux_jacobian_A * fe_v[area_extractor].gradient(i, point) *
-                    JxW[point];
+                    flux_jacobian_A * test_area_grad * JxW[point];
 
                   // ===== MOMENTUM EQUATION Jacobian=====
                   // Mass term: (1/dt) * trial_U *
                   // fe_face[velocity_extractor].value(i, q)
-                  copy_data.cell_matrix(i, j) +=
-                    (1.0 / time_step) * trial_velocity *
-                    fe_v[velocity_extractor].value(i, point) * JxW[point];
+                  copy_data.cell_matrix(i, j) += (1.0 / time_step) *
+                                                 trial_velocity *
+                                                 test_velocity * JxW[point];
 
                   // Flux Jacobian: -b·∇(H_U * trial_W)
                   // H_U = [c^2 /A, U] so H_U·[trial_A, trial_U] =
@@ -307,20 +234,25 @@ namespace dealii
                       trial_velocity);
 
                   copy_data.cell_matrix(i, j) -=
-                    flux_jacobian_U *
-                    fe_v[velocity_extractor].gradient(i, point) * JxW[point];
+                    flux_jacobian_U * test_velocity_grad * JxW[point];
 
                   // Reaction (viscosity): ∫ c U phi_U dx
-                  copy_data.cell_matrix(i, j) -=
-                    par["eta_c"] * fe_v[velocity_extractor].value(i, point) *
-                    trial_velocity * JxW[point];
+                  copy_data.cell_matrix(i, j) +=
+                    par["eta_c"] * test_velocity * trial_velocity * JxW[point];
                 }
 
               // RHS: source terms
               copy_data.cell_rhs(i) +=
-                rhs_A_value * fe_v[area_extractor].value(i, point) * JxW[point];
-              copy_data.cell_rhs(i) +=
-                rhs_U_value * fe_v[velocity_extractor].value(i, point) *
+                (
+                  // Area equation
+                  rhs_A_value * test_area +
+                  1. / time_step * current_area[point] * test_area +
+                  current_flux_A * test_area_grad
+                  // Momentum equation
+                  + rhs_U_value * test_velocity +
+                  1. / time_step * current_velocity[point] * test_velocity +
+                  current_flux_U * test_velocity_grad -
+                  par["eta_c"] * current_velocity[point] * test_velocity) *
                 JxW[point];
             }
         }
@@ -665,13 +597,13 @@ namespace dealii
       constraints.distribute_local_to_global(c.cell_matrix,
                                              c.cell_rhs,
                                              c.local_dof_indices,
-                                             system_matrix,
-                                             right_hand_side);
+                                             jacobian_matrix,
+                                             residual_vector);
       for (auto &cdf : c.face_data)
         {
           constraints.distribute_local_to_global(cdf.cell_matrix,
                                                  cdf.joint_dof_indices,
-                                                 system_matrix);
+                                                 jacobian_matrix);
         }
     };
 
@@ -695,51 +627,6 @@ namespace dealii
                             MeshWorker::assemble_own_interior_faces_once,
                           boundary_worker,
                           face_worker);
-  }
-
-  // ========================================================================
-  // COMPUTE RESIDUAL VECTOR FOR NEWTON
-  // ========================================================================
-
-  template <int dim, int spacedim>
-  void
-  BloodFlowSystem<dim, spacedim>::compute_residual_vector()
-  {
-    // R(W) = M/dt * (W - W_old) + K(W) - RHS
-    Vector<double> mass_times_W(dof_handler.n_dofs());
-    Vector<double> mass_times_W_old(dof_handler.n_dofs());
-
-    mass_matrix.vmult(mass_times_W, solution);
-    mass_matrix.vmult(mass_times_W_old, solution_old);
-
-    mass_times_W.add(-1.0, mass_times_W_old);
-    mass_times_W *= (1.0 / time_step);
-
-    // K(W) * W (system_matrix contains K'(W) evaluated at current iterate)
-    Vector<double> K_times_W(dof_handler.n_dofs());
-    system_matrix.vmult(K_times_W, solution);
-
-    residual_vector = mass_times_W;
-    residual_vector += K_times_W;
-    residual_vector -= right_hand_side;
-  }
-
-  // ========================================================================
-  // ASSEMBLE JACOBIAN MATRIX FOR NEWTON
-  // ========================================================================
-
-  template <int dim, int spacedim>
-  void
-  BloodFlowSystem<dim, spacedim>::assemble_jacobian()
-  {
-    // First assemble system at current Newton iterate
-    assemble_system(); // Fills system_matrix and right_hand_side
-
-    // Jacobian: J = M/dt + K'(W)
-    // where K'(W) is computed in assemble_system()
-    jacobian_matrix.copy_from(mass_matrix);
-    jacobian_matrix *= (1.0 / time_step);
-    jacobian_matrix.add(1.0, system_matrix);
   }
 
   // ========================================================================
@@ -1003,11 +890,9 @@ namespace dealii
 
         // Run time stepping to final_time
         time = 0.0;
-        assemble_mass_matrix();
 
         n_time_steps =
           static_cast<unsigned int>(std::round(final_time / time_step));
-        system_matrix_time.reinit(sparsity_pattern);
         tmp_vector.reinit(dof_handler.n_dofs());
 
         for (unsigned int step = 1; step <= n_time_steps; ++step)
@@ -1025,13 +910,8 @@ namespace dealii
             do
               {
                 // Assemble Jacobian and residual at current Newton iterate
-                assemble_jacobian();
+                assemble_system();
 
-                // Compute residual vector R(W^(k))
-                compute_residual_vector();
-
-                // Setup Newton RHS: J * delta_W = -R
-                residual_vector *= -1.0;
                 double newton_residual_norm = residual_vector.l2_norm();
 
                 std::cout << " Newton iter " << newton_iter
