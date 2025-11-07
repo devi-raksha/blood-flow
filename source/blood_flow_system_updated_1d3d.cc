@@ -39,21 +39,21 @@ namespace dealii
     , time(0.0)
     , n_time_steps(0)
     , initial_condition(
-        "Initial condition",
+        "Functions",
         "1e-4; 0.0",
-        "Function expression",
+        "Initial condition",
         par,
         dealii::FunctionParser<spacedim>::default_variable_names() + ",t")
-    , rhs_function("RHS function",
+    , rhs_function("Functions",
                    "0.0; 0.0",
-                   "Function expression",
+                   "RHS expression",
                    par,
                    dealii::FunctionParser<spacedim>::default_variable_names() +
                      ",t")
     , exact_solution(
-        "Exact solution",
+        "Functions",
         "1e-4; 0.0",
-        "Function expression",
+        "Exact solution",
         par,
         dealii::FunctionParser<spacedim>::default_variable_names() + ",t")
   {
@@ -496,15 +496,13 @@ namespace dealii
                 compute_physical_momentum_flux(cell,
                                                current_velocity[q],
                                                current_velocity[q],
-                                               current_pressure,
-                                               par["rho"]) *
+                                               current_pressure) *
                 normals[q];
               const double F_momentum_neighbor =
                 compute_physical_momentum_flux(ncell,
                                                current_velocity_neighbor[q],
                                                current_velocity_neighbor[q],
-                                               current_pressure_neighbor,
-                                               par["rho"]) *
+                                               current_pressure_neighbor) *
                 normals[q];
 
               const double F_hat_momentum_numerical =
@@ -624,10 +622,9 @@ namespace dealii
                     F_area_bd * fe_face[area_extractor].value(i, q) * JxW[q];
 
                   // Momentum convective flux at inflow: (U_bd)²/2
-                  const auto F_conv_bd =
-                    compute_physical_momentum_flux(
-                      cell, U_bd, U_bd, pressure_bd, par["rho"]) *
-                    normals[q];
+                  const auto F_conv_bd = compute_physical_momentum_flux(
+                                           cell, U_bd, U_bd, pressure_bd) *
+                                         normals[q];
                   copy.cell_rhs(i) -= F_conv_bd *
                                       fe_face[velocity_extractor].value(i, q) *
                                       JxW[q];
@@ -650,8 +647,7 @@ namespace dealii
                     compute_physical_momentum_flux(cell,
                                                    current_velocity[q],
                                                    current_velocity[q],
-                                                   current_pressure,
-                                                   par["rho"]) *
+                                                   current_pressure) *
                     normals[q];
                   copy.cell_rhs(i) -= F_conv_out *
                                       fe_face[velocity_extractor].value(i, q) *

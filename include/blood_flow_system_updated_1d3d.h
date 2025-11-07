@@ -496,11 +496,12 @@ namespace dealii
       const typename DoFHandler<dim, spacedim>::active_cell_iterator &cell,
       const double implicit_velocity,
       const double explicit_velocity,
-      const double pressure,
-      const double rho) const
+      const double pressure) const
     {
       const Tensor<1, spacedim> b = compute_directional_vector(cell);
-      return (0.5 * implicit_velocity * explicit_velocity + pressure / rho) * b;
+      return (0.5 * implicit_velocity * explicit_velocity +
+              pressure / par["rho"]) *
+             b;
     }
 
     /**
