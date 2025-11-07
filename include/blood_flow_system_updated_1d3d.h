@@ -551,8 +551,8 @@ namespace dealii
     std::string  constants            = "1.0";
     std::string  output_filename      = "solution";
     bool         use_direct_solver    = true;
-    unsigned int n_refinement_cycles  = 4;
-    unsigned int n_global_refinements = 4;
+    unsigned int n_refinement_cycles  = 1;
+    unsigned int n_global_refinements = 5;
 
     // Time stepping parameters
     double       time_step    = 0.01;

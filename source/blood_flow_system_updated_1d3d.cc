@@ -149,8 +149,15 @@ namespace dealii
       std::vector<double> current_area(fe_v.n_quadrature_points);
       std::vector<double> current_velocity(fe_v.n_quadrature_points);
 
+      // Previous time Iteration Values
+      std::vector<double> old_area(fe_v.n_quadrature_points);
+      std::vector<double> old_velocity(fe_v.n_quadrature_points);
+
       fe_v[area_extractor].get_function_values(solution, current_area);
       fe_v[velocity_extractor].get_function_values(solution, current_velocity);
+
+      fe_v[area_extractor].get_function_values(solution_old, old_area);
+      fe_v[velocity_extractor].get_function_values(solution_old, old_velocity);
 
       // const auto b_vec = compute_directional_vector(cell);
 
@@ -166,6 +173,7 @@ namespace dealii
             compute_pressure_value(current_area[point]);
           const double dpdA = compute_pressure_derivative(current_area[point]);
           const double c_squared = current_area[point] / par["rho"] * dpdA;
+
 
           const auto current_flux_A =
             compute_physical_area_flux(cell,
@@ -242,16 +250,19 @@ namespace dealii
                 }
 
               // RHS: source terms
-              copy_data.cell_rhs(i) +=
+              copy_data.cell_rhs(i) -=
                 (
                   // Area equation
-                  rhs_A_value * test_area +
-                  1. / time_step * current_area[point] * test_area +
+                  -rhs_A_value * test_area +
+                  1. / time_step * (current_area[point] - old_area[point]) *
+                    test_area -
                   current_flux_A * test_area_grad
                   // Momentum equation
-                  + rhs_U_value * test_velocity +
-                  1. / time_step * current_velocity[point] * test_velocity +
-                  current_flux_U * test_velocity_grad -
+                  - rhs_U_value * test_velocity +
+                  1. / time_step *
+                    (current_velocity[point] - old_velocity[point]) *
+                    test_velocity -
+                  current_flux_U * test_velocity_grad +
                   par["eta_c"] * current_velocity[point] * test_velocity) *
                 JxW[point];
             }
@@ -324,7 +335,21 @@ namespace dealii
                                                   current_area_neighbor[q],
                                                   current_velocity[q],
                                                   current_velocity_neighbor[q]);
+          const double F_area =
+            compute_physical_area_flux(cell,
+                                       current_area[q],
+                                       current_velocity[q]) *
+            normals[q];
 
+          const double F_area_neighbor =
+            compute_physical_area_flux(ncell,
+                                       current_area_neighbor[q],
+                                       current_velocity_neighbor[q]) *
+            normals[q];
+
+          const double F_hat_area_numerical =
+            0.5 * (F_area + F_area_neighbor) -
+            0.5 * alpha * (current_area[q] - current_area_neighbor[q]);
 
           for (unsigned int i = 0; i < nd; ++i)
             {
@@ -403,21 +428,6 @@ namespace dealii
               // ===== RHS: AREA FLUX =====
               // F_A = U*A (at left and right states)
               // Lax-Friedrichs: 0.5*(F_A^L + F_A^R) - 0.5*alpha*(A^L - A^R)
-              const double F_area =
-                compute_physical_area_flux(cell,
-                                           current_area[q],
-                                           current_velocity[q]) *
-                normals[q];
-
-              const double F_area_neighbor =
-                compute_physical_area_flux(ncell,
-                                           current_area_neighbor[q],
-                                           current_velocity_neighbor[q]) *
-                normals[q];
-
-              const double F_hat_area_numerical =
-                0.5 * (F_area + F_area_neighbor) -
-                0.5 * alpha * (current_area[q] - current_area_neighbor[q]);
 
               face.cell_rhs(i) -= F_hat_area_numerical *
                                   fe_iv[area_extractor].jump_in_values(i, q) *
@@ -554,7 +564,7 @@ namespace dealii
                   copy.cell_rhs(i) -=
                     F_area_bd * fe_face[area_extractor].value(i, q) * JxW[q];
 
-                  // Momentum convective flux at inflow: (U_bd)²/2
+                  // Momentum convective flux at inflow: (U_bd)²/2 + p_bd/rho
                   const auto F_conv_bd = compute_physical_momentum_flux(
                                            cell, U_bd, U_bd, pressure_bd) *
                                          normals[q];
@@ -575,7 +585,7 @@ namespace dealii
                   copy.cell_rhs(i) -=
                     F_area_out * fe_face[area_extractor].value(i, q) * JxW[q];
 
-                  // Momentum convective flux at outflow: (U^(k))²/2
+                  // Momentum convective flux at outflow: (U^(k))²/2 + P^(k)/rho
                   const auto F_conv_out =
                     compute_physical_momentum_flux(cell,
                                                    current_velocity[q],
@@ -885,7 +895,7 @@ namespace dealii
                              solution);
 
         solution_old = solution;
-
+        compute_pressure();
         output_results(0);
 
         // Run time stepping to final_time
@@ -901,10 +911,9 @@ namespace dealii
             std::cout << "Step " << step << "  t=" << time << std::endl;
 
             // Newton iteration loop
-            solution = solution_old; // w^(0) := W^n
-            Vector<double> solution_picard_explicit(solution.size());
-            unsigned int   newton_iter = 0;
-            bool           converged   = false;
+            solution                 = solution_old; // w^(0) := W^n
+            unsigned int newton_iter = 0;
+            bool         converged   = false;
 
             // Newton loop
             do
