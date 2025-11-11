@@ -298,6 +298,18 @@ namespace dealii
       fe_iv.get_fe_face_values(1)[velocity_extractor].get_function_values(
         solution, current_velocity_neighbor);
 
+      // Previous time iterate values on both sides
+      std::vector<double> old_area(n_q), old_velocity(n_q),
+        old_area_neighbor(n_q), old_velocity_neighbor(n_q);
+      fe_iv.get_fe_face_values(0)[area_extractor].get_function_values(
+        solution_old, old_area);
+      fe_iv.get_fe_face_values(0)[velocity_extractor].get_function_values(
+        solution_old, old_velocity);
+      fe_iv.get_fe_face_values(1)[area_extractor].get_function_values(
+        solution_old, old_area_neighbor);
+      fe_iv.get_fe_face_values(1)[velocity_extractor].get_function_values(
+        solution_old, old_velocity_neighbor);
+
       copy.face_data.emplace_back();
       auto              &face = copy.face_data.back();
       const unsigned int nd   = fe_iv.n_current_interface_dofs();
@@ -314,27 +326,18 @@ namespace dealii
           const double current_pressure_neighbor =
             compute_pressure_value(current_area_neighbor[q]);
 
-          // // Compute explicit pressure and derivative
-          // const double dpdA_neighbor =
-          //   compute_pressure_derivative<dim,
-          //   spacedim>(current_area_neighbor[q],
-          //                                              a0,
-          //                                              mu);
-
-          // const double dpdA =
-          //   compute_pressure_derivative<dim, spacedim>(current_area[q],
-          //                                              a0,
-          //                                              mu);
-
-
           // Wave speeds for Lax-Friedrichs penalty
           const double cL = compute_wave_speed(current_area[q]);
           const double cR = compute_wave_speed(current_area_neighbor[q]);
 
-          const double alpha = compute_LF_penalty(current_area[q],
-                                                  current_area_neighbor[q],
-                                                  current_velocity[q],
-                                                  current_velocity_neighbor[q]);
+          const double beta  = compute_LF_penalty(current_area[q],
+                                                 current_area_neighbor[q],
+                                                 current_velocity[q],
+                                                 current_velocity_neighbor[q]);
+          const double alpha = theta * beta;
+          //  const double h     =
+          //   std::min(cell->diameter(), ncell->diameter());
+          // const double alpha = theta*h /(time_step*time_step);
           const double F_area =
             compute_physical_area_flux(cell,
                                        current_area[q],
@@ -462,7 +465,6 @@ namespace dealii
 
     // ========== BOUNDARY WORKER ==========
     exact_solution.set_time(time);
-
     auto boundary_worker = [&](const Iterator                      &cell,
                                const unsigned int                   face_no,
                                BloodFlowScratchData<dim, spacedim> &scratch,
@@ -504,7 +506,7 @@ namespace dealii
           // Flow direction
           const double lambda1   = current_velocity[q] - cL;
           const double lambda2   = current_velocity[q] + cL;
-          const bool   is_inflow = (lambda1 < 0.0 && lambda2 > 0.0);
+          const bool   is_inflow = (lambda1 < 0.0 && lambda2 < 0.0);
 
           // Test function loop
           for (unsigned int i = 0; i < fe_face.get_fe().dofs_per_cell; ++i)
@@ -609,11 +611,20 @@ namespace dealii
                                              c.local_dof_indices,
                                              jacobian_matrix,
                                              residual_vector);
+      // for (auto &cdf : c.face_data)
+      //   {
+      //     constraints.distribute_local_to_global(cdf.cell_matrix,
+      //                                            cdf.joint_dof_indices,
+      //                                            jacobian_matrix);
+      //   }
+
       for (auto &cdf : c.face_data)
         {
           constraints.distribute_local_to_global(cdf.cell_matrix,
+                                                 cdf.cell_rhs,
                                                  cdf.joint_dof_indices,
-                                                 jacobian_matrix);
+                                                 jacobian_matrix,
+                                                 residual_vector);
         }
     };
 
@@ -875,7 +886,9 @@ namespace dealii
 
         if (cycle == 0)
           {
-            GridGenerator::hyper_cube(triangulation);
+            // GridGenerator::hyper_cube(triangulation);
+            GridGenerator::hyper_cube(triangulation, 0.0, 1); // 1 cm
+
             triangulation.refine_global(n_global_refinements);
           }
         else
@@ -927,6 +940,15 @@ namespace dealii
                           << "  residual = " << std::scientific
                           << std::setprecision(6) << newton_residual_norm
                           << std::endl;
+
+                if (!std::isfinite(residual_vector.l2_norm()) ||
+                    residual_vector.l2_norm() > 1e12)
+                  {
+                    std::cout << "⚠️  Residual too large, halving Δt\n";
+                    time_step *= 0.5;
+                    break;
+                  }
+
                 // Check convergence
                 if (newton_residual_norm < newton_tolerance)
                   {
@@ -939,7 +961,23 @@ namespace dealii
                 solve();
 
                 // Update: W^(k+1) = W^(k) + delta_W
-                solution.add(1.0, newton_update);
+                double omega   = 1.0;
+                double res_old = residual_vector.l2_norm();
+
+                do
+                  {
+                    Vector<double> trial = solution;
+                    trial.add(omega, newton_update);
+                    // Evaluate residual at the trial state
+                    solution = trial;
+                    assemble_system();
+                    double res_new = residual_vector.l2_norm();
+                    if (res_new < res_old)
+                      break;      // accept the step
+                    omega *= 0.5; // backtrack
+                  }
+                while (omega > 1e-3);
+                solution.add(omega, newton_update);
 
                 ++newton_iter;
 

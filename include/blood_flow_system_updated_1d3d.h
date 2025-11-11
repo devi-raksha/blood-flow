@@ -360,6 +360,9 @@ namespace dealii
     assemble_system();
     void
     solve();
+
+    double compute_max_wave_speed(const Vector<double> &solution) const;
+
     void
     output_results(const unsigned int cycle) const;
     void
@@ -381,33 +384,91 @@ namespace dealii
     double
     compute_wave_speed(const double area) const
     {
-      const double ratio = area / par["a0"];
+     // const double A_safe = std::max(area,  1e-2);
+     const double eps = 1e-4; // to avoid zero wave speed at zero area
+      const double ratio = area / par["a0"] + eps;
       const double m     = par["m"];
-      const double dpda  = par["mu"] * m * std::pow(ratio, m - 1.0) / par["a0"];
+      const double dpda  = par["mu"] * m * std::pow(ratio, m - 1.0) / par["a0"]; // while using shifted tube law
+     // const double dpda = par["mu"] * m * std::exp(m*(ratio- 1.0)) / par["a0"]; // while using exponential tube law
+    // const double dpda = par["mu"] * m / par["a0"]*(1 + ratio); // while using logarithmic tube law
       return std::sqrt(area / par["rho"] * dpda);
     }
 
+    // /**
+    //  * Compute pressure using the exponential  tube law
+    //  */
+    // double
+    // compute_pressure_value(const double area) const
+    // {
+    //  // const double A_safe = std::max(area,  1e-2);
+    //   const double ratio = area / par["a0"];
+    //   const double m     = par["m"];
+    //   return par["mu"] * (std::exp(m*(ratio - 1.0)) -1) + par["p0"];
+    // }
+
+    // /**
+    //  * Compute pressure derivative dP/dA for exponential tube law
+    //  */
+    // double
+    // compute_pressure_derivative(const double area) const
+    // {
+    //   const double ratio = area / par["a0"];
+    //   const double m     = par["m"];
+    //   return par["mu"] * m * std::exp(m*(ratio- 1.0)) / par["a0"];
+    // }
+
+    // /**
+    //  * Compute pressure using the loagarithmic tube law
+    //  */
+    // double
+    // compute_pressure_value(const double area) const
+    // {
+    //   //const double A_safe = std::max(area,  1e-2);
+    //   const double ratio = area / par["a0"];
+    //   const double m     = par["m"];
+    //   return par["mu"] * m / par["a0"]*(area - par["a0"]+ std::log(ratio)) + par["p0"];
+    // }
+
+    // /**
+    //  * Compute pressure derivative dP/dA for logarithmic tube law
+    //  */
+    // double
+    // compute_pressure_derivative(const double area) const
+    // {
+    //   //const double A_safe = std::max(area,  1e-2);
+    //   const double ratio = area / par["a0"];
+    //   const double m     = par["m"];
+    //   return par["mu"] * m / par["a0"]*(1 + ratio);
+    // }
+  
+
+
     /**
-     * Compute pressure using the tube law
+     * Compute pressure using the shifted tube law
      */
     double
     compute_pressure_value(const double area) const
     {
-      const double ratio = area / par["a0"];
+     // const double A_safe = std::max(area,  1e-2);
+      const double eps   = 1e-4; // to avoid zero pressure at zero area
+      const double ratio = area / par["a0"]  + eps ;
       const double m     = par["m"];
-      return par["mu"] * (std::pow(ratio, m) - 1.0) + par["p0"];
+      
+      return par["mu"] * (std::pow(ratio + eps, m) - 1.0) + par["p0"];
     }
 
     /**
-     * Compute pressure derivative dP/dA
+     * Compute pressure derivative dP/dA for shiftyed tube law
      */
     double
     compute_pressure_derivative(const double area) const
-    {
-      const double ratio = area / par["a0"];
+    { 
+      const double eps = 1e-4; // to avoid zero division
+      const double ratio = area / par["a0"] + eps ;
       const double m     = par["m"];
-      return par["mu"] * m * std::pow(ratio, m - 1.0) / par["a0"];
+      return par["mu"] * m * std::pow(ratio , m - 1.0) / par["a0"];
     }
+
 
     /**
      * Compute Lax–Friedrichs penalty parameter alpha
