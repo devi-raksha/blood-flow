@@ -385,7 +385,7 @@ namespace dealii
     compute_wave_speed(const double area) const
     {
      // const double A_safe = std::max(area,  1e-2);
-     const double eps = 1e-4; // to avoid zero wave speed at zero area
+     const double eps = 0; // to avoid zero wave speed at zero area
       const double ratio = area / par["a0"] + eps;
       const double m     = par["m"];
       const double dpda  = par["mu"] * m * std::pow(ratio, m - 1.0) / par["a0"]; // while using shifted tube law
@@ -450,7 +450,7 @@ namespace dealii
     compute_pressure_value(const double area) const
     {
      // const double A_safe = std::max(area,  1e-2);
-      const double eps   = 1e-4; // to avoid zero pressure at zero area
+      const double eps   = 0; // to avoid zero pressure at zero area
       const double ratio = area / par["a0"]  + eps ;
       const double m     = par["m"];
       
@@ -463,7 +463,7 @@ namespace dealii
     double
     compute_pressure_derivative(const double area) const
     { 
-      const double eps = 1e-4; // to avoid zero division
+      const double eps = 0; // to avoid zero division
       const double ratio = area / par["a0"] + eps ;
       const double m     = par["m"];
       return par["mu"] * m * std::pow(ratio , m - 1.0) / par["a0"];
@@ -485,11 +485,9 @@ namespace dealii
       const double cR = compute_wave_speed(area_R);
 
       // Compute four characteristic speeds and return maximum magnitude
-      const double alpha = std::max({std::abs(U_L + cL),
-                                     std::abs(U_L - cL),
-                                     std::abs(U_R + cR),
-                                     std::abs(U_R - cR)});
-
+      const double alpha = std::max(std::abs(U_L) + cL,
+                                     std::abs(U_R) + cR);
+                                    
       return alpha;
     }
 

@@ -282,7 +282,7 @@ namespace dealii
       fe_iv.reinit(cell, f, sf, ncell, nf, nsf);
 
       const auto &JxW        = fe_iv.get_JxW_values();
-      const auto &normals    = fe_iv.get_fe_face_values(0).get_normal_vectors();
+      //const auto &normals    = fe_iv.get_fe_face_values(0).get_normal_vectors();
       const unsigned int n_q = fe_iv.get_fe_face_values(0).n_quadrature_points;
 
       // Current Newton iterate values on both sides
@@ -319,6 +319,9 @@ namespace dealii
 
       for (unsigned int q = 0; q < n_q; ++q)
         {
+          // Use single normal (from side 0) for both states
+          const Tensor<1, spacedim> m_normal = fe_iv.get_fe_face_values(0).get_normal_vectors()[q];
+
           // Compute pressures
           const double current_pressure =
             compute_pressure_value(current_area[q]);
@@ -334,25 +337,22 @@ namespace dealii
                                                  current_area_neighbor[q],
                                                  current_velocity[q],
                                                  current_velocity_neighbor[q]);
-          const double alpha = theta * beta;
-          //  const double h     =
-          //   std::min(cell->diameter(), ncell->diameter());
-          // const double alpha = theta*h /(time_step*time_step);
+         const double alpha = theta * beta;
           const double F_area =
             compute_physical_area_flux(cell,
                                        current_area[q],
                                        current_velocity[q]) *
-            normals[q];
+            m_normal;
 
           const double F_area_neighbor =
             compute_physical_area_flux(ncell,
                                        current_area_neighbor[q],
                                        current_velocity_neighbor[q]) *
-            normals[q];
+            m_normal;
 
           const double F_hat_area_numerical =
             0.5 * (F_area + F_area_neighbor) -
-            0.5 * alpha * (current_area[q] - current_area_neighbor[q]);
+            0.5 * alpha * ( current_area_neighbor[q] - current_area[q] );
 
           for (unsigned int i = 0; i < nd; ++i)
             {
@@ -376,7 +376,7 @@ namespace dealii
                                                         trial_velocity,
                                                         current_velocity[q],
                                                         trial_area) *
-                    normals[q];
+                    m_normal;
                   const auto flux_jac_A_neighbor =
                     compute_physical_area_jacobian_flux(
                       ncell,
@@ -384,12 +384,12 @@ namespace dealii
                       trial_velocity_neighbor,
                       current_velocity_neighbor[q],
                       trial_area_neighbor) *
-                    normals[q];
+                    m_normal;
 
                   // Lax-Friedrichs numerical flux
                   const double F_hat_area =
                     0.5 * (flux_jac_A + flux_jac_A_neighbor) -
-                    0.5 * alpha * (trial_area - trial_area_neighbor);
+                    0.5 * alpha * ( trial_area_neighbor - trial_area );
 
                   face.cell_matrix(i, j) +=
                     F_hat_area * fe_iv[area_extractor].jump_in_values(i, q) *
@@ -408,7 +408,7 @@ namespace dealii
                                                             trial_area,
                                                             current_velocity[q],
                                                             trial_velocity) *
-                    normals[q];
+                    m_normal;
 
                   const double flux_jac_U_neighbor =
                     compute_physical_momentum_jacobian_flux(
@@ -418,10 +418,10 @@ namespace dealii
                       trial_area_neighbor,
                       current_velocity_neighbor[q],
                       trial_velocity_neighbor) *
-                    normals[q];
+                    m_normal;
                   const double F_hat_U =
                     0.5 * (flux_jac_U + flux_jac_U_neighbor) -
-                    0.5 * alpha * (trial_velocity - trial_velocity_neighbor);
+                    0.5 * alpha * (trial_velocity_neighbor - trial_velocity);
 
                   face.cell_matrix(i, j) +=
                     F_hat_U * fe_iv[velocity_extractor].jump_in_values(i, q) *
@@ -443,18 +443,18 @@ namespace dealii
                                                current_velocity[q],
                                                current_velocity[q],
                                                current_pressure) *
-                normals[q];
+                m_normal;
               const double F_momentum_neighbor =
                 compute_physical_momentum_flux(ncell,
                                                current_velocity_neighbor[q],
                                                current_velocity_neighbor[q],
                                                current_pressure_neighbor) *
-                normals[q];
+                m_normal;
 
               const double F_hat_momentum_numerical =
                 0.5 * (F_momentum + F_momentum_neighbor) -
                 0.5 * alpha *
-                  (current_velocity[q] - current_velocity_neighbor[q]);
+                  ( current_velocity_neighbor[q] - current_velocity[q]);
 
               face.cell_rhs(i) -=
                 F_hat_momentum_numerical *
@@ -503,11 +503,11 @@ namespace dealii
           // Wave speed at interior
           const double cL = compute_wave_speed(current_area[q]);
 
-          // Flow direction
+          //Flow direction
           const double lambda1   = current_velocity[q] - cL;
           const double lambda2   = current_velocity[q] + cL;
           const bool   is_inflow = (lambda1 < 0.0 && lambda2 < 0.0);
-
+        
           // Test function loop
           for (unsigned int i = 0; i < fe_face.get_fe().dofs_per_cell; ++i)
             {
