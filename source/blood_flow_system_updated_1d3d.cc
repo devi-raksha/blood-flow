@@ -960,24 +960,23 @@ namespace dealii
 
                 solve();
 
-                // Update: W^(k+1) = W^(k) + delta_W
+                Vector<double> solution_newton = solution; // ← ADD THIS LINE
+
                 double omega   = 1.0;
                 double res_old = residual_vector.l2_norm();
 
                 do
                   {
-                    Vector<double> trial = solution;
-                    trial.add(omega, newton_update);
-                    // Evaluate residual at the trial state
-                    solution = trial;
+                    solution =
+                      solution_newton; 
+                    solution.add(omega, newton_update);
                     assemble_system();
                     double res_new = residual_vector.l2_norm();
                     if (res_new < res_old)
-                      break;      // accept the step
-                    omega *= 0.5; // backtrack
+                      break;
+                    omega *= 0.5;
                   }
-                while (omega > 1e-3);
-                solution.add(omega, newton_update);
+                   while (omega > 1e-3);
 
                 ++newton_iter;
 
