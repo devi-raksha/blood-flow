@@ -1,0 +1,101 @@
+
+Blood Flow System – Test Cases Summary 
+
+Common parameter values (for all tests unless stated otherwise):
+    rho = 1
+    mu  = 1
+    a0  = 3.14
+    p0  = 1
+    r0  = 1
+    m   = 0.5
+    eta_c = 1
+
+Numerical parameters (default unless overwritten):
+    theta = 0.1
+    final_time = (test dependent)
+    time step  = (test dependent)
+
+----------------------------------------------------------------
+Test Case 1: Linear manufactured solution 1
+----------------------------------------------------------------
+Exact:
+    A = a0*(t + x + 1)
+    U = 1
+
+Initial condition:
+    A = a0*(x + 1)
+    U = 1
+
+
+Parameters:
+    theta = 0.1
+    dt    = user-defined
+    T_end = 2
+
+----------------------------------------------------------------
+Test Case 2: manufactured solution 2
+----------------------------------------------------------------
+Exact:
+    A = a0*(t^2 + x^2 + 1)
+    U = 1
+
+Initial:
+    A = a0*(1+x^2)
+    U = 1
+
+
+Parameters:
+    theta = 0.1
+    dt    = user-defined
+    T_end = 2
+
+
+----------------------------------------------------------------
+Test Case 3: Coupled system (A + U depend on t and x)
+----------------------------------------------------------------
+Exact:
+    A = a0*(t^2 + x^2 + 1)
+    U = r0*(t^2 + x^2 + 1)
+
+Initial:
+    A = a0*(x^2 + 1)
+    U = r0*(x^2 + 1)
+
+
+Parameters:
+    theta = 0.1
+    dt = 0.00025
+    T_end = 2
+
+----------------------------------------------------------------
+Test Case 4: Sinusoidal traveling wave (smooth)
+----------------------------------------------------------------
+Exact:
+    A = 1 - 0.005*sin(9.42*t - 6.28*x)
+    U = 0.05*sin(6.28*x)
+
+Parameters:
+    theta = 0.1
+    dt = 0.005
+    T_end = 2
+
+
+----------------------------------------------------------------
+Test Case 5: Another sinusoidal
+----------------------------------------------------------------
+L =1 and T0 = final_time = 0.1
+Exact:
+    A = 0.1*a0*sin(2*pi*x)*cos(2*pi*t/5) + a0
+    U = -0.02*a0*sin(2*pi*t/5)*cos(2*pi*x)
+
+Parameters:
+    theta = 0.1
+    dt = 1e-4
+    T_end = 2
+
+
+- Oscillations appear at boundaries at the final time in sinusoidal tests.
+- Oscillations persist even with small dt.
+- theta = 0.1 improves stability but does not remove all oscillations.
+
+
