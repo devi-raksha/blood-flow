@@ -361,7 +361,8 @@ namespace dealii
     void
     solve();
 
-    double compute_max_wave_speed(const Vector<double> &solution) const;
+    double
+    compute_max_wave_speed(const Vector<double> &solution) const;
 
     void
     output_results(const unsigned int cycle) const;
@@ -384,14 +385,10 @@ namespace dealii
     double
     compute_wave_speed(const double area) const
     {
-     // const double A_safe = std::max(area,  1e-2);
-     const double eps = 0; // to avoid zero wave speed at zero area
-      const double ratio = area / par["a0"] + eps;
-      const double m     = par["m"];
-      const double dpda  = par["mu"] * m * std::pow(ratio, m - 1.0) / par["a0"]; // while using shifted tube law
-     // const double dpda = par["mu"] * m * std::exp(m*(ratio- 1.0)) / par["a0"]; // while using exponential tube law
-    // const double dpda = par["mu"] * m / par["a0"]*(1 + ratio); // while using logarithmic tube law
-      return std::sqrt(area / par["rho"] * dpda);
+      const double eps    = 0;
+      const double A_safe = std::max(area, eps);
+      const double dpda   = compute_pressure_derivative(area);
+      return std::sqrt(A_safe / par["rho"] * dpda);
     }
 
     // /**
@@ -426,7 +423,8 @@ namespace dealii
     //   //const double A_safe = std::max(area,  1e-2);
     //   const double ratio = area / par["a0"];
     //   const double m     = par["m"];
-    //   return par["mu"] * m / par["a0"]*(area - par["a0"]+ std::log(ratio)) + par["p0"];
+    //   return par["mu"] * m / par["a0"]*(area - par["a0"]+ std::log(ratio)) +
+    //   par["p0"];
     // }
 
     // /**
@@ -440,7 +438,7 @@ namespace dealii
     //   const double m     = par["m"];
     //   return par["mu"] * m / par["a0"]*(1 + ratio);
     // }
-  
+
 
 
     /**
@@ -449,11 +447,11 @@ namespace dealii
     double
     compute_pressure_value(const double area) const
     {
-     // const double A_safe = std::max(area,  1e-2);
+      // const double A_safe = std::max(area,  1e-2);
       const double eps   = 0; // to avoid zero pressure at zero area
-      const double ratio = area / par["a0"]  + eps ;
+      const double ratio = area / par["a0"] + eps;
       const double m     = par["m"];
-      
+
       return par["mu"] * (std::pow(ratio + eps, m) - 1.0) + par["p0"];
     }
 
@@ -462,11 +460,11 @@ namespace dealii
      */
     double
     compute_pressure_derivative(const double area) const
-    { 
-      const double eps = 0; // to avoid zero division
-      const double ratio = area / par["a0"] + eps ;
+    {
+      const double eps   = 0; // to avoid zero division
+      const double ratio = std::max(area / par["a0"], eps);
       const double m     = par["m"];
-      return par["mu"] * m * std::pow(ratio , m - 1.0) / par["a0"];
+      return par["mu"] * m * std::pow(ratio, m - 1.0) / par["a0"];
     }
 
 
@@ -485,9 +483,8 @@ namespace dealii
       const double cR = compute_wave_speed(area_R);
 
       // Compute four characteristic speeds and return maximum magnitude
-      const double alpha = std::max(std::abs(U_L) + cL,
-                                     std::abs(U_R) + cR);
-                                    
+      const double alpha = std::max(std::abs(U_L) + cL, std::abs(U_R) + cR);
+
       return alpha;
     }
 
@@ -570,6 +567,8 @@ namespace dealii
       const double current_velocity,
       const double trial_velocity) const
     {
+      AssertThrow(current_area > 0,
+                  ExcMessage("Area must be positive to compute flux."));
       const Tensor<1, spacedim> b = compute_directional_vector(cell);
       return (c_squared / current_area * trial_area +
               current_velocity * trial_velocity) *
