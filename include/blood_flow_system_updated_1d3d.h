@@ -374,7 +374,8 @@ namespace dealii
     run_convergence_study();
 
   private:
-    ParsedTools::Constants par;
+    ParsedTools::Constants    par;
+    AffineConstraints<double> constraints;
     // --------------------------------------------------
     // ===  Physical and Constitutive Relations  ===
     // --------------------------------------------------
@@ -438,7 +439,6 @@ namespace dealii
     //   const double m     = par["m"];
     //   return par["mu"] * m / par["a0"]*(1 + ratio);
     // }
-
 
 
     /**
@@ -538,7 +538,7 @@ namespace dealii
 
     /**
      * Compute the physical flux for the momentum equation:
-     *   F_U = 0.5 * U⁻ * U⁺ * b
+     *   F_U = 0.5 * U * U * b + P/rho * b
      * (extend later with +P(A)*b if needed)
      */
     Tensor<1, spacedim>
@@ -619,9 +619,10 @@ namespace dealii
     unsigned int n_time_steps = 0;
 
     // Numerical parameters
-    double omega = 1;
-    double theta = 0.5;
-    double eta   = 1.0;
+    double omega    = 1;
+    double theta    = 0.5;
+    double theta_bd = 0.5;
+    
 
     // Newton iteration parameters
     unsigned int max_newton_iterations = 20;
