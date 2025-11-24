@@ -468,25 +468,29 @@ namespace dealii
     }
 
 
-    /**
-     * Compute Lax–Friedrichs penalty parameter alpha
-     * alpha = max(|U_L \pm c_L|, |U_R \pm c_R|)
-     */
     double
     compute_LF_penalty(const double area_L,
                        const double area_R,
                        const double U_L,
-                       const double U_R) const
+                       const double U_R,
+                       const double bn,
+                       const double bn_neighbor) const
     {
-      // Compute left and right wave speeds
       const double cL = compute_wave_speed(area_L);
       const double cR = compute_wave_speed(area_R);
 
-      // Compute four characteristic speeds and return maximum magnitude
-      const double alpha = std::max(std::abs(U_L) + cL, std::abs(U_R) + cR);
+      // Multiply by bn (directional scaling)
+      const double lambda1_L = (U_L - cL) * bn;
+      const double lambda2_L = (U_L + cL) * bn;
+      const double lambda1_R = (U_R - cR) * bn_neighbor;
+      const double lambda2_R = (U_R + cR) * bn_neighbor;
 
-      return alpha;
+      return std::max({std::abs(lambda1_L),
+                       std::abs(lambda2_L),
+                       std::abs(lambda1_R),
+                       std::abs(lambda2_R)});
     }
+
 
     // --------------------------------------------------
     // ===  Geometry and Flux helper functions  ===
@@ -622,7 +626,7 @@ namespace dealii
     double omega    = 1;
     double theta    = 0.5;
     double theta_bd = 0.5;
-    
+
 
     // Newton iteration parameters
     unsigned int max_newton_iterations = 20;

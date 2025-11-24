@@ -63,7 +63,7 @@ namespace dealii
     add_parameter("Time step", time_step);
     add_parameter("Final time", final_time);
     add_parameter("Theta (penalty parameter)", theta);
-    add_parameter("Theta Boundary (stability parameter)",theta_bd);
+    add_parameter("Theta Boundary (stability parameter)", theta_bd);
     add_parameter("Omega (relaxation parameter)", omega);
     // add_parameter("Picard iterations", max_picard_iterations);
     add_parameter("Newton iterations", max_newton_iterations);
@@ -319,10 +319,6 @@ namespace dealii
 
       for (unsigned int q = 0; q < n_q; ++q)
         {
-          // Use single normal (from side 0) for both states
-          // const Tensor<1, spacedim> m_normal =
-          //   fe_iv.get_fe_face_values(0).get_normal_vectors()[q];
-
           // Compute pressures
           const double current_pressure =
             compute_pressure_value(current_area[q]);
@@ -334,16 +330,42 @@ namespace dealii
           const double cL = compute_wave_speed(current_area[q]);
           const double cR = compute_wave_speed(current_area_neighbor[q]);
 
-          // Lax-Friedrichs penalty parameter determined by spectral radius of H
-          //  Rho(H)=  max_{lambda_{i} \in sigma(H)} abs( lambda_i)
+          // -----------------------------------------------------------------------------
+          // Lax–Friedrichs (Rusanov) numerical flux penalty parameter.
+          // The constant C is chosen as the *maximum characteristic speed*
+          // across the interface, i.e. the spectral radius of the normal flux
+          // Jacobian.
+          //
+          //     C = max_{u in {u_L , u_R}}  | lambda_i( (n · partial f/ partial u)(u) ) | ,
+          //
+          // where lambda_i(·) are the eigenvalues of the matrix (n · ∂f/∂u),
+          // i.e. the Jacobian of the physical flux projected along the
+          // interface normal direction.
+          //
+          // For the 1D blood–flow system (A,U), the characteristic speeds are
+          //     lambda_1 = U − c ,    lambda_2  = U + c ,
+          // so the LF penalty is
+          //     C = max( |U_L − c_L|, |U_L + c_L|,
+          //               |U_R − c_R|, |U_R + c_R| ).
+          //
+          // Reference:
+          //   Hesthaven & Warburton, "Nodal Discontinuous Galerkin Methods",
+          //   Springer, 2008. Chapter 2: "Introduction to DG Methods",
+          //   Section 2.3.1: Local Lax–Friedrichs (Rusanov) Flux.
+          // -----------------------------------------------------------------------------
+
+          const double bn = compute_tangent_normal_product(cell, normals[q]);
+          const double bn_neighbor =
+            compute_tangent_normal_product(ncell, normals[q]);
           const double beta = compute_LF_penalty(current_area[q],
                                                  current_area_neighbor[q],
                                                  current_velocity[q],
-                                                 current_velocity_neighbor[q]);
+                                                 current_velocity_neighbor[q],
+                                                 bn,
+                                                 bn_neighbor);
 
-
-         // const double h = cell->measure();
-          const double alpha = theta*beta;
+          // const double h = cell->measure();
+          const double alpha = theta * beta;
           const double F_area =
             compute_physical_area_flux(cell,
                                        current_area[q],
@@ -468,7 +490,209 @@ namespace dealii
         }
     };
 
-    // ========== BOUNDARY WORKER ==========
+    // // ========== BOUNDARY WORKER ==========
+    // exact_solution.set_time(time);
+    // auto boundary_worker = [&](const Iterator                      &cell,
+    //                            const unsigned int                   face_no,
+    //                            BloodFlowScratchData<dim, spacedim> &scratch,
+    //                            BloodFlowCopyData                   &copy) {
+    //   scratch.fe_interface_values.reinit(cell, face_no);
+    //   const auto &fe_face =
+    //   scratch.fe_interface_values.get_fe_face_values(0);
+
+    //   const auto        &JxW     = fe_face.get_JxW_values();
+    //   const auto        &normals = fe_face.get_normal_vectors();
+    //   const unsigned int n_q     = fe_face.n_quadrature_points;
+
+    //   // Interior trace (current Newton iterate)
+    //   std::vector<double> current_area(n_q), current_velocity(n_q);
+    //   fe_face[area_extractor].get_function_values(solution, current_area);
+    //   fe_face[velocity_extractor].get_function_values(solution,
+    //                                                   current_velocity);
+
+    //   // Boundary values (from exact solution as BC)
+    //   exact_solution.set_time(time);
+    //   std::vector<Vector<double>> bc(n_q, Vector<double>(2));
+    //   exact_solution.vector_value_list(fe_face.get_quadrature_points(), bc);
+
+    //   for (unsigned int q = 0; q < n_q; ++q)
+    //     {
+    //       const double A_bd = bc[q](0);
+    //       const double U_bd = bc[q](1);
+
+    //       // Pressures
+    //       const double current_pressure =
+    //         compute_pressure_value(current_area[q]);
+    //       const double pressure_bd = compute_pressure_value(A_bd);
+
+    //       // Pressure derivatives
+    //       const double dpdA = compute_pressure_derivative(current_area[q]);
+
+    //       const double beta_bd = compute_LF_penalty(current_area[q],
+    //                                                 A_bd,
+    //                                                 current_velocity[q],
+    //                                                 U_bd);
+
+
+    //       // const double h        = cell->measure();
+    //       const double alpha_bd = theta_bd * beta_bd;
+
+
+    //       // Wave speed at interior
+    //       const double cL = compute_wave_speed(current_area[q]);
+
+    //       const double bn = compute_tangent_normal_product(cell, normals[q]);
+    //       // Flow direction
+    //       const double lambda1 = (current_velocity[q] - cL) * bn;
+    //       const double lambda2 = (current_velocity[q] + cL) * bn;
+
+    //       bool is_inflow = (lambda1 < 0.0) && (lambda2 < 0.0);
+
+    //       //
+    //      //
+    //      -----------------------------------------------------------------------------
+    //       // Inflow / outflow boundary classification.
+    //       //
+    //       // For a hyperbolic system, inflow occurs when characteristic
+    //       // speed along the outward normal direction is negative:
+    //       //
+    //       //      inflow  <=> such that lambda_i < 0
+    //       //      outflow <=>  all lambda_i >= 0
+    //       //
+    //       // For the 1D blood–flow system (A,U), the characteristic speeds
+    //       are
+    //       //      λ₁ = (U − c)*(n · b),     λ₂ = (U + c)*(n · b)
+    //       //
+    //       // Therefore the inflow condition is
+    //       //      is_inflow = (λ₁ < 0) && (λ₂ < 0)
+    //       //
+    //       // Reference:
+    //       //   Hesthaven & Warburton, "Nodal Discontinuous Galerkin Methods",
+    //       //   Springer, 2008. Chapter 5 (Boundary Conditions),
+    //       //   Section 5.3: "Inflow and Outflow Boundaries".
+    //       //
+    //     //
+    //     -----------------------------------------------------------------------------
+
+    //       if (is_inflow)
+    //         {
+    //           std::cout << "Inflow boundary " <<
+    //         fe_face.quadrature_point(q)
+    //                     << " at time " << time << std::endl;
+    //         }
+
+    //       // Test function loop
+    //       for (unsigned int i = 0; i < fe_face.get_fe().dofs_per_cell; ++i)
+    //         {
+    //           // ===== JACOBIAN MATRIX (LHS)  =====
+    //           // Trial function loop
+    //           for (unsigned int j = 0; j < fe_face.get_fe().dofs_per_cell;
+    //           ++j)
+    //             {
+    //               const double trial_A = fe_face[area_extractor].value(j, q);
+    //               const double trial_U =
+    //                 fe_face[velocity_extractor].value(j, q);
+
+    //               if (!is_inflow) // Outflow BC only
+    //                 {
+    //                   // Area Jacobian  boundary term
+    //                   // - ∫_boundary (U deltaA + A deltaU) (b·n) phi_A ds
+    //                   const auto flux_jac_area =
+    //                     compute_physical_area_jacobian_flux(cell,
+    //                                                         current_area[q],
+    //                                                         trial_U,
+    //                                                         current_velocity[q],
+    //                                                         trial_A) *
+    //                     normals[q];
+
+    //                   // Momentum Jacobian from IBP boundary term
+    //                   // - ∫_boundary (c^2/A deltaA + U deltaU) (b·n) phi_U
+    //                   ds const double c_sq = current_area[q] / par["rho"] *
+    //                   dpdA; const auto   flux_jac_velocity =
+    //                     compute_physical_momentum_jacobian_flux(
+    //                       cell,
+    //                       c_sq,
+    //                       current_area[q],
+    //                       trial_A,
+    //                       current_velocity[q],
+    //                       trial_U) *
+    //                     normals[q];
+
+    //                   copy.cell_matrix(i, j) +=
+    //                     (flux_jac_area * fe_face[area_extractor].value(i, q)
+    //                     +
+    //                      flux_jac_velocity *
+    //                        fe_face[velocity_extractor].value(i, q)) *
+    //                     JxW[q];
+    //                 }
+    //             }
+
+
+    //           // Compute boundary fluxes for RHS
+
+    //           if (is_inflow)
+    //             {
+    //               // ===== INFLOW: Enforce boundary condition =====
+    //               // Use boundary values from exact solution
+
+    //               // Area flux at inflow: A_bd * U_bd
+    //               const auto F_area_bd =
+    //                 compute_physical_area_flux(cell, A_bd, U_bd) * normals[q]
+    //                 - alpha_bd * (A_bd - current_area[q]);
+
+    //               copy.cell_rhs(i) -=
+    //                 F_area_bd * fe_face[area_extractor].value(i, q) * JxW[q];
+
+    //               // Momentum convective flux at inflow: (U_bd)²/2 + p_bd/rho
+    //               const auto F_conv_bd =
+    //                 compute_physical_momentum_flux(cell,
+    //                                                U_bd,
+    //                                                U_bd,
+    //                                                pressure_bd) *
+    //                   normals[q] -
+    //                 alpha_bd * (U_bd - current_velocity[q]);
+    //               copy.cell_rhs(i) -= F_conv_bd *
+    //                                   fe_face[velocity_extractor].value(i, q)
+    //                                   * JxW[q];
+    //             }
+    //           else
+    //             {
+    //               // Use current Newton iterate values
+
+    //               // Area flux at outflow: A^(k) * U^(k)
+    //               const auto F_area_out =
+    //                 compute_physical_area_flux(cell,
+    //                                            current_area[q],
+    //                                            current_velocity[q]) *
+    //                 normals[q];
+    //               copy.cell_rhs(i) -=
+    //                 F_area_out * fe_face[area_extractor].value(i, q) *
+    //                 JxW[q];
+
+    //               // Momentum convective flux at outflow: (U^(k))²/2 +
+    //               P^(k)/rho const auto F_conv_out =
+    //                 compute_physical_momentum_flux(cell,
+    //                                                current_velocity[q],
+    //                                                current_velocity[q],
+    //                                                current_pressure) *
+    //                 normals[q];
+    //               copy.cell_rhs(i) -= F_conv_out *
+    //                                   fe_face[velocity_extractor].value(i, q)
+    //                                   * JxW[q];
+    //             }
+    //         }
+    //       //  std::cout << "q=" << q
+    //       //   << "  n=" << normals[q][0]
+    //       //   << "  u=" << current_velocity[q]
+    //       //   << "  c=" << cL
+    //       //   << "  lambda-=" << lambda1
+    //       //   << "  lambda+=" << lambda2
+    //       //   << "  inflow=" << is_inflow
+    //       //   << std::endl;
+    //     }
+    // };
+
+    // ========== BOUNDARY WORKER (Corrected) ==========
     exact_solution.set_time(time);
     auto boundary_worker = [&](const Iterator                      &cell,
                                const unsigned int                   face_no,
@@ -487,164 +711,191 @@ namespace dealii
       fe_face[velocity_extractor].get_function_values(solution,
                                                       current_velocity);
 
-      // Boundary values (from exact solution as BC)
+      // Boundary values
       exact_solution.set_time(time);
       std::vector<Vector<double>> bc(n_q, Vector<double>(2));
       exact_solution.vector_value_list(fe_face.get_quadrature_points(), bc);
 
+      // Determine which boundary this is (BID=0 is inlet, BID=1 is outlet)
+      unsigned int boundary_id        = cell->face(face_no)->boundary_id();
+      bool         is_inlet_boundary  = (boundary_id == 0); // based on mesh
+      bool         is_outlet_boundary = (boundary_id == 1); // based on mesh
+
       for (unsigned int q = 0; q < n_q; ++q)
         {
-          const double A_bd = bc[q](0);
-          const double U_bd = bc[q](1);
+          const double A_bc = bc[q](0);
+          const double U_bc = bc[q](1);
+
+          // Interior state
+          const double A_int = current_area[q];
+          const double U_int = current_velocity[q];
 
           // Pressures
-          const double current_pressure =
-            compute_pressure_value(current_area[q]);
-          const double pressure_bd = compute_pressure_value(A_bd);
+          const double p_int = compute_pressure_value(A_int);
+          const double p_bc  = compute_pressure_value(A_bc);
 
-          // Pressure derivatives
-          const double dpdA = compute_pressure_derivative(current_area[q]);
-
-          const double beta_bd = compute_LF_penalty(current_area[q],
-                                                    A_bd,
-                                                    current_velocity[q],
-                                                    U_bd);
-
-
-          // const double h        = cell->measure();
-          const double alpha_bd =theta_bd*beta_bd;
-
-
-          // Wave speed at interior
-          const double cL = compute_wave_speed(current_area[q]);
+          const double dpdA  = compute_pressure_derivative(A_int);
+          const double c_int = compute_wave_speed(A_int);
 
           const double bn = compute_tangent_normal_product(cell, normals[q]);
-          // Flow direction
-          const double lambda1 = (current_velocity[q] - cL) * bn;
-          const double lambda2 = (current_velocity[q] + cL) * bn;
 
-          // printf("q=%d, bn=%f, lambda1=%f, lambda2=%f\n", q, bn, lambda1,
-          // lambda2);
+          // ===== CHARACTERISTIC SPEEDS =====
+          // In 1D: lambda1 = (U - c) * n, lambda2 = (U + c) * n
+          const double lambda1 = (U_int - c_int) * bn;
+          const double lambda2 = (U_int + c_int) * bn;
 
-          bool is_inflow = (lambda1 < 0.0) || (lambda2 < 0.0);
+          // ===== BOUNDARY CLASSIFICATION =====
+          // Count incoming characteristics
+          int incoming_count = 0;
+          if (lambda1 < 0.0)
+            incoming_count++;
+          if (lambda2 < 0.0)
+            incoming_count++;
 
+          bool is_subcritical           = (incoming_count == 1);
+          bool is_supercritical_inflow  = (incoming_count == 2);
+          bool is_supercritical_outflow = (incoming_count == 0);
 
+          // ===== DETERMINE EXTERIOR STATE (A_ext, U_ext) =====
 
-          // if (is_inflow)
-          //   {
-          //     std::cout << "Inflow boundary " << fe_face.quadrature_point(q)
-          //               << " at time " << time << std::endl;
-          //   }
+          double A_ext, U_ext;
 
-          // Test function loop
-          for (unsigned int i = 0; i < fe_face.get_fe().dofs_per_cell; ++i)
+          if (is_subcritical)
             {
-              // ===== JACOBIAN MATRIX (LHS)  =====
-              // Trial function loop
-              for (unsigned int j = 0; j < fe_face.get_fe().dofs_per_cell; ++j)
+              // Subcritical: 1 incoming characteristic
+
+              A_ext = A_bc;  // Impose area at boundary
+              U_ext = U_int; // velocity from interior
+            }
+          else if (is_supercritical_inflow)
+            {
+              // Supercritical inflow: both characteristics enter
+              A_ext = A_bc; // Impose area
+              U_ext = U_bc; // Impose velocity
+            }
+          else
+            { // is_supercritical_outflow
+              // Supercritical outflow: no characteristics enter
+
+              A_ext = A_int; // interior area
+              U_ext = U_int; // interior velocity
+            }
+
+          // ===== LAXFRIEDRICHS PENALTY =====
+          const double an          = bn;
+          const double an_neighbor = bn;
+          const double beta_bd =
+            compute_LF_penalty(A_int, A_ext, U_int, U_ext, an, an_neighbor);
+
+          const double alpha_bd = theta_bd * beta_bd;
+
+          // ===== RHS ASSEMBLY =====
+          // Pressure at exterior
+          const double p_ext = compute_pressure_value(A_ext);
+
+          // Physical fluxes
+          auto F_area_ext =
+            compute_physical_area_flux(cell, A_ext, U_ext) * normals[q];
+          auto F_momentum_ext =
+            compute_physical_momentum_flux(cell, U_ext, U_ext, p_ext) *
+            normals[q];
+
+
+          // Rusanov dissipation
+          auto F_area_dissipation     = -alpha_bd * (A_ext - A_int);
+          auto F_momentum_dissipation = -alpha_bd * (U_ext - U_int);
+
+          // Complete flux = physical flux - Rusanov dissipation
+          auto F_area_bd     = F_area_ext + F_area_dissipation;
+          auto F_momentum_bd = F_momentum_ext + F_momentum_dissipation;
+
+          // ===== JACOBIAN ASSEMBLY =====
+          // Trial function loop
+          for (unsigned int j = 0; j < fe_face.get_fe().dofs_per_cell; ++j)
+            {
+              const double trial_A = fe_face[area_extractor].value(j, q);
+              const double trial_U = fe_face[velocity_extractor].value(j, q);
+
+              // Derivative of A_ext with respect to solution
+              double dA_ext_dA = 0.0;
+              if (is_supercritical_outflow)
                 {
-                  const double trial_A = fe_face[area_extractor].value(j, q);
-                  const double trial_U =
-                    fe_face[velocity_extractor].value(j, q);
-
-                  if (!is_inflow) // Outflow BC only
-                    {
-                      // Area Jacobian  boundary term
-                      // - ∫_boundary (U deltaA + A deltaU) (b·n) phi_A ds
-                      const auto flux_jac_area =
-                        compute_physical_area_jacobian_flux(cell,
-                                                            current_area[q],
-                                                            trial_U,
-                                                            current_velocity[q],
-                                                            trial_A) *
-                        normals[q];
-
-                      // Momentum Jacobian from IBP boundary term
-                      // - ∫_boundary (c^2/A deltaA + U deltaU) (b·n) phi_U ds
-                      const double c_sq = current_area[q] / par["rho"] * dpdA;
-                      const auto   flux_jac_velocity =
-                        compute_physical_momentum_jacobian_flux(
-                          cell,
-                          c_sq,
-                          current_area[q],
-                          trial_A,
-                          current_velocity[q],
-                          trial_U) *
-                        normals[q];
-
-                      copy.cell_matrix(i, j) +=
-                        (flux_jac_area * fe_face[area_extractor].value(i, q) +
-                         flux_jac_velocity *
-                           fe_face[velocity_extractor].value(i, q)) *
-                        JxW[q];
-                    }
+                  dA_ext_dA = 1.0;
                 }
+              // If subcritical or inflow: A_ext = A_bc (prescribed), so
+              // dA_ext/dA = 0
 
-
-              // Compute boundary fluxes for RHS
-
-              if (is_inflow)
+              // Derivative of U_ext with respect to solution
+              double dU_ext_dU = 0.0;
+              if (is_supercritical_outflow)
                 {
-                  // ===== INFLOW: Enforce boundary condition =====
-                  // Use boundary values from exact solution
-
-                  // Area flux at inflow: A_bd * U_bd
-                  const auto F_area_bd =
-                    compute_physical_area_flux(cell, A_bd, U_bd) * normals[q] -
-                    alpha_bd * (A_bd - current_area[q]);
-
-                  copy.cell_rhs(i) -=
-                    F_area_bd * fe_face[area_extractor].value(i, q) * JxW[q];
-
-                  // Momentum convective flux at inflow: (U_bd)²/2 + p_bd/rho
-                  const auto F_conv_bd =
-                    compute_physical_momentum_flux(cell,
-                                                   U_bd,
-                                                   U_bd,
-                                                   pressure_bd) *
-                      normals[q] -
-                    alpha_bd * (U_bd - current_velocity[q]);
-                  copy.cell_rhs(i) -= F_conv_bd *
-                                      fe_face[velocity_extractor].value(i, q) *
-                                      JxW[q];
+                  dU_ext_dU =
+                    1.0; // U_ext = U_int → depends on interior velocity
                 }
-              else
+              // If subcritical: U_ext = U_int → dU_ext/dU = 1
+              if (is_subcritical)
                 {
-                  // Use current Newton iterate values
+                  dU_ext_dU = 1.0;
+                }
+              // If inflow: U_ext = U_bc (prescribed), so dU_ext/dU = 0
 
-                  // Area flux at outflow: A^(k) * U^(k)
-                  const auto F_area_out =
-                    compute_physical_area_flux(cell,
-                                               current_area[q],
-                                               current_velocity[q]) *
-                    normals[q];
-                  copy.cell_rhs(i) -=
-                    F_area_out * fe_face[area_extractor].value(i, q) * JxW[q];
+              // Area equation Jacobian
+              // ∂/∂A [F_area - alpha * (A_ext - A_int)]
+              const double flux_jac_area_val =
+                compute_physical_area_jacobian_flux(
+                  cell, A_ext, trial_U, U_ext, trial_A) *
+                  normals[q] -
+                alpha_bd * (dA_ext_dA - 1.0);
 
-                  // Momentum convective flux at outflow: (U^(k))²/2 + P^(k)/rho
-                  const auto F_conv_out =
-                    compute_physical_momentum_flux(cell,
-                                                   current_velocity[q],
-                                                   current_velocity[q],
-                                                   current_pressure) *
-                    normals[q];
-                  copy.cell_rhs(i) -= F_conv_out *
-                                      fe_face[velocity_extractor].value(i, q) *
-                                      JxW[q];
+              // Momentum equation Jacobian (simplified)
+              const double c_sq = A_int / par["rho"] * dpdA;
+              const double flux_jac_momentum_val =
+                compute_physical_momentum_jacobian_flux(cell,
+                                                        c_sq,
+                                                        A_ext,
+                                                        trial_A,
+                                                        U_ext,
+                                                        trial_U) *
+                  normals[q] -
+                alpha_bd * (dU_ext_dU - 1.0); // from boundary_penalty
+
+              // Test function loop
+              for (unsigned int i = 0; i < fe_face.get_fe().dofs_per_cell; ++i)
+                {
+                  const double test_A = fe_face[area_extractor].value(i, q);
+                  const double test_U = fe_face[velocity_extractor].value(i, q);
+
+                  // Area equation
+                  copy.cell_matrix(i, j) += flux_jac_area_val * test_A * JxW[q];
+
+                  // Momentum equation
+                  copy.cell_matrix(i, j) +=
+                    flux_jac_momentum_val * test_U * JxW[q];
                 }
             }
-          //  std::cout << "q=" << q
-          //   << "  n=" << normals[q][0]
-          //   << "  u=" << current_velocity[q]
-          //   << "  c=" << cL
-          //   << "  lambda-=" << lambda1
-          //   << "  lambda+=" << lambda2
-          //   << "  inflow=" << is_inflow
-          //   << std::endl;
+
+          // ===== Residual RHS ASSEMBLY =====
+          for (unsigned int i = 0; i < fe_face.get_fe().dofs_per_cell; ++i)
+            {
+              const double test_A = fe_face[area_extractor].value(i, q);
+              const double test_U = fe_face[velocity_extractor].value(i, q);
+
+              // Area RHS
+              copy.cell_rhs(i) -= F_area_bd * test_A * JxW[q];
+
+              // Momentum RHS
+              copy.cell_rhs(i) -= F_momentum_bd * test_U * JxW[q];
+            }
+
+          // ===== DEBUG OUTPUT =====
+          //  boundary classifications
+          std::cout << "BID=" << boundary_id << " q=" << q
+                    << " | A_int=" << A_int << " U_int=" << U_int
+                    << " c=" << c_int << " | lambda1=" << lambda1
+                    << " lambda2=" << lambda2 << " | subcrit=" << is_subcritical
+                    << " | A_ext=" << A_ext << " U_ext=" << U_ext << std::endl;
         }
     };
-
-
 
     // Copier lambda
     const AffineConstraints<double> constraints;
@@ -974,9 +1225,21 @@ namespace dealii
             // Newton loop
             do
               {
-                // Assemble Jacobian and residual at current Newton iterate
+                // Step 1: Assemble system
                 assemble_system();
 
+                // Step 2: Solve for Newton update
+                solve();
+
+                // Step 3: Apply the update
+                solution.add(omega, newton_update);
+
+                // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+                // Reassemble AFTER updating solution
+                // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+                assemble_system();
+
+                // Step 4: Get residual at NEW solution
                 double newton_residual_norm = residual_vector.l2_norm();
 
                 std::cout << " Newton iter " << newton_iter
@@ -984,15 +1247,18 @@ namespace dealii
                           << std::setprecision(6) << newton_residual_norm
                           << std::endl;
 
-                if (!std::isfinite(residual_vector.l2_norm()) ||
-                    residual_vector.l2_norm() > 1e12)
+                // Step 5: Check for divergence
+                if (!std::isfinite(newton_residual_norm) ||
+                    newton_residual_norm > 1e12)
                   {
                     std::cout << "⚠️  Residual too large, halving Δt\n";
                     time_step *= 0.5;
                     break;
                   }
 
-                // Check convergence
+                // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+                // Check convergence AFTER update
+                // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
                 if (newton_residual_norm < newton_tolerance)
                   {
                     converged = true;
@@ -1001,25 +1267,7 @@ namespace dealii
                     break;
                   }
 
-                solve();
-
-                Vector<double> solution_newton = solution; // ← ADD THIS LINE
-
-                double omega   = 1.0;
-                double res_old = residual_vector.l2_norm();
-
-                do
-                  {
-                    solution = solution_newton;
-                    solution.add(omega, newton_update);
-                    assemble_system();
-                    double res_new = residual_vector.l2_norm();
-                    if (res_new < res_old)
-                      break;
-                    omega *= 0.5;
-                  }
-                while (omega > 1e-3);
-
+                // Step 6: Increment counter
                 ++newton_iter;
 
                 if (newton_iter >= max_newton_iterations)
