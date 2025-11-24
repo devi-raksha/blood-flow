@@ -25,13 +25,13 @@
 
 #include <deal.II/numerics/vector_tools.h>
 
-#include "blood_flow_system_updated_1d3d.cc"
-#include "../include/blood_flow_system_updated_1d3d.h"
+#include "blood_flow_system_updated_1d3d.h"
 #include "tests.h"
 
 using namespace dealii;
 
-void test()
+void
+test()
 {
   BloodFlowSystem<1, 3> problem;
   GridGenerator::hyper_cube(problem.triangulation);
@@ -63,7 +63,8 @@ void test()
   JW.add(-1.0, problem.residual_vector);
 
   std::cout << "‖J*W - R‖_L2 = " << JW.l2_norm() << std::endl;
-  std::cout << "‖R‖_L2       = " << problem.residual_vector.l2_norm() << std::endl;
+  std::cout << "‖R‖_L2       = " << problem.residual_vector.l2_norm()
+            << std::endl;
 }
 
 int

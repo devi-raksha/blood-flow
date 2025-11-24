@@ -62,6 +62,7 @@ set(TARGET5_SRC
   main_non_linear_conservation_law.cc
 )
 
+
 CMAKE_MINIMUM_REQUIRED(VERSION 3.13.4)
 
 FIND_PACKAGE(deal.II 9.5.0
@@ -94,6 +95,13 @@ DEAL_II_SETUP_TARGET(${TARGET4})
 
 ADD_EXECUTABLE(${TARGET5} ${TARGET5_SRC})
 DEAL_II_SETUP_TARGET(${TARGET5})
+
+file(GLOB LIB_SRC source/*.cc)
+ADD_LIBRARY(test_library SHARED ${LIB_SRC})
+set(TEST_LIBRARIES test_library)
+DEAL_II_SETUP_TARGET(test_library)
+
+ADD_DEFINITIONS(-DPRM_DIR="${CMAKE_CURRENT_SOURCE_DIR}/parameters/")
 
 # Add tests
 ADD_SUBDIRECTORY(tests)

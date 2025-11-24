@@ -25,22 +25,20 @@
 
 #include <deal.II/numerics/vector_tools.h>
 
-#include "blood_flow_system_updated_1d3d.cc"
+#include "blood_flow_system_updated_1d3d.h"
 #include "tests.h"
 
 using namespace dealii;
 
 void
-test_constant()
+test()
 {
   BloodFlowSystem<1, 3> problem; // 1-dim geometry embedded in \mathbb{R}^3
-  GridGenerator::hyper_cube(problem.triangulation);
-  problem.triangulation.refine_global(3);
+  problem.initialize_params(PRM_DIR "constant.prm");
+  GridGenerator::hyper_cube(problem.triangulation, 0, 1);
+  problem.triangulation.refine_global(problem.n_global_refinements);
 
   problem.setup_system();
-
-  FunctionParser<3> my_function(2);
-  my_function.initialize("x,y,z", "1.0; 0.0", {});
 
   // Project initial conditions
   AffineConstraints<double> constraints;
@@ -48,34 +46,39 @@ test_constant()
   VectorTools::project(problem.dof_handler,
                        constraints,
                        QGauss<1>(problem.fe_degree + 1),
-                       my_function,
+                       problem.initial_condition,
                        problem.solution);
 
   problem.solution_old = problem.solution;
+
   problem.assemble_system();
 
-
-  FunctionParser<3> my_test_function(2);
-  my_test_function.initialize("x,y,z", "1.0; 0.0", {});
-
-  VectorTools::project(problem.dof_handler,
-                       constraints,
-                       QGauss<1>(problem.fe_degree + 1),
-                       my_test_function,
-                       problem.solution);
-
-  auto rhs = problem.solution;
-  problem.system_matrix.vmult(rhs, problem.solution);
-
-  problem.assemble_mass_matrix();
-  SparseDirectUMFPACK inv_mass;
-  inv_mass.initialize(problem.mass_matrix);
-  inv_mass.vmult(rhs, rhs);
-
-  deallog << rhs << std::endl;
+  // The residual should be zero.
+  deallog << "Residual norm: " << problem.residual_vector.l2_norm()
+          << std::endl;
 
 
-  deallog << "Solution norm: " << rhs.linfty_norm() << std::endl;
+  // FunctionParser<3> my_test_function(2);
+  // my_test_function.initialize("x,y,z", "1.0; 0.0", {});
+
+  // VectorTools::project(problem.dof_handler,
+  //                      constraints,
+  //                      QGauss<1>(problem.fe_degree + 1),
+  //                      my_test_function,
+  //                      problem.solution);
+
+  // auto rhs = problem.solution;
+  // problem.jacobian_matrix.vmult(rhs, problem.solution);
+
+  // problem.assemble_mass_matrix();
+  // SparseDirectUMFPACK inv_mass;
+  // inv_mass.initialize(problem.mass_matrix);
+  // inv_mass.vmult(rhs, rhs);
+
+  // deallog << rhs << std::endl;
+
+
+  // deallog << "Solution norm: " << rhs.linfty_norm() << std::endl;
 }
 
 
@@ -83,5 +86,5 @@ int
 main()
 {
   initlog();
-  test_constant();
+  test();
 }

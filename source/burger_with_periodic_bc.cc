@@ -429,6 +429,8 @@ namespace dealii
         }
     };
 
+    (void)boundary_worker;
+
     const QGauss<dim>     quadrature(2 * fe->tensor_degree() + 1);
     const QGauss<dim - 1> quadrature_face(2 * fe->tensor_degree() + 1);
     BurgerScratchData<dim, spacedim> scratch(*fe, quadrature, quadrature_face);
@@ -455,10 +457,8 @@ namespace dealii
     };
 
 
-    auto null_boundary = [](const auto        &cell,
-                            const unsigned int face_no,
-                            auto              &scratch,
-                            auto              &copy) {};
+    auto null_boundary = [](const auto &, const unsigned int, auto &, auto &) {
+    };
 
     MeshWorker::mesh_loop(dof_handler.begin_active(),
                           dof_handler.end(),

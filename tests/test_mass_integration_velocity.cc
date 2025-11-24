@@ -31,16 +31,14 @@
 using namespace dealii;
 
 void
-test_constant()
+test()
 {
   BloodFlowSystem<1, 3> problem; // 1-dim geometry embedded in \mathbb{R}^3
+  problem.initialize_params(PRM_DIR "mass_integration_velocity.prm");
   GridGenerator::hyper_cube(problem.triangulation);
-  problem.triangulation.refine_global(3);
+  problem.triangulation.refine_global(problem.n_global_refinements);
 
   problem.setup_system();
-
-  FunctionParser<3> my_function(2);
-  my_function.initialize("x,y,z", "0.0; 1.0", {});
 
   // Project initial conditions
   AffineConstraints<double> constraints;
@@ -48,7 +46,7 @@ test_constant()
   VectorTools::project(problem.dof_handler,
                        constraints,
                        QGauss<1>(problem.fe_degree + 1),
-                       my_function,
+                       problem.initial_condition,
                        problem.solution);
 
   problem.assemble_mass_matrix();
@@ -64,5 +62,5 @@ int
 main()
 {
   initlog();
-  test_constant();
+  test();
 }
