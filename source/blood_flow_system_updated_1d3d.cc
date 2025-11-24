@@ -717,9 +717,9 @@ namespace dealii
       exact_solution.vector_value_list(fe_face.get_quadrature_points(), bc);
 
       // Determine which boundary this is (BID=0 is inlet, BID=1 is outlet)
-      unsigned int boundary_id        = cell->face(face_no)->boundary_id();
-      bool         is_inlet_boundary  = (boundary_id == 0); // based on mesh
-      bool         is_outlet_boundary = (boundary_id == 1); // based on mesh
+      unsigned int boundary_id = cell->face(face_no)->boundary_id();
+      // bool         is_inlet_boundary  = (boundary_id == 0); // based on mesh
+      // bool         is_outlet_boundary = (boundary_id == 1); // based on mesh
 
       for (unsigned int q = 0; q < n_q; ++q)
         {
@@ -731,8 +731,8 @@ namespace dealii
           const double U_int = current_velocity[q];
 
           // Pressures
-          const double p_int = compute_pressure_value(A_int);
-          const double p_bc  = compute_pressure_value(A_bc);
+          // const double p_int = compute_pressure_value(A_int);
+          // const double p_bc  = compute_pressure_value(A_bc);
 
           const double dpdA  = compute_pressure_derivative(A_int);
           const double c_int = compute_wave_speed(A_int);
