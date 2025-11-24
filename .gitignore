@@ -33,6 +33,3 @@ latex/*.mp4
 
 # Backup files
 source/*.bak
-
-# Local parameter files
-*.prm
