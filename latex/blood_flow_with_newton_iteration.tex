@@ -50,9 +50,9 @@ is its projection on the outward normal $\bm n$.
 The pressure $P(A)$ is governed by a constitutive \emph{tube law},
 for example
 \[
-  P(A) = P_0 + E\!\left[\!\left(\frac{A}{A_0}\right)^m - 1\!\right],
+  P(A) = P_0 + \mu \!\left[\!\left(\frac{A}{A_0}\right)^m - 1\!\right],
   \qquad
-  \frac{dP}{dA} = E\,m\,\frac{A^{m-1}}{A_0^m},
+  \frac{dP}{dA} = \mu \,m\,\frac{A^{m-1}}{A_0^m},
 \]
 and the wave speed is
 \[
@@ -97,12 +97,20 @@ the jump and average operators are
   \avg{v}=\tfrac12(v^-+v^+),
 \]
 and on boundary faces $F\subset\partial\Gamma$ we set
-$\avg{v}=v$ and $\jump{v}=v$.
+$\avg{v}=v$ and $\jump{v}=v$
+
+DG weak form for \eqref{eq:model-vector} is 
+\begin{equation}{\label{semi-discrete-weak-form}}
+     \left( \partial_t \mathbf{W}_h , \phi \right)
+  - (\mathbf{F}(\mathbf{W}), \bm b\!\cdot\!\nabla \phi) + \langle \widehat{\mathbf{F}}(\mathbf{W}), \bm b.n \, \phi \rangle
+  - (S(\mathbf{W}_h), \phi) = 0,
+\end{equation}
+where $\widehat{\mathbf{F}}$ is numerical flux defined later.
 
 \section{Newton iteration in time}
 
-At each time step $t_{n+1}$, we must solve the nonlinear DG system
-\eqref{eq:dg-weak-A}--\eqref{eq:dg-weak-U}.
+At each time step $t_{n+1}$, we must solve the nonlinear fully discrete DG system
+\eqref{semi-discrete-weak-form}.
 Using the backward Euler discretization, the discrete residual is defined as
 \begin{equation}\label{def:residual-vector}
   \left(\mathcal{R}^{n+1}(\mathbf{W}_h^{n+1}), \phi\right)
@@ -545,6 +553,172 @@ where $\alpha$ denotes the local Lax--Friedrichs penalty parameter.
   \int_K c\,U_h^{n+1,(k)}\,\phi_U\,dx.
   \label{eq:newton-U-nk1}
 \end{align}
+
+\subsection{Boundary treatment in the Newton linearization}
+This algorithm based on the paper \textit{Boundary conditions for hyperbolic systems of partial differentials equations} by \textit{Amr G. Guaily , Marcelo Epstein}.
+
+At a boundary face $e \subset \partial\Omega$, the Newton linearization of the
+Lax–Friedrichs flux requires replacing the exterior trace
+$\mathbf{W}^+$ by a boundary state $\mathbf{W}_b$.
+Because the blood–flow equations are hyperbolic, the number of boundary
+conditions that must be imposed depends on the signs of the characteristic
+speeds
+\[
+  \lambda_{1,2} = U \mp c , \qquad
+  c = \sqrt{\frac{A}{\rho}\frac{dP}{dA}(A)} .
+\]
+The linearized numerical flux is
+\[
+\delta\widehat{\mathbf{F}}^{(k)}
+=
+\tfrac12\!\left(
+\mathbf{H}^-\,\delta\mathbf{W}^- +
+\mathbf{H}^+\,\delta\mathbf{W}^+
+\right)
+-\tfrac12\alpha^{(k)}\,
+  (\delta\mathbf{W}^+ - \delta\mathbf{W}^-),
+\]
+where the key question is how the boundary variation $\delta\mathbf{W}^+$ is
+assigned.  
+This depends on the flow regime and on whether the boundary is an inlet or
+outlet.  We distinguish the three physically relevant cases.
+
+% ===============================================================
+\subsubsection{Subcritical flow (one incoming characteristic)}
+
+Subcritical flow is characterised by one incoming and one outgoing
+characteristic:
+\[
+  \lambda_1 < 0 < \lambda_2 .
+\]
+Hence exactly one scalar boundary condition is required; the other component
+must be taken from the interior.
+
+\paragraph{(a) Subcritical inlet ($x=0$).}
+At an inlet, the incoming characteristic is associated with the area variable.
+Thus
+\[
+  A^+ = A_b, \qquad U^+ = U^-,
+\]
+and therefore
+\[
+  \delta A^+ = 0, \qquad
+  \delta U^+ = \delta U^- .
+\]
+The linearized numerical flux components become:
+\[
+\delta\widehat{F}_A
+=
+\tfrac12\left(U^-\,\delta A^-+A_b\,\delta U^-\right)
+-\tfrac12\alpha(\delta A^- - 0),
+\]
+\[
+\delta\widehat{F}_U
+=
+\tfrac12\left(\frac{c^2}{A^-}\delta A^- + U^-\,\delta U^-\right).
+\]
+
+\paragraph{(b) Subcritical outlet ($x=L$).}
+Here the incoming characteristic is associated with the momentum.
+Hence
+\[
+  A^+ = A^-, \qquad U^+ = U_b,
+\]
+and therefore
+\[
+  \delta A^+ = \delta A^-, \qquad
+  \delta U^+ = 0.
+\]
+The linearized flux becomes
+\[
+\delta\widehat{F}_A
+=
+\tfrac12\left(U^-\,\delta A^- + A^-\,\delta U^-\right),
+\]
+\[
+\delta\widehat{F}_U
+=
+\tfrac12\left(\frac{c^2}{A^-}\delta A^- + U^-\,\delta U^-\right)
++ \tfrac12\alpha\,\delta U^- .
+\]
+
+% ===============================================================
+\subsubsection{Supercritical inflow (two incoming characteristics)}
+
+In this regime
+\[
+  \lambda_1 < 0,\qquad \lambda_2 < 0,
+\]
+both characteristics enter the domain, so \emph{both} components of the
+boundary state must be prescribed:
+\[
+  A^+ = A_b, \qquad U^+ = U_b.
+\]
+Thus the variations vanish:
+\[
+  \delta A^+ = 0, \qquad \delta U^+ = 0.
+\]
+Hence no boundary degrees of freedom contribute to the Jacobian at such a face,
+and
+\[
+\delta\widehat{F}_A
+=
+\tfrac12\left(U^-\,\delta A^- + A^-\,\delta U^-\right)
+-\tfrac12\alpha (\delta A^-),
+\qquad
+\delta\widehat{F}_U
+=
+\tfrac12\left(\frac{c^2}{A^-}\delta A^- + U^-\,\delta U^-\right)
+-\tfrac12\alpha (\delta U^-).
+\]
+
+% ===============================================================
+\subsubsection{Supercritical outflow (two outgoing characteristics)}
+
+Finally, when
+\[
+  \lambda_1 > 0,\qquad \lambda_2 > 0 ,
+\]
+all characteristics leave the domain, so no physical boundary condition is
+imposed.  Thus
+\[
+  A^+ = A^-,\qquad U^+ = U^-,
+\qquad\Longrightarrow\qquad
+  \delta A^+ = \delta A^-,\quad
+  \delta U^+ = \delta U^- .
+\]
+In this case, the Lax--Friedrichs dissipation vanishes because
+$\delta\mathbf{W}^+=\delta\mathbf{W}^-$, and the linearized flux reduces to
+\[
+\delta\widehat{\mathbf{F}}
+=
+\begin{pmatrix}
+U^-\,\delta A^- + A^-\,\delta U^- \\[1mm]
+\dfrac{c^2}{A^-}\,\delta A^- + U^-\,\delta U^-
+\end{pmatrix}.
+\]
+
+
+\paragraph{Summary.}
+The mapping for the exterior state and its Newton variation is summarised in
+Table~\ref{tab:bd-newton}.
+
+\begin{table}[h!]
+\centering
+\begin{tabular}{c|c|c|c}
+\hline
+\textbf{Flow regime} & $A^+$ & $U^+$ & $(\delta A^+,\,\delta U^+)$ \\ \hline
+Subcritical inlet   & $A_b$  & $U^-$ & $(0,\ \delta U^-)$ \\[2mm]
+Subcritical outlet  & $A^-$  & $U_b$ & $(\delta A^-,\ 0)$ \\[2mm]
+Supercritical inflow & $A_b$ & $U_b$ & $(0,\ 0)$ \\[2mm]
+Supercritical outflow & $A^-$ & $U^-$ & $(\delta A^-,\ \delta U^-)$ \\
+\hline
+\end{tabular}
+\caption{Exterior state and Newton variation at boundaries.}
+\label{tab:bd-newton}
+\end{table}
+
+
 \begin{remark}
 \begin{itemize}
     \item {Newton update.}
@@ -565,7 +739,5 @@ The term $\mathbf{H}^{(k)}\delta\mathbf{W}_h^{n+1,(k)}$ originates from the
 first-order Taylor expansion of the nonlinear flux
 $\mathbf{F}(\mathbf{W})$ about $\mathbf{W}_h^{n+1,(k)}$.
 \end{itemize}
-
 \end{remark}
-
 \end{document}
