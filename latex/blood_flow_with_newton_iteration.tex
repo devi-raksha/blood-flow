@@ -67,8 +67,8 @@ The compact vector form of the system is
   \mathbf{W} =
   \begin{pmatrix} A \\[1mm] U \end{pmatrix},
   \quad
-  S(\mathbf{W}) =
-  \begin{pmatrix} 0 \\[1mm] -cU \end{pmatrix},
+  S(\mathbf{W}) = -
+  \begin{pmatrix} 0 \\[1mm] cU \end{pmatrix},
   \label{eq:model-vector}
 \end{equation}
 with the physical flux
@@ -206,18 +206,18 @@ appearing on interior and boundary faces is chosen as the
   \widehat{\mathbf{F}}(\mathbf{W}^-,\mathbf{W}^+;\bm n)
   = 
   \frac{1}{2}\Big(
-      \mathbf{F}(\mathbf{W}^-)
-    + \mathbf{F}(\mathbf{W}^+)
+      \mathbf{F}(\mathbf{W}^-)(b \cdot n)^{-}
+    + \mathbf{F}(\mathbf{W}^+) (b \cdot n)^{+}
   \Big)
   \;-\;
   \frac{1}{2}\,\alpha^{(k)}\,
-  (\mathbf{W}^- - \mathbf{W}^+  ),
+  (\mathbf{W}^+ - \mathbf{W}^-  ),
   }
 \end{equation}
 where $\mathbf{W}^-$ and $\mathbf{W}^+$ denote the interior and exterior traces
-of the state vector across a face with unit normal $\bm n$.
+of the state vector across a face with unit normal $\bm n$. And $(b\cdot n)^{-} = b|_{K} \cdot \hat{n}_{k} = b|_{K} \cdot \hat{n}$, $(b\cdot n)^{+} =  b|_{K'} \cdot \hat{n}_{K'} = - b|_{K'} \cdot \hat{n}_{k}$ with $K$ and $K'$ are neighboring elements.
 The parameter $\alpha^{(k)}$ is a local estimate of the maximum wave speed,
-computed at the current Newton iterate as
+computed at the current Newton iterate as $|b \cdot n| =1$
 \[
   \alpha^{(k)}
   =
@@ -242,7 +242,7 @@ Hence, on an interior face $e = K^-\cap K^+$, the weak flux term in
 \[
   \int_{e}
     \widehat{\mathbf{F}}(\mathbf{W}_h^{-,(k)},\mathbf{W}_h^{+,(k)};\bm n^-)
-    \cdot \big(\phi^- - \phi^+\big)\, ds,
+    \cdot \big(\phi^+ - \phi^-\big)\, ds,
 \]
 while on a boundary face, the exterior state $\mathbf{W}^+$ is replaced
 by the prescribed boundary data $\mathbf{W}_b$.
@@ -252,19 +252,19 @@ by the prescribed boundary data $\mathbf{W}_b$.
 \widehat{F}_A(A^-,U^-;A^+,U^+)
 &=
 \frac{1}{2}\Big[
-    (A^- U^-)
-  + (A^+ U^+)
+    (A^- U^-)(b \cdot n)^{-}
+  + (A^+ U^+)(b \cdot n)^{+}
 \Big]
 -\frac{1}{2}\,\alpha^{(k)}\,
-  ( A^- - A^+ ), \\[2mm]
+  ( A^+ - A^- ), \\[2mm]
 \widehat{F}_U(A^-,U^-;A^+,U^+)
 &=
 \frac{1}{2}\Bigg[
-    \left(\frac{(U^-)^2}{2} + \frac{1}{\rho}P(A^-)\right)
-  + \left(\frac{(U^+)^2}{2} + \frac{1}{\rho}P(A^+)\right)
-\Bigg]
--\frac{1}{2}\,\alpha^{(k)}\,
-  ( U^-  - U^+ ).
+    \left(\frac{(U^-)^2}{2} + \frac{1}{\rho}P(A^-)\right)(b \cdot n)^{-}
+  + \left(\frac{(U^+)^2}{2} + \frac{1}{\rho}P(A^+)\right)(b \cdot n)^{+}
+\Bigg]  \\[2mm]
+&-\frac{1}{2}\,\alpha^{(k)}\,
+  ( U^+  - U^- ).
 \end{aligned}
 }
 \end{equation}
@@ -371,7 +371,7 @@ For the local Lax--Friedrichs flux
 \[
   \widehat{\mathbf{F}}(\mathbf{W}^-,\mathbf{W}^+)
   =
-  \tfrac{1}{2}\big(\mathbf{F}(\mathbf{W}^-)+\mathbf{F}(\mathbf{W}^+)\big)
+  \tfrac{1}{2}\big(\mathbf{F}(\mathbf{W}^-)(b \cdot n)^{-}+\mathbf{F}(\mathbf{W}^+)(b \cdot n)^{+}\big)
   -\tfrac{1}{2}\alpha^{(k)}(\mathbf{W}^+ - \mathbf{W}^-),
 \]
 the linearization at the current iterate is obtained by differentiating
@@ -382,8 +382,8 @@ $\mathbf{F}(\mathbf{W}^\pm)$:
   =
   \tfrac{1}{2}
   \big(
-    \mathbf{H}^-\,\delta\mathbf{W}^-
-    + \mathbf{H}^+\,\delta\mathbf{W}^+
+    \mathbf{H}^-\,\delta\mathbf{W}^- (b \cdot n)^{-}
+    + \mathbf{H}^+\,\delta\mathbf{W}^+ (b \cdot n)^{+}
   \big)
   - \tfrac{1}{2}\alpha^{(k)}
     (\delta\mathbf{W}^+ - \delta\mathbf{W}^-),
@@ -407,17 +407,17 @@ $\mathbf{W}=(A,U)^{\!\top}$ gives:
 \delta\widehat{F}_1
 =
 \tfrac{1}{2}\Big[
-  (U^-\,\delta A^- + A^-\,\delta U^-)
-  + (U^+\,\delta A^+ + A^+\,\delta U^+)
-\Big]
+  (U^-\,\delta A^- + A^-\,\delta U^-)(b \cdot n)^{-}
+  + (U^+\,\delta A^+ + A^+\,\delta U^+)(b \cdot n)^{+}
+\Big] \\
 -\tfrac{1}{2}\alpha^{(k)}(\delta A^+ - \delta A^-),\\[3mm]
 \displaystyle
 \delta\widehat{F}_2
 =
 \tfrac{1}{2}\Big[
-  \Big(\tfrac{(c^-)^2}{A^-}\,\delta A^- + U^-\,\delta U^-\Big)
-  + \Big(\tfrac{(c^+)^2}{A^+}\,\delta A^+ + U^+\,\delta U^+\Big)
-\Big]
+  \Big(\tfrac{(c^-)^2}{A^-}\,\delta A^- + U^-\,\delta U^-\Big)(b \cdot n)^{-}
+  + \Big(\tfrac{(c^+)^2}{A^+}\,\delta A^+ + U^+\,\delta U^+\Big)(b \cdot n)^{+}
+\Big] \\
 -\tfrac{1}{2}\alpha^{(k)}(\delta U^+ - \delta U^-).
 \end{cases}
 \]
@@ -572,8 +572,8 @@ The linearized numerical flux is
 \delta\widehat{\mathbf{F}}^{(k)}
 =
 \tfrac12\!\left(
-\mathbf{H}^-\,\delta\mathbf{W}^- +
-\mathbf{H}^+\,\delta\mathbf{W}^+
+\mathbf{H}^-\,\delta\mathbf{W}^- (b \cdot n)^{-} +
+\mathbf{H}^+\,\delta\mathbf{W}^+ (b \cdot n)^{+}
 \right)
 -\tfrac12\alpha^{(k)}\,
   (\delta\mathbf{W}^+ - \delta\mathbf{W}^-),
@@ -605,18 +605,27 @@ and therefore
   \delta A^+ = 0, \qquad
   \delta U^+ = \delta U^- .
 \]
+Numerical Flux in residual becomes 
+\begin{align*}
+ \widehat{F}_A &= \tfrac{1}{2} (A^{+} U^{+}  + A^{-}U^{-})(b \cdot n) - \tfrac{\alpha}{2}(A^{+} - A^{-})\\
+ & = \frac{1}{2}(A_b U^{-} + A^{-}U^{-}) - \tfrac{\alpha}{2}(A_b -A^{-}).\\
+\widehat{F}_U &= \tfrac{1}{2} \left(\frac{(U^-)^2}{2} + \frac{1}{\rho}P(A^-) + \frac{(U^+)^2}{2} + \frac{1}{\rho}P(A^+)\right)(b \cdot n) -\tfrac{\alpha}{2}(U^+ - U^-) \\
+& = \frac{1}{2}\left( (U^{-})^2 +\frac{1}{\rho} P(A^-)  + \frac{1}{\rho} P(A_b)   \right).
+\end{align*}
+
 The linearized numerical flux components become:
 \[
 \delta\widehat{F}_A
 =
-\tfrac12\left(U^-\,\delta A^-+A_b\,\delta U^-\right)
--\tfrac12\alpha(\delta A^- - 0),
+\tfrac12\left(U^-\,\delta A^- +A_b\,\delta U^-\right)(b \cdot n)
++ \tfrac12\alpha\delta A^-,
 \]
-\[
+\begin{align*}
 \delta\widehat{F}_U
-=
-\tfrac12\left(\frac{c^2}{A^-}\delta A^- + U^-\,\delta U^-\right).
-\]
+& =
+\tfrac12\left(\frac{(c^-)^2}{A^-}\delta A^- + U^-\,\delta U^-\right)(b \cdot n) + \tfrac12\left(\frac{(c^+)^2}{A^+}\delta A^+ + U^+\,\delta U^+\right)(b \cdot n) - \tfrac\alpha2(\delta U^{+} - \delta U^{-}), \\
+& = \tfrac12\left(\frac{(c^-)^2}{A^-}\delta A^- + 2 U^-\,\delta U^-\right)(b \cdot n).
+\end{align*}
 
 \paragraph{(b) Subcritical outlet ($x=L$).}
 Here the incoming characteristic is associated with the momentum.
@@ -629,18 +638,28 @@ and therefore
   \delta A^+ = \delta A^-, \qquad
   \delta U^+ = 0.
 \]
+Numerical Flux in residual becomes 
+\begin{align*}
+ \widehat{F}_A &= \tfrac{1}{2} (A^{+} U^{+}  + A^{-}U^{-})(b \cdot n) - \tfrac{\alpha}{2}(A^{+} - A^{-})\\
+ & = \frac{1}{2}(A^{-} U_b + A^{-}U^{-}) .\\
+\widehat{F}_U &= \tfrac{1}{2} \left(\frac{(U^-)^2}{2} + \frac{1}{\rho}P(A^-) + \frac{(U^+)^2}{2} + \frac{1}{\rho}P(A^+)\right)(b \cdot n) -\tfrac{\alpha}{2}(U^+ - U^-) \\
+& = \frac{1}{2}\left( \frac{(U^-)^2}{2} +2 \frac{1}{\rho} P(A^-) + \frac{(U_b)^2}{2}\right) (b\cdot n) - \tfrac{\alpha}{2}(U_b -U^{-})).
+\end{align*}
+
 The linearized flux becomes
-\[
+\begin{align*}
 \delta\widehat{F}_A
-=
-\tfrac12\left(U^-\,\delta A^- + A^-\,\delta U^-\right),
-\]
-\[
+&=
+\tfrac12\left(U^-\,\delta A^- + A^-\,\delta U^-\right)(b \cdot n) + \tfrac12\left(U^+\,\delta A^+ + A^+\,\delta U^+\right)(b \cdot n) - \tfrac\alpha2 ( \delta A^+ - \delta A^{-})\\
+& = \tfrac{1}{2}\left( U^-\,\delta A^- + A^-\,\delta U^- + U_b \delta A^-\right)(b\cdot n)
+\end{align*}
+\begin{align*}
 \delta\widehat{F}_U
-=
-\tfrac12\left(\frac{c^2}{A^-}\delta A^- + U^-\,\delta U^-\right)
-+ \tfrac12\alpha\,\delta U^- .
-\]
+&=
+\tfrac12\left(\frac{(c^{-})^2}{A^-}\delta A^- + U^-\,\delta U^-\right)(b \cdot n)+\tfrac12\left(\frac{(c^{+})^2}{A^+}\delta A^+ + U^+\,\delta U^+\right)(b \cdot n)
+- \tfrac12\alpha\,(\delta U^+ - \delta U^{-}) ,\\
+& = \tfrac12\left( 2 \frac{(c^{-})^2}{A^-}\delta A^- +  U^-\,\delta U^-\right) + \tfrac{\alpha}{2}\delta U^{-}
+\end{align*}
 
 % ===============================================================
 \subsubsection{Supercritical inflow (two incoming characteristics)}
@@ -658,18 +677,27 @@ Thus the variations vanish:
 \[
   \delta A^+ = 0, \qquad \delta U^+ = 0.
 \]
+
+Numerical Flux in residual becomes 
+\begin{align*}
+ \widehat{F}_A &= \tfrac{1}{2} (A^{+} U^{+}  + A^{-}U^{-})(b \cdot n) - \tfrac{\alpha}{2}(A^{+} - A^{-})\\
+ & = \frac{1}{2}(A_b U_b + A^{-}U^{-}) - \tfrac{\alpha}{2}(A_b - A^{-}).\\
+\widehat{F}_U &= \tfrac{1}{2} \left(\frac{(U^-)^2}{2} + \frac{1}{\rho}P(A^-) + \frac{(U^+)^2}{2} + \frac{1}{\rho}P(A^+)\right)(b \cdot n) -\tfrac{\alpha}{2}(U^+ - U^-) \\
+& = \frac{1}{2}\left( \frac{(U^-)^2}{2} +\frac{1}{\rho} P(A^-) + \frac{(U_b)^2}{2} +\frac{1}{\rho} P(A_b)\right) (b\cdot n) - \tfrac{\alpha}{2}(U_b -U^{-})).
+\end{align*}
+
 Hence no boundary degrees of freedom contribute to the Jacobian at such a face,
 and
 \[
 \delta\widehat{F}_A
 =
 \tfrac12\left(U^-\,\delta A^- + A^-\,\delta U^-\right)
--\tfrac12\alpha (\delta A^-),
++ \tfrac12\alpha (\delta A^-),
 \qquad
 \delta\widehat{F}_U
 =
 \tfrac12\left(\frac{c^2}{A^-}\delta A^- + U^-\,\delta U^-\right)
--\tfrac12\alpha (\delta U^-).
++ \tfrac12\alpha (\delta U^-).
 \]
 
 % ===============================================================
@@ -687,6 +715,14 @@ imposed.  Thus
   \delta A^+ = \delta A^-,\quad
   \delta U^+ = \delta U^- .
 \]
+Numerical Flux in residual becomes 
+\begin{align*}
+ \widehat{F}_A &= \tfrac{1}{2} (A^{+} U^{+}  + A^{-}U^{-})(b \cdot n) - \tfrac{\alpha}{2}(A^{+} - A^{-})\\
+ & = \frac{1}{2}( 2 A^{-}U^{-}).\\
+\widehat{F}_U &= \tfrac{1}{2} \left(\frac{(U^-)^2}{2} + \frac{1}{\rho}P(A^-) + \frac{(U^+)^2}{2} + \frac{1}{\rho}P(A^+)\right)(b \cdot n) -\tfrac{\alpha}{2}(U^+ - U^-) \\
+& = \frac{1}{2}\left( 2 \frac{(U^-)^2}{2} + 2\frac{1}{\rho} P(A^-) \right) (b\cdot n).
+\end{align*}
+
 In this case, the Lax--Friedrichs dissipation vanishes because
 $\delta\mathbf{W}^+=\delta\mathbf{W}^-$, and the linearized flux reduces to
 \[
@@ -697,7 +733,6 @@ U^-\,\delta A^- + A^-\,\delta U^- \\[1mm]
 \dfrac{c^2}{A^-}\,\delta A^- + U^-\,\delta U^-
 \end{pmatrix}.
 \]
-
 
 \paragraph{Summary.}
 The mapping for the exterior state and its Newton variation is summarised in
