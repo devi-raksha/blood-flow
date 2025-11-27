@@ -540,14 +540,14 @@ BloodFlowSystem<dim, spacedim>::assemble_system()
         // ===== BOUNDARY CLASSIFICATION =====
         // Count incoming characteristics
         int incoming_count = 0;
-        if (lambda1 < 0.0)
+        if (lambda1 <= 0.0)
           incoming_count++;
-        if (lambda2 < 0.0)
+        if (lambda2 <= 0.0)
           incoming_count++;
 
-        bool is_subcritical_inflow   = (incoming_count == 1) && (lambda1 < 0.0);
-        bool is_subcritical_outflow  = (incoming_count == 1) && (lambda2 < 0.0);
-        bool is_supercritical_inflow = (incoming_count == 2);
+        bool is_subcritical_inflow  = (incoming_count == 1) && (lambda1 <= 0.0);
+        bool is_subcritical_outflow = (incoming_count == 1) && (lambda2 <= 0.0);
+        bool is_supercritical_inflow  = (incoming_count == 2);
         bool is_supercritical_outflow = (incoming_count == 0);
 
         // ===== DETERMINE EXTERIOR STATE (A_ext, U_ext) =====
@@ -561,7 +561,7 @@ BloodFlowSystem<dim, spacedim>::assemble_system()
             A_ext = A_bc;  // Impose area at boundary
             U_ext = U_int; // velocity from interior
           }
-        if (is_subcritical_outflow)
+        else if (is_subcritical_outflow)
           {
             // Subcritical: first is outgoing characteristic
 
