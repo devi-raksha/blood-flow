@@ -533,8 +533,11 @@ BloodFlowSystem<dim, spacedim>::assemble_system()
 
         // ===== CHARACTERISTIC SPEEDS =====
         // In 1D: lambda1 = (U - c) * n, lambda2 = (U + c) * n
-        const double lambda1 = (U_int - c_int) * bn;
-        const double lambda2 = (U_int + c_int) * bn;
+        // const double lambda1_bn = (U_int - c_int) * bn;
+        // const double lambda2_bn = (U_int + c_int) * bn;
+
+        const double lambda1 = (U_int - c_int) ;
+        const double lambda2 = (U_int + c_int) ;
 
         // ===== BOUNDARY CLASSIFICATION =====
         // Count incoming characteristics
@@ -594,8 +597,8 @@ BloodFlowSystem<dim, spacedim>::assemble_system()
 
 
         // Rusanov dissipation
-        auto F_area_dissipation     = -alpha_bd * (A_ext - A_int);
-        auto F_momentum_dissipation = -alpha_bd * (U_ext - U_int);
+        auto F_area_dissipation     = -0.5*alpha_bd * (A_ext - A_int);
+        auto F_momentum_dissipation = -0.5*alpha_bd * (U_ext - U_int);
 
         // Complete flux = physical flux - Rusanov dissipation
         auto F_area_bd     = F_area_ext + F_area_dissipation;
@@ -727,6 +730,20 @@ BloodFlowSystem<dim, spacedim>::assemble_system()
                           MeshWorker::assemble_own_interior_faces_once,
                         boundary_worker,
                         face_worker);
+// auto null_boundary = [](const auto &, const unsigned int, auto &, auto &) {
+//     };
+
+//     MeshWorker::mesh_loop(dof_handler.begin_active(),
+//                           dof_handler.end(),
+//                           cell_worker,
+//                           copier,
+//                           scratch_data,
+//                           copy_data,
+//                           MeshWorker::assemble_own_cells |
+//                             MeshWorker::assemble_boundary_faces |
+//                             MeshWorker::assemble_own_interior_faces_once,
+//                           null_boundary,
+//                           face_worker);
 }
 
 // ========================================================================
