@@ -529,15 +529,13 @@ BloodFlowSystem<dim, spacedim>::assemble_system()
         const double dpdA  = compute_pressure_derivative(A_int);
         const double c_int = compute_wave_speed(A_int);
 
-        const double bn = compute_tangent_normal_product(cell, normals[q]);
-
         // ===== CHARACTERISTIC SPEEDS =====
         // In 1D: lambda1 = (U - c) * n, lambda2 = (U + c) * n
         // const double lambda1_bn = (U_int - c_int) * bn;
         // const double lambda2_bn = (U_int + c_int) * bn;
 
-        const double lambda1 = (U_int - c_int) ;
-        const double lambda2 = (U_int + c_int) ;
+        const double lambda1 = (U_int - c_int);
+        const double lambda2 = (U_int + c_int);
 
         // ===== BOUNDARY CLASSIFICATION =====
         // Count incoming characteristics
@@ -547,20 +545,28 @@ BloodFlowSystem<dim, spacedim>::assemble_system()
         if (lambda2 < 0.0)
           incoming_count++;
 
-        bool is_subcritical           = (incoming_count == 1);
-        bool is_supercritical_inflow  = (incoming_count == 2);
+        bool is_subcritical_inflow   = (incoming_count == 1) && (lambda1 < 0.0);
+        bool is_subcritical_outflow  = (incoming_count == 1) && (lambda2 < 0.0);
+        bool is_supercritical_inflow = (incoming_count == 2);
         bool is_supercritical_outflow = (incoming_count == 0);
 
         // ===== DETERMINE EXTERIOR STATE (A_ext, U_ext) =====
 
         double A_ext, U_ext;
 
-        if (is_subcritical)
+        if (is_subcritical_inflow)
           {
-            // Subcritical: 1 incoming characteristic
+            // Subcritical: first is incoming characteristic
 
             A_ext = A_bc;  // Impose area at boundary
             U_ext = U_int; // velocity from interior
+          }
+        if (is_subcritical_outflow)
+          {
+            // Subcritical: first is outgoing characteristic
+
+            A_ext = A_int; // Impose area at boundary
+            U_ext = U_bc;  // velocity from interior
           }
         else if (is_supercritical_inflow)
           {
@@ -568,21 +574,17 @@ BloodFlowSystem<dim, spacedim>::assemble_system()
             A_ext = A_bc; // Impose area
             U_ext = U_bc; // Impose velocity
           }
-        else
+        else if (is_supercritical_outflow)
           { // is_supercritical_outflow
             // Supercritical outflow: no characteristics enter
 
             A_ext = A_int; // interior area
             U_ext = U_int; // interior velocity
           }
-
-        // ===== LAXFRIEDRICHS PENALTY =====
-        const double an          = bn;
-        const double an_neighbor = bn;
-        const double beta_bd =
-          compute_LF_penalty(A_int, A_ext, U_int, U_ext, an, an_neighbor);
-
-        const double alpha_bd = theta_bd * beta_bd;
+        else
+          {
+            Assert(false, ExcMessage("Unclassified boundary condition."));
+          }
 
         // ===== RHS ASSEMBLY =====
         // Pressure at exterior
@@ -595,15 +597,6 @@ BloodFlowSystem<dim, spacedim>::assemble_system()
           compute_physical_momentum_flux(cell, U_ext, U_ext, p_ext) *
           normals[q];
 
-
-        // Rusanov dissipation
-        auto F_area_dissipation     = -0.5*alpha_bd * (A_ext - A_int);
-        auto F_momentum_dissipation = -0.5*alpha_bd * (U_ext - U_int);
-
-        // Complete flux = physical flux - Rusanov dissipation
-        auto F_area_bd     = F_area_ext + F_area_dissipation;
-        auto F_momentum_bd = F_momentum_ext + F_momentum_dissipation;
-
         // ===== JACOBIAN ASSEMBLY =====
         // Trial function loop
         for (unsigned int j = 0; j < fe_face.get_fe().dofs_per_cell; ++j)
@@ -611,47 +604,19 @@ BloodFlowSystem<dim, spacedim>::assemble_system()
             const double trial_A = fe_face[area_extractor].value(j, q);
             const double trial_U = fe_face[velocity_extractor].value(j, q);
 
-            // Derivative of A_ext with respect to solution
-            double dA_ext_dA = 0.0;
-            if (is_supercritical_outflow)
-              {
-                dA_ext_dA = 1.0;
-              }
-            // If subcritical or inflow: A_ext = A_bc (prescribed), so
-            // dA_ext/dA = 0
-
-            // Derivative of U_ext with respect to solution
-            double dU_ext_dU = 0.0;
-            if (is_supercritical_outflow)
-              {
-                dU_ext_dU = 1.0; // U_ext = U_int → depends on interior velocity
-              }
-            // If subcritical: U_ext = U_int → dU_ext/dU = 1
-            if (is_subcritical)
-              {
-                dU_ext_dU = 1.0;
-              }
-            // If inflow: U_ext = U_bc (prescribed), so dU_ext/dU = 0
-
             // Area equation Jacobian
             // ∂/∂A [F_area - alpha * (A_ext - A_int)]
             const double flux_jac_area_val =
               compute_physical_area_jacobian_flux(
                 cell, A_ext, trial_U, U_ext, trial_A) *
-                normals[q] -
-              alpha_bd * (dA_ext_dA - 1.0);
+              normals[q];
 
             // Momentum equation Jacobian (simplified)
             const double c_sq = A_int / par["rho"] * dpdA;
             const double flux_jac_momentum_val =
-              compute_physical_momentum_jacobian_flux(cell,
-                                                      c_sq,
-                                                      A_ext,
-                                                      trial_A,
-                                                      U_ext,
-                                                      trial_U) *
-                normals[q] -
-              alpha_bd * (dU_ext_dU - 1.0); // from boundary_penalty
+              compute_physical_momentum_jacobian_flux(
+                cell, c_sq, A_ext, trial_A, U_ext, trial_U) *
+              normals[q];
 
             // Test function loop
             for (unsigned int i = 0; i < fe_face.get_fe().dofs_per_cell; ++i)
@@ -675,10 +640,10 @@ BloodFlowSystem<dim, spacedim>::assemble_system()
             const double test_U = fe_face[velocity_extractor].value(i, q);
 
             // Area RHS
-            copy.cell_rhs(i) -= F_area_bd * test_A * JxW[q];
+            copy.cell_rhs(i) -= F_area_ext * test_A * JxW[q];
 
             // Momentum RHS
-            copy.cell_rhs(i) -= F_momentum_bd * test_U * JxW[q];
+            copy.cell_rhs(i) -= F_momentum_ext * test_U * JxW[q];
           }
 
         // ===== DEBUG OUTPUT =====
@@ -686,8 +651,8 @@ BloodFlowSystem<dim, spacedim>::assemble_system()
         std::cout << "BID=" << boundary_id << " q=" << q << " | A_int=" << A_int
                   << " U_int=" << U_int << " c=" << c_int
                   << " | lambda1=" << lambda1 << " lambda2=" << lambda2
-                  << " | subcrit=" << is_subcritical << " | A_ext=" << A_ext
-                  << " U_ext=" << U_ext << std::endl;
+                  << " | subcrit=" << is_subcritical_inflow
+                  << " | A_ext=" << A_ext << " U_ext=" << U_ext << std::endl;
       }
   };
 
@@ -730,20 +695,20 @@ BloodFlowSystem<dim, spacedim>::assemble_system()
                           MeshWorker::assemble_own_interior_faces_once,
                         boundary_worker,
                         face_worker);
-// auto null_boundary = [](const auto &, const unsigned int, auto &, auto &) {
-//     };
+  // auto null_boundary = [](const auto &, const unsigned int, auto &, auto &) {
+  //     };
 
-//     MeshWorker::mesh_loop(dof_handler.begin_active(),
-//                           dof_handler.end(),
-//                           cell_worker,
-//                           copier,
-//                           scratch_data,
-//                           copy_data,
-//                           MeshWorker::assemble_own_cells |
-//                             MeshWorker::assemble_boundary_faces |
-//                             MeshWorker::assemble_own_interior_faces_once,
-//                           null_boundary,
-//                           face_worker);
+  //     MeshWorker::mesh_loop(dof_handler.begin_active(),
+  //                           dof_handler.end(),
+  //                           cell_worker,
+  //                           copier,
+  //                           scratch_data,
+  //                           copy_data,
+  //                           MeshWorker::assemble_own_cells |
+  //                             MeshWorker::assemble_boundary_faces |
+  //                             MeshWorker::assemble_own_interior_faces_once,
+  //                           null_boundary,
+  //                           face_worker);
 }
 
 // ========================================================================
