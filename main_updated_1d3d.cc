@@ -38,7 +38,7 @@ main(int argc, char **argv)
 
       /* ---------------------- 2. Initialise deal.II logging -----------------
        */
-      dealii::deallog.depth_console(2);
+      dealii::deallog.depth_console(1);
 
       /* ------------------------- 3. Set up the problem ----------------------
        */

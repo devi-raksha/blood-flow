@@ -515,12 +515,14 @@ BloodFlowSystem<dim, spacedim>::assemble_system()
           }
 
         // ===== DEBUG OUTPUT =====
-        std::cout << "BID=" << boundary_id << " q=" << q << " | A_int=" << A_int
-                  << " U_int=" << U_int << " c=" << c_int
-                  << " | lambda1=" << lambda1 << " lambda2=" << lambda2
-                  << " | inlet=" << is_subcritical_inflow
-                  << " outlet=" << is_subcritical_outflow
-                  << " | A_ext=" << A_ext << " U_ext=" << U_ext << std::endl;
+        deallog.push("boundary_debug");
+        deallog << "BID=" << boundary_id << " q=" << q << " | A_int=" << A_int
+                << " U_int=" << U_int << " c=" << c_int
+                << " | lambda1=" << lambda1 << " lambda2=" << lambda2
+                << " | inlet=" << is_subcritical_inflow
+                << " outlet=" << is_subcritical_outflow << " | A_ext=" << A_ext
+                << " U_ext=" << U_ext << std::endl;
+        deallog.pop();
       }
   };
 
