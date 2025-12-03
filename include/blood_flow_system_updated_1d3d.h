@@ -393,6 +393,39 @@ private:
   }
 
   /**
+   * Inverse function to compute area from wave speed (Newton method)
+   */
+
+  double
+  inverse_compute_area_from_c(double c_target) const
+  {
+    double A = par["a0"]; // initial guess
+
+    for (unsigned int iter = 0; iter < 20; ++iter)
+      {
+        double dpdA = compute_pressure_derivative(A);
+        double cA   = std::sqrt(A / par["rho"] * dpdA);
+
+        double f = cA - c_target;
+        if (std::abs(f) < 1e-12)
+          return A;
+
+        // approximate derivative: dc/dA ≈ dpdA / (2*cA*rho)
+        double df_dA = dpdA / (2.0 * cA * par["rho"]);
+
+        // Newton update
+        A = A - f / df_dA;
+
+        if (A < 1e-12)
+          A = 1e-12;
+      }
+
+    return A;
+  }
+
+
+
+  /**
    * Compute pressure using the shifted tube law
    */
   double
@@ -417,7 +450,6 @@ private:
     const double m     = par["m"];
     return par["mu"] * m * std::pow(ratio, m - 1.0) / par["a0"];
   }
-
 
   double
   compute_LF_penalty(const double area_L,
@@ -538,6 +570,125 @@ private:
   {
     const Tensor<1, spacedim> b = compute_directional_vector(cell);
     return b * normal;
+  }
+
+  /**
+   * Compute HLL flux at interface for residual computation
+   */
+  std::array<double, 2>
+  HLL_residual_flux(
+    const typename DoFHandler<dim, spacedim>::active_cell_iterator &cell,
+    const typename DoFHandler<dim, spacedim>::active_cell_iterator &ncell,
+    double                                                          A_L,
+    double                                                          U_L,
+    double                                                          A_R,
+    double                                                          U_R,
+    const Tensor<1, spacedim> &normal) const
+  {
+    // wave speeds
+    double c_L = compute_wave_speed(A_L);
+    double c_R = compute_wave_speed(A_R);
+
+    double s_L = std::min(U_L - c_L, U_R - c_R);
+    double s_R = std::max(U_L + c_L, U_R + c_R);
+
+    // physical fluxes projected on normal
+    double FAL = compute_physical_area_flux(cell, A_L, U_L) * normal;
+    double FUL = compute_physical_momentum_flux(cell,
+                                                U_L,
+                                                U_L,
+                                                compute_pressure_value(A_L)) *
+                 normal;
+
+    double FAR = compute_physical_area_flux(ncell, A_R, U_R) * normal;
+    double FUR = compute_physical_momentum_flux(ncell,
+                                                U_R,
+                                                U_R,
+                                                compute_pressure_value(A_R)) *
+                 normal;
+
+    // Case 1: all waves go right
+    if (s_L >= 0.0)
+      return {{FAL, FUL}};
+
+    // Case 2: all waves go left
+    if (s_R <= 0.0)
+      return {{FAR, FUR}};
+
+    // Case 3: mixed — HLL formula
+    double inv = 1.0 / (s_R - s_L);
+
+    double FHLL_A = (s_R * FAL - s_L * FAR + s_R * s_L * (A_R - A_L)) * inv;
+    double FHLL_U = (s_R * FUL - s_L * FUR + s_R * s_L * (U_R - U_L)) * inv;
+
+    return {{FHLL_A, FHLL_U}};
+  }
+
+
+  /**
+   * Compute HLL flux at interface for JACOBIAN computation
+   * For jacobian: linearized fluxes using current state
+   */
+  std::array<double, 2>
+  HLL_jacobian_flux(
+    const typename DoFHandler<dim, spacedim>::active_cell_iterator &cell,
+    const typename DoFHandler<dim, spacedim>::active_cell_iterator &ncell,
+    double                                                          A_L,
+    double                                                          U_L,
+    double                                                          A_R,
+    double                                                          U_R,
+    double                                                          trial_A_L,
+    double                                                          trial_U_L,
+    double                                                          trial_A_R,
+    double                                                          trial_U_R,
+    const Tensor<1, spacedim> &normal) const
+  {
+    // wave speeds at current state
+    double c_L = compute_wave_speed(A_L);
+    double c_R = compute_wave_speed(A_R);
+
+    double s_L = std::min(U_L - c_L, U_R - c_R);
+    double s_R = std::max(U_L + c_L, U_R + c_R);
+
+    // Jacobian of area flux: ∂(A*U*b)/∂trial = (trial_U*A + trial_A*U)*b
+    double FAL_jac = compute_physical_area_jacobian_flux(
+                       cell, A_L, trial_U_L, U_L, trial_A_L) *
+                     normal;
+
+    // Jacobian of momentum flux: ∂(0.5*U²+P/ρ)*b)/∂trial
+    double c_L_sq  = c_L * c_L;
+    double FUL_jac = compute_physical_momentum_jacobian_flux(
+                       cell, c_L_sq, A_L, trial_A_L, U_L, trial_U_L) *
+                     normal;
+
+    double FAR_jac = compute_physical_area_jacobian_flux(
+                       ncell, A_R, trial_U_R, U_R, trial_A_R) *
+                     normal;
+
+    double c_R_sq  = c_R * c_R;
+    double FUR_jac = compute_physical_momentum_jacobian_flux(
+                       ncell, c_R_sq, A_R, trial_A_R, U_R, trial_U_R) *
+                     normal;
+
+    // Case 1: all waves go right
+    if (s_L >= 0.0)
+      return {{FAL_jac, FUL_jac}};
+
+    // Case 2: all waves go left
+    if (s_R <= 0.0)
+      return {{FAR_jac, FUR_jac}};
+
+    // Case 3: mixed — HLL formula with jacobian
+    double inv = 1.0 / (s_R - s_L);
+
+    double FHLL_A_jac =
+      (s_R * FAL_jac - s_L * FAR_jac + s_R * s_L * (trial_A_R - trial_A_L)) *
+      inv;
+    double FHLL_U_jac =
+      (s_R * FUL_jac - s_L * FUR_jac + s_R * s_L * (trial_U_R - trial_U_L)) *
+      inv;
+
+    return {{FHLL_A_jac, FHLL_U_jac}};
   }
 
 
