@@ -33,3 +33,6 @@ latex/*.mp4
 
 # Backup files
 source/*.bak
+
+doc/deal.tag
+doc/html

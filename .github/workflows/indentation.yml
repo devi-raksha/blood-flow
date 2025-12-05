@@ -1,0 +1,21 @@
+name: Indent
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  indent:
+    runs-on: ubuntu-latest
+    container:
+      image: dealii/dealii:v9.7.1-noble
+      options: --user root
+
+    steps:
+      - uses: actions/checkout@v3
+      - name: Check indentation
+        run: |
+          git config --global --add safe.directory /__w/Advection-reaction/Advection-reaction
+          ./scripts/check_indentation.sh
