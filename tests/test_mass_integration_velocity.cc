@@ -40,14 +40,7 @@ test()
 
   problem.setup_system();
 
-  // Project initial conditions
-  AffineConstraints<double> constraints;
-  constraints.close();
-  VectorTools::project(problem.dof_handler,
-                       constraints,
-                       QGauss<1>(problem.fe_degree + 1),
-                       problem.initial_condition,
-                       problem.solution);
+  problem.compute_initial_solution(problem.solution, problem.time);
 
   problem.assemble_mass_matrix();
 

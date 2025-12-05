@@ -33,6 +33,8 @@
 #include <deal.II/numerics/matrix_tools.h>
 #include <deal.II/numerics/vector_tools.h>
 
+#include <deal.II/sundials/arkode.h>
+
 #include <memory>
 
 #include "constants.h"
@@ -44,234 +46,6 @@ using namespace dealii;
 // PHYSICAL CONSTANTS AND PARAMETERS
 //====================================================================
 using BloodFlowParameters = ParsedTools::Constants;
-
-//====================================================================
-// EXACT SOLUTION AND MANUFACTURED SOLUTION
-//====================================================================
-
-/**
- * Exact solution class for manufactured solution
- */
-// template <int spacedim>
-// class ExactSolutionBloodFlow : public Function<spacedim>
-// {
-// private:
-//   // Parameters for manufactured solution
-//   double r0, a0, L, T0, atilde, qtilde;
-
-// public:
-//   ExactSolutionBloodFlow()
-//     : Function<spacedim>(2) // 2 components: area and velocity
-//     , r0(BloodFlowParameters::R0)
-//     , a0(numbers::PI * r0 * r0)
-//     , L(BloodFlowParameters::L)
-//     , T0(BloodFlowParameters::T0)
-//     , atilde(0.1 * a0)
-//     , qtilde(0.0)
-//   {}
-
-//   virtual double
-//   value(const Point<spacedim> &p, const unsigned int component) const
-//   override
-//   {
-//     const double x = p[0];
-//     const double t = this->get_time();
-
-//     if (component == 0) // area A
-//       return a0 + atilde * std::sin(2.0 * numbers::PI * x / L) *
-//                     std::cos(2.0 * numbers::PI * t / T0);
-//     else // velocity U
-//       return qtilde - (atilde * L / T0) *
-//                         std::cos(2.0 * numbers::PI * x / L) *
-//                         std::sin(2.0 * numbers::PI * t / T0);
-//   }
-
-//   virtual void
-//   vector_value(const Point<spacedim> &p,
-//                Vector<double>        &values) const override
-//   {
-//     Assert(values.size() == 2, ExcDimensionMismatch(values.size(), 2));
-//     values[0] = value(p, 0);
-//     values[1] = value(p, 1);
-//   }
-
-//   virtual Tensor<1, spacedim>
-//   gradient(const Point<spacedim> &p,
-//            const unsigned int     component) const override
-//   {
-//     const double x = p[0];
-//     const double t = this->get_time();
-
-//     Tensor<1, spacedim> grad;
-
-//     if (component == 0) // area A gradient
-//       {
-//         grad[0] = atilde * (2.0 * numbers::PI / L) *
-//                   std::cos(2.0 * numbers::PI * x / L) *
-//                   std::cos(2.0 * numbers::PI * t / T0);
-//       }
-//     else if (component == 1) // velocity U gradient
-//       {
-//         grad[0] = (atilde * L / T0) * (2.0 * numbers::PI / L) *
-//                   std::sin(2.0 * numbers::PI * x / L) *
-//                   std::sin(2.0 * numbers::PI * t / T0);
-//       }
-
-//     return grad;
-//   }
-
-//   virtual void
-//   vector_gradient(const Point<spacedim>            &p,
-//                   std::vector<Tensor<1, spacedim>> &gradients) const
-//                   override
-//   {
-//     Assert(gradients.size() == 2, ExcDimensionMismatch(gradients.size(),
-//     2)); gradients[0] = gradient(p, 0); gradients[1] = gradient(p, 1);
-//   }
-
-//   virtual void
-//   vector_value_list(const std::vector<Point<spacedim>> &points,
-//                     std::vector<Vector<double>> &value_list) const override
-//   {
-//     const unsigned int n = points.size();
-//     Assert(value_list.size() == n,
-//            ExcDimensionMismatch(value_list.size(), n));
-//     for (unsigned int i = 0; i < n; ++i)
-//       vector_value(points[i], value_list[i]);
-//   }
-
-//   // Getters for parameters
-//   double
-//   get_reference_area() const
-//   {
-//     return a0;
-//   }
-//   double
-//   get_amplitude() const
-//   {
-//     return atilde;
-//   }
-//   double
-//   get_length() const
-//   {
-//     return L;
-//   }
-//   double
-//   get_period() const
-//   {
-//     return T0;
-//   }
-// };
-
-//====================================================================
-// RIGHT-HAND SIDE FUNCTIONS (MANUFACTURED SOLUTION)
-//====================================================================
-
-/**
- * RHS A-forcing term f_a(x,t) for manufactured solution
- */
-// template <int spacedim>
-// class RHS_A_BloodFlow : public Function<spacedim>
-// {
-// private:
-//   double r0, a0, L, T0, atilde, qtilde;
-
-// public:
-//   RHS_A_BloodFlow()
-//     : Function<spacedim>(1)
-//     , r0(BloodFlowParameters::R0)
-//     , a0(numbers::PI * r0 * r0)
-//     , L(BloodFlowParameters::L)
-//     , T0(BloodFlowParameters::T0)
-//     , atilde(0.1 * a0)
-//     , qtilde(0.0)
-//   {}
-
-//   virtual double
-//   value(const Point<spacedim> &p,
-//         const unsigned int /*component*/ = 0) const override
-//   {
-//     const double x = p[0];
-//     const double t = this->get_time();
-
-//     // Forcing term from manufactured solution
-//     return std::sin(2.0 * numbers::PI * x / L) *
-//              std::sin(2.0 * numbers::PI * t / T0) *
-//              (-2.0 * numbers::PI / T0 * atilde +
-//               (a0 + atilde * std::sin(2.0 * numbers::PI * x / L) *
-//                       std::cos(2.0 * numbers::PI * t / T0)) *
-//                 2.0 * numbers::PI / T0 * atilde) +
-//            atilde * std::cos(2.0 * numbers::PI * x / L) *
-//              std::cos(2.0 * numbers::PI * t / T0) * (2.0 * numbers::PI / L)
-//              * (qtilde - (atilde * L / T0) *
-//                          std::cos(2.0 * numbers::PI * x / L) *
-//                          std::sin(2.0 * numbers::PI * t / T0));
-//   }
-// };
-
-// /**
-//  * RHS U-forcing term f_u(x,t) for manufactured solution
-//  */
-// template <int spacedim>
-// class RHS_U_BloodFlow : public Function<spacedim>
-// {
-// private:
-//   double r0, a0, L, T0, atilde, rho, elastic_modulus, viscosity_c, m;
-
-// public:
-//   RHS_U_BloodFlow()
-//     : Function<spacedim>(1)
-//     , r0(BloodFlowParameters::R0)
-//     , a0(numbers::PI * r0 * r0)
-//     , L(BloodFlowParameters::L)
-//     , T0(BloodFlowParameters::T0)
-//     , atilde(0.1 * a0)
-//     , rho(BloodFlowParameters::RHO)
-//     , elastic_modulus(BloodFlowParameters::ELASTIC_MODULUS)
-//     , viscosity_c(BloodFlowParameters::VISCOSITY_C)
-//     , m(BloodFlowParameters::TUBE_LAW_EXPONENT)
-//   {}
-
-//   virtual double
-//   value(const Point<spacedim> &p,
-//         const unsigned int /*component*/ = 0) const override
-//   {
-//     const double x = p[0];
-//     const double t = this->get_time();
-//     const double A = a0 + atilde * std::sin(2.0 * numbers::PI * x / L) *
-//                             std::cos(2.0 * numbers::PI * t / T0);
-
-//     return std::cos(2.0 * numbers::PI * x / L) *
-//              std::cos(2.0 * numbers::PI * t / T0) *
-//              (-L * L / (T0 * T0) + elastic_modulus / (rho * std::pow(a0,
-//              m)) *
-//                                      std::pow(A, m - 1)) +
-//            (atilde - (atilde * L / T0) * std::cos(2.0 * numbers::PI * x /
-//            L) *
-//                        std::sin(2.0 * numbers::PI * t / T0)) *
-//              ((2.0 * numbers::PI / T0) * atilde *
-//                 std::sin(2.0 * numbers::PI * x / L) *
-//                 std::sin(2.0 * numbers::PI * t / T0) +
-//               viscosity_c);
-//   }
-
-//   // Setters for runtime parameter updates
-//   void
-//   set_rho(double new_rho)
-//   {
-//     rho = new_rho;
-//   }
-//   void
-//   set_elastic_modulus(double new_E)
-//   {
-//     elastic_modulus = new_E;
-//   }
-//   void
-//   set_viscosity_c(double new_c)
-//   {
-//     viscosity_c = new_c;
-//   }
-// };
 
 //====================================================================
 // SCRATCH AND COPY DATA STRUCTURES
@@ -355,27 +129,37 @@ public:
   void
   setup_system();
   void
-  assemble_system();
+  assemble_jacobian(const double          t,
+                    const Vector<double> &y,
+                    const Vector<double> &Mydot);
+  void
+  assemble_implicit_function(const double          t,
+                             const Vector<double> &y,
+                             Vector<double>       &Mydot);
   void
   assemble_mass_matrix();
   void
-  solve();
+  compute_initial_solution(Vector<double> &dst, const double t);
 
   double
   compute_max_wave_speed(const Vector<double> &solution) const;
 
   void
-  output_results(const unsigned int cycle) const;
+  output_results(const Vector<double> &y,
+                 const Vector<double> &pressure_vec,
+                 const unsigned int    cycle) const;
   void
-  compute_pressure();
+  compute_pressure(const Vector<double> &y, Vector<double> &pressure_vec) const;
   void
   compute_errors(unsigned int k);
   void
   run_convergence_study();
 
 private:
-  ParsedTools::Constants    par;
-  AffineConstraints<double> constraints;
+  ParsedTools::Constants                           par;
+  AffineConstraints<double>                        constraints;
+  SUNDIALS::ARKode<Vector<double>>::AdditionalData arkode_parameters;
+
   // --------------------------------------------------
   // ===  Physical and Constitutive Relations  ===
   // --------------------------------------------------
@@ -702,13 +486,14 @@ private:
   SparsityPattern      sparsity_pattern;
   SparseMatrix<double> jacobian_matrix;
   SparseMatrix<double> mass_matrix;
+  SparseMatrix<double> linear_system_matrix;
+  SparseDirectUMFPACK  linear_solver;
+  SparseDirectUMFPACK  mass_solver;
+  unsigned int         verbosity = 0;
+  std::string          output_directory = "";
   Vector<double>       solution;
-  Vector<double>       solution_old;
   Vector<double>       pressure;
-  Vector<double>       tmp_vector;
 
-  Vector<double> residual_vector;
-  Vector<double> newton_update;
   // Parameters
   unsigned int fe_degree            = 1;
   std::string  constants            = "1.0";
@@ -716,26 +501,15 @@ private:
   bool         use_direct_solver    = true;
   unsigned int n_refinement_cycles  = 1;
   unsigned int n_global_refinements = 5;
-
-  // Time stepping parameters
-  double       time_step    = 0.01;
-  double       final_time   = 1.0;
-  double       time         = 0.0;
-  unsigned int n_time_steps = 0;
+  double       time                 = 0.0;
 
   // Numerical parameters
-  double omega    = 1;
   double theta    = 0.5;
   double theta_bd = 0.5;
 
 
-  // Newton iteration parameters
-  unsigned int max_newton_iterations = 20;
-  double       newton_tolerance      = 1e-8;
-
-
   // Allow access to private members for all free functions whose name
-  // contains test
+  // is test
   friend void
   test();
 

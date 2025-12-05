@@ -40,22 +40,16 @@ test()
 
   problem.setup_system();
 
-  // Project initial conditions
-  AffineConstraints<double> constraints;
-  constraints.close();
-  VectorTools::project(problem.dof_handler,
-                       constraints,
-                       QGauss<1>(problem.fe_degree + 1),
-                       problem.initial_condition,
-                       problem.solution);
+  problem.compute_initial_solution(problem.solution, problem.time);
 
-  problem.solution_old = problem.solution;
-
-  problem.assemble_system();
+  Vector<double> residual(problem.solution.size());
+  problem.assemble_implicit_function(problem.time, problem.solution, residual);
+  problem.assemble_jacobian(problem.time,
+                             problem.solution,
+                             Vector<double>(problem.solution.size()));
 
   // The residual should be zero.
-  deallog << "Residual norm: " << problem.residual_vector.l2_norm()
-          << std::endl;
+  deallog << "Residual norm: " << residual.l2_norm() << std::endl;
 
 
   // FunctionParser<3> my_test_function(2);
