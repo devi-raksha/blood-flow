@@ -51,6 +51,7 @@ BloodFlowSystem<dim, spacedim>::BloodFlowSystem()
                    par,
                    dealii::FunctionParser<spacedim>::default_variable_names() +
                      ",t")
+  , computing_timer(std::cout, TimerOutput::summary, TimerOutput::wall_times)
 {
   add_parameter("Finite element degree", fe_degree);
   add_parameter("Problem constants", constants);
@@ -78,6 +79,7 @@ template <int dim, int spacedim>
 void
 BloodFlowSystem<dim, spacedim>::initialize_params(const std::string &filename)
 {
+  TimerOutput::Scope timer(computing_timer, "initialize_params");
   ParameterAcceptor::initialize(filename,
                                 "last_used_parameters.prm",
                                 ParameterHandler::Short,
@@ -100,6 +102,7 @@ template <int dim, int spacedim>
 void
 BloodFlowSystem<dim, spacedim>::setup_system()
 {
+  TimerOutput::Scope timer(computing_timer, "setup_system");
   if (!fe)
     {
       // Two-component system: A (area) and U (velocity)
@@ -128,6 +131,7 @@ BloodFlowSystem<dim, spacedim>::assemble_jacobian(const double          t,
                                                   const Vector<double> &y,
                                                   const Vector<double> &Mydot)
 {
+  TimerOutput::Scope timer(computing_timer, "assemble_jacobian");
   deallog.push("assemble_jacobian");
   deallog << "Called assemble_jacobian t=" << t << std::endl;
 
@@ -478,6 +482,7 @@ BloodFlowSystem<dim, spacedim>::assemble_implicit_function(
   const Vector<double> &y,
   Vector<double>       &Mydot)
 {
+  TimerOutput::Scope timer(computing_timer, "assemble_implicit_function");
   deallog.push("assemble_implicit_function");
   deallog << "Called assemble_implicit_function t=" << t << std::endl;
 
@@ -756,7 +761,8 @@ BloodFlowSystem<dim, spacedim>::output_results(
   const Vector<double> &pressure_vec,
   const unsigned int    cycle) const
 {
-  const std::string rel_filename =
+  TimerOutput::Scope timer(computing_timer, "output_results");
+  const std::string  rel_filename =
     output_filename + "-" + std::to_string(cycle) + ".vtu";
   const std::string filename =
     output_directory + (output_directory.empty() ? "" : "/") + rel_filename;
@@ -807,6 +813,7 @@ BloodFlowSystem<dim, spacedim>::compute_pressure(
   const Vector<double> &y,
   Vector<double>       &pressure_vec) const
 {
+  TimerOutput::Scope timer(computing_timer, "compute_pressure");
   AssertDimension(y.size(), dof_handler.n_dofs());
   AssertDimension(pressure_vec.size(), dof_handler.n_dofs());
 
@@ -838,6 +845,7 @@ template <int dim, int spacedim>
 void
 BloodFlowSystem<dim, spacedim>::compute_errors(unsigned int k)
 {
+  TimerOutput::Scope timer(computing_timer, "compute_errors");
   const ComponentSelectFunction<spacedim> area_mask(0, 1.0, 2);
   const ComponentSelectFunction<spacedim> velocity_mask(1, 1.0, 2);
 
@@ -954,7 +962,7 @@ BloodFlowSystem<dim, spacedim>::compute_errors(unsigned int k)
 
 template <int dim, int spacedim>
 void
-BloodFlowSystem<dim, spacedim>::run_convergence_study()
+BloodFlowSystem<dim, spacedim>::run()
 {
   std::cout << "=== CONVERGENCE STUDY for DG" << fe_degree
             << " ===" << std::endl;
@@ -1001,6 +1009,7 @@ BloodFlowSystem<dim, spacedim>::run_convergence_study()
                Vector<double>       &x,
                const Vector<double> &b,
                double) {
+          TimerOutput::Scope timer(computing_timer, "solve_mass");
           deallog.push("solve_mass");
           deallog << "Called solve_mass" << std::endl;
           mass_solver.vmult(x, b);
@@ -1029,6 +1038,7 @@ BloodFlowSystem<dim, spacedim>::run_convergence_study()
                                          const double,
                                          const Vector<double> &,
                                          const Vector<double> &) {
+        TimerOutput::Scope timer(computing_timer, "jacobian_times_vector");
         deallog.push("jacobian_times_vector");
         deallog << "Called jacobian_times_vector" << std::endl;
         jacobian_matrix.vmult(Jv, v);
@@ -1041,6 +1051,8 @@ BloodFlowSystem<dim, spacedim>::run_convergence_study()
                                                  const int    jok,
                                                  int         &jcur,
                                                  const double gamma) {
+        TimerOutput::Scope timer(computing_timer,
+                                 "jacobian_preconditioner_setup");
         deallog.push("jacobian_preconditioner_setup");
         deallog << "Called jacobian_preconditioner_setup gamma=" << gamma
                 << " jok=" << jok << std::endl;
@@ -1066,6 +1078,8 @@ BloodFlowSystem<dim, spacedim>::run_convergence_study()
                                                  const double          gamma,
                                                  const double,
                                                  const int) {
+        TimerOutput::Scope timer(computing_timer,
+                                 "jacobian_preconditioner_solve");
         deallog.push("jacobian_preconditioner_solve");
         deallog << "Called jacobian_preconditioner_solve gamma=" << gamma
                 << std::endl;
@@ -1098,6 +1112,7 @@ template <int dim, int spacedim>
 inline void
 BloodFlowSystem<dim, spacedim>::assemble_mass_matrix()
 {
+  TimerOutput::Scope timer(computing_timer, "assemble_mass_matrix");
   MatrixTools::create_mass_matrix(dof_handler,
                                   QGauss<dim>(fe_degree + 1),
                                   mass_matrix);
@@ -1109,6 +1124,7 @@ void
 BloodFlowSystem<dim, spacedim>::compute_initial_solution(Vector<double> &dst,
                                                          const double    t)
 {
+  TimerOutput::Scope timer(computing_timer, "compute_initial_solution");
   initial_condition.set_time(t);
   AffineConstraints<double> constraints;
   constraints.close();

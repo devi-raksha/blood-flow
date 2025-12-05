@@ -45,7 +45,7 @@ main(int argc, char **argv)
       BloodFlowSystem<1, 3> problem; // 1-dim geometry embedded in \mathbb{R}^3
       problem.initialize_params(par_name);
       // problem.run(); // perform mesh gen, time loop, I/O
-      problem.run_convergence_study();
+      problem.run();
 
       /* ------------------------ 4. Normal program exit ----------------------
        */

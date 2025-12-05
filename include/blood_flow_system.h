@@ -35,6 +35,7 @@
 
 #include <deal.II/sundials/arkode.h>
 
+#include <iosfwd>
 #include <memory>
 
 #include "constants.h"
@@ -153,7 +154,7 @@ public:
   void
   compute_errors(unsigned int k);
   void
-  run_convergence_study();
+  run();
 
 private:
   ParsedTools::Constants                           par;
@@ -517,6 +518,8 @@ private:
   ParsedTools::Function<spacedim> initial_condition;
   ParsedTools::Function<spacedim> rhs_function;
   ParsedTools::Function<spacedim> exact_solution;
+
+  mutable TimerOutput computing_timer;
 };
 
 #endif // BLOOD_FLOW_SYSTEM_UPDATED_1D3D_H
