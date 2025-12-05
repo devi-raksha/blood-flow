@@ -265,21 +265,14 @@ Supercritical outflow & $A^-$ & $U^-$ & $(\delta A^-,\ \delta U^-)$ \\
 \label{tab:bd-arkode}
 \end{table}
 
-\begin{remark}
 \begin{itemize}
   \item The choice $f_E\equiv0$ yields a DIRK scheme identical in spirit to the
   backward Euler step used previously; switching terms between $f_E$ and $f_I$
   gives ImEx schemes without altering the formulas for $\widehat{\mathbf{F}}$
   and $J$.
-  \item In code, \texttt{explicit\_function} and \texttt{implicit\_function}
-  assemble the vectors corresponding to $\mathcal{L}_E$ and $\mathcal{L}_I$,
-  \texttt{mass\_operator} (or the default mass matrix action) supplies
+  \item In the code \texttt{assemble\_implicit\_function} assemble the vectors
+  corresponding to $\mathcal{L}_I$, \texttt{mass\_matrix} supplies
   $\mathcal{M}$, and \texttt{jacobian\_times\_vector} applies
   $N(\cdot)=\mathcal{M}-\gamma J(\cdot)$ using \eqref{eq:ark-jacobian}.
-  \item Newton updates returned by ARKode are coefficient vectors; recovering
-  the physical variables uses $\mathbf{W}_h^{m+1}=z_i^{m}+\delta z^{m+1}$ at the
-  stage level and $\mathbf{W}_h^{n+1}=y_n$ at the time-step level, matching the
-  notation of \eqref{eq:ark-ivp}.
 \end{itemize}
-\end{remark}
 \end{document}
