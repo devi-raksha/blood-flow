@@ -31,10 +31,9 @@ We consider the one-dimensional blood flow equations embedded along a
 centerline $\Gamma\subset\R^{\text{spacedim}}$, parameterized by a unit tangent
 vector $\bm b(\bm x)$:
 \begin{align}
-  \partial_t A + \bm b\!\cdot\!\nabla (A U) &= 0,
+  \partial_t A + \nabla \cdot (\bm b A U) &= 0,
   && \text{(Area equation)}, \label{eq:area-eq}\\[2mm]
-  \partial_t U + \bm b\!\cdot\!\nabla\!\left(\frac{U^2}{2}\right)
-  + \frac{1}{\rho}\bm b\!\cdot\!\nabla P(A)
+  \partial_t U + \nabla \cdot \bm b  \!\left(\frac{U^2}{2}  + \frac{1}{\rho} P(A)\right)
   + c\,U &= 0,
   && \text{(Momentum equation).} \label{eq:momentum-eq}
 \end{align}
@@ -44,11 +43,10 @@ The direction vector of each 1D element is
 \[
   \bm b = \frac{\bm x_1 - \bm x_0}{\lVert \bm x_1 - \bm x_0\rVert},
   \qquad
-  \beta = \bm b\!\cdot\!\bm n
+  \beta := \bm b\!\cdot\!\bm n
 \]
-is its projection on the outward normal $\bm n$.
-The pressure $P(A)$ is governed by a constitutive \emph{tube law},
-for example
+where $\bm n$ is the outward normal. The pressure $P(A)$ is governed by a
+constitutive \emph{tube law}, for example
 \[
   P(A) = P_0 + \mu \!\left[\!\left(\frac{A}{A_0}\right)^m - 1\!\right],
   \qquad
@@ -61,7 +59,7 @@ and the wave speed is
 
 The compact vector form of the system is
 \begin{equation}
-  \partial_t \mathbf{W} + \bm b\!\cdot\!\nabla \mathbf{F}(\mathbf{W})
+  \partial_t \mathbf{W} + \nabla \cdot (\bm b \mathbf{F}(\mathbf{W}))
   = S(\mathbf{W}),
   \qquad
   \mathbf{W} =
@@ -89,654 +87,168 @@ polynomial degree $k\ge0$ define the discontinuous finite element space
 \[
   \Vh = \{v\in L^2(\Gamma): v|_K \in \mathbb P_k(K),\ \forall K\in\Th\}.
 \]
-For an interior face $F\in\Fh^\circ$ with unit normal $\bm n$,
-the jump and average operators are
+For an interior face $F\in\Fh^\circ$ across two elements $E^+$ and $E^-$, with
+outward unit normals $\bm n^+$ and $\bm n^-$, the jump and average operators are
 \[
-  \jump{v}=v^- - v^+,
+  \jump{v}=v^-\bm n^- \cdot \bm b^- + v^+\bm n^- \cdot \bm b^+,
   \qquad
   \avg{v}=\tfrac12(v^-+v^+),
 \]
 and on boundary faces $F\subset\partial\Gamma$ we set
-$\avg{v}=v$ and $\jump{v}=v$
+$\avg{v}=v$ and $\jump{v}=v\bm n$
 
 DG weak form for \eqref{eq:model-vector} is 
 \begin{equation}{\label{semi-discrete-weak-form}}
      \left( \partial_t \mathbf{W}_h , \phi \right)
-  - (\mathbf{F}(\mathbf{W}), \bm b\!\cdot\!\nabla \phi) + \langle \widehat{\mathbf{F}}(\mathbf{W}), \bm b.n \, \phi \rangle
+  - (\mathbf{F}(\mathbf{W}), \bm b\cdot \nabla \phi) + \langle \widehat{\mathbf{F}}(\mathbf{W}), \jump{\phi} \rangle
   - (S(\mathbf{W}_h), \phi) = 0,
 \end{equation}
 where $\widehat{\mathbf{F}}$ is numerical flux defined later.
 
-\section{Newton iteration in time}
+\section{Time integration with ARKode}
 
-At each time step $t_{n+1}$, we must solve the nonlinear fully discrete DG system
-\eqref{semi-discrete-weak-form}.
-Using the backward Euler discretization, the discrete residual is defined as
-\begin{equation}\label{def:residual-vector}
-  \left(\mathcal{R}^{n+1}(\mathbf{W}_h^{n+1}), \phi\right)
+The deal.II wrapper \texttt{SUNDIALS::ARKode} expects the semi-discrete system
+in the form
+\begin{equation}\label{eq:ark-ivp}
+  \mathcal{M}\,\dot{\mathbf{y}}
+  = f_E(t,\mathbf{y}) + f_I(t,\mathbf{y}),
+  \qquad \mathbf{y}\equiv\mathbf{W}_h\in\Vh^2,
+\end{equation}
+where $\mathcal{M}$ is a (possibly time-dependent) mass operator acting on
+vectors in $\Vh^2$, and $f_E$ and $f_I$ denote the explicit and implicit
+contributions to the right-hand side.  Setting either $f_E\equiv0$ or
+$f_I\equiv0$ recovers the explicit RK or DIRK limits supported by ARKode.
+
+\subsection*{DG operators in ARKode notation}
+
+For any pair of test functions $\bm\phi=(\phi_A,\phi_U)\in\Vh^2$, the DG mass
+operator is
+\[
+  (\mathcal{M}\,\mathbf{v},\bm\phi)
+  := (\mathbf{v},\bm\phi)
+  = \sum_{K\in\Th} \int_K \mathbf{v}\cdot\bm\phi\,dx .
+\]
+We collect all spatial terms (physical flux, numerical flux, source) in the
+bilinear form
+\[
+  \mathcal{L}(\mathbf{W}_h;\bm\phi)
   :=
-  \left(\frac{\mathbf{W}_h^{n+1} - \mathbf{W}_h^n}{\dt}, \phi \right)
-  - (\mathbf{F}(\mathbf{W}_h^{n+1}), \bm b\!\cdot\!\nabla \phi) + \langle \widehat{\mathbf{F}}(\mathbf{W}_h^{n+1}), \bm b.n \, \phi \rangle
-  - (S(\mathbf{W}_h^{n+1}), \phi),
-\end{equation}
-and we seek $\mathbf{W}_h^{n+1}$ such that
-$\mathcal{R}^{n+1}(\mathbf{W}_h^{n+1}) = 0$ in the weak DG sense.
-
-\subsection*{Linearization by Newton’s method}
-
-Let $\mathbf{W}_h^{n+1,(k)}$ denote the current Newton iterate at time level $t_{n+1}$,
-and define the Newton correction
-\[
-  \delta\mathbf{W}_h^{n+1,(k)} :=
-  \mathbf{W}_h^{n+1,(k+1)} - \mathbf{W}_h^{n+1,(k)}.
+      (\mathbf{F}(\mathbf{W}_h),\bm b\!\cdot\!\nabla\bm\phi)
+      - \langle \widehat{\mathbf{F}}(\mathbf{W}_h),\jump{\bm\phi} \rangle
+      + (S(\mathbf{W}_h),\bm\phi),
 \]
-Then the first-order Taylor expansion of the residual at $t_{n+1}$ gives
-\begin{equation}\label{residual_vector}
- \boxed{
-  \left(\mathcal{R}^{n+1}\!\left(\mathbf{W}_h^{n+1,(k)} + \delta\mathbf{W}_h^{n+1,(k)}\right), \phi\right)
-  \approx
-  \left( \mathcal{R}^{n+1}\!\left(\mathbf{W}_h^{n+1,(k)}\right), \phi \right)
-  +\left( \mathcal{J}^{(k)}\,\delta\mathbf{W}_h^{n+1,(k)}, \phi \right) .}
-\end{equation}
-The corresponding Newton correction equation reads
-\begin{equation}\label{main-equation}
-  \mathcal{J}^{(k)}\,\delta\mathbf{W}_h^{n+1,(k)}
-  = -\mathcal{R}^{n+1}\!\left(\mathbf{W}_h^{n+1,(k)}\right),
-\end{equation}
-followed by the update
+so that \eqref{semi-discrete-weak-form} reads
+$(\mathcal{M}\,\dot{\mathbf{W}}_h,\bm\phi) = \mathcal{L}(\mathbf{W}_h;\bm\phi)$.
+The ARKode callbacks are then
 \[
-  \boxed{
-  \mathbf{W}_h^{n+1,(k+1)}
-  = \mathbf{W}_h^{n+1,(k)} + \omega\,\delta\mathbf{W}_h^{n+1,(k)},
-  \qquad 0 < \omega \le 1.}
+  (f_E(t,\mathbf{W}_h),\bm\phi) = \mathcal{L}_E(\mathbf{W}_h;\bm\phi),\qquad
+  (f_I(t,\mathbf{W}_h),\bm\phi) = \mathcal{L}_I(\mathbf{W}_h;\bm\phi),
 \]
+with $\mathcal{L}_E+\mathcal{L}_I=\mathcal{L}$.  In practice we use the fully
+implicit choice $\mathcal{L}_E\equiv0$ and $\mathcal{L}_I\equiv\mathcal{L}$,
+which mirrors the backward Euler treatment used before; other ImEx splits
+(e.g. explicit advection, implicit damping) can be obtained by moving terms
+between $\mathcal{L}_E$ and $\mathcal{L}_I$ without changing the formulas
+below.
 
- Differentiating this residual with respect to $\mathbf{W}$ in the direction
-$\delta\mathbf{W}_h^{n+1,(k)}$ yields the weak form of the Jacobian action:
-\begin{equation}\label{jacobian_weak}
+\subsection*{Implicit stages and Newton system}
+
+For an implicit ARK stage $i$ with step size $h_n$ and Butcher coefficient
+$\gamma=A^I_{i,i}$, ARKode solves the nonlinear stage equation
+\begin{equation}\label{eq:ark-stage}
+  G(z_i) := \mathcal{M}\,z_i
+    - h_n\,\gamma\,f_I(t^I_{n,i},z_i) - a_i = 0,
+\end{equation}
+where $a_i$ collects already-known information from previous stages and the
+explicit part,
+\[
+  a_i
+  = \mathcal{M}\,y_{n-1}
+    + h_n \sum_{j=1}^{i-1}
+      \Big(
+        A^E_{i,j}\,f_E(t^E_{n,j},z_j)
+        + A^I_{i,j}\,f_I(t^I_{n,j},z_j)
+      \Big).
+\]
+When $f_I$ is nonlinear, ARKode uses Newton's method
+$z_i^{m+1}=z_i^{m}+\delta z^{m+1}$ with linear systems
+\begin{equation}\label{eq:ark-newton}
+  N(z_i^{m})\,\delta z^{m+1} = -G(z_i^{m}),
+  \qquad
+  N(z) := \mathcal{M} - \gamma\,J(z),
+\end{equation}
+where $J(z) = (\partial f_I / \partial y) (z)$ is the Jacobian of $f_I$
+evaluated in $z$.
+
+\subsection*{Jacobian action for the implicit operator}
+
+Using the same notation as in \eqref{semi-discrete-weak-form}, the weak action
+of $J(\mathbf{W}_h)$ on a perturbation $\delta\mathbf{W}_h$ is
+\begin{equation}\label{eq:ark-jacobian}
 \boxed{
 \begin{aligned}
-  \bigl(\mathcal{J}^{(k)}\delta\mathbf{W}_h^{n+1,(k)}, \phi\bigr)
+  \bigl(J(\mathbf{W}_h)\,\delta\mathbf{W}_h,\bm\phi\bigr)
   &=
-  \int_{\Omega}
-    \frac{1}{\Delta t}\,
-    \delta\mathbf{W}_h^{n+1,(k)}\cdot\phi
-  \;dx
-  - \int_{\Omega}
-    \Big(
-      \mathbf{H}^{(k)}\,\delta\mathbf{W}_h^{n+1,(k)}
-    \Big)
-    \cdot(\bm b\!\cdot\!\nabla\phi)
-  \;dx \\[2mm]
-  &\quad
-  - \int_{\Omega}
-    \Big(
-      \frac{\partial S}{\partial\mathbf{W}}
-      (\mathbf{W}_h^{n+1,(k)})\,
-      \delta\mathbf{W}_h^{n+1,(k)}
-    \Big)\cdot\phi
-  \;dx
-  + \int_{\partial\Omega}
-    \Big(
-      \frac{\partial\widehat{\mathbf{F}}}{\partial\mathbf{W}}
-      (\mathbf{W}_h^{n+1,(k)})\,
-      \delta\mathbf{W}_h^{n+1,(k)}
-    \Big)\cdot\phi\,ds.
+    (\mathbf{H}(\mathbf{W}_h)\,\delta\mathbf{W}_h,\bm b\!\cdot\!\nabla\bm\phi)
+    - \langle \delta\widehat{\mathbf{F}}(\mathbf{W}_h;\delta\mathbf{W}_h),
+              \jump{\bm\phi} \rangle \\
+  &\qquad\qquad
+    + \big(\tfrac{\partial S}{\partial\mathbf{W}}(\mathbf{W}_h)\,\delta\mathbf{W}_h,
+       \bm\phi\big),
 \end{aligned}}
 \end{equation}
-The flux Jacobian matrix evaluated at the current iterate is
-\[
-  \mathbf{H}^{(k)}
-  = \frac{\partial\mathbf{F}}{\partial\mathbf{W}}(\mathbf{W}_h^{n+1,(k)})
-  =
-  \begin{pmatrix}
-    U_h^{n+1,(k)} & A_h^{n+1,(k)} \\[1mm]
-    \dfrac{\big(c_h^{n+1,(k)}\big)^{2}}{A_h^{n+1,(k)}} & U_h^{n+1,(k)}
-  \end{pmatrix},
-  \qquad
-  c_h^{n+1,(k)}
-  = \sqrt{\frac{A_h^{n+1,(k)}}{\rho}\frac{dP}{dA}\!\big(A_h^{n+1,(k)}\big)}.
-\]
-
-The numerical flux function $\widehat{\mathbf{F}}(\mathbf{W}^-,\mathbf{W}^+)$
-appearing on interior and boundary faces is chosen as the
-\emph{local Lax--Friedrichs (Rusanov) flux}, defined by
-\begin{equation}\label{LF_flux}
-  \boxed{
-  \widehat{\mathbf{F}}(\mathbf{W}^-,\mathbf{W}^+;\bm n)
-  = 
-  \frac{1}{2}\Big(
-      \mathbf{F}(\mathbf{W}^-)(b \cdot n)^{-}
-    + \mathbf{F}(\mathbf{W}^+) (b \cdot n)^{+}
-  \Big)
-  \;-\;
-  \frac{1}{2}\,\alpha^{(k)}\,
-  (\mathbf{W}^+ - \mathbf{W}^-  ),
-  }
-\end{equation}
-where $\mathbf{W}^-$ and $\mathbf{W}^+$ denote the interior and exterior traces
-of the state vector across a face with unit normal $\bm n$. And $(b\cdot n)^{-} = b|_{K} \cdot \hat{n}_{k} = b|_{K} \cdot \hat{n}$, $(b\cdot n)^{+} =  b|_{K'} \cdot \hat{n}_{K'} = - b|_{K'} \cdot \hat{n}_{k}$ with $K$ and $K'$ are neighboring elements.
-The parameter $\alpha^{(k)}$ is a local estimate of the maximum wave speed,
-computed at the current Newton iterate as $|b \cdot n| =1$
-\[
-  \alpha^{(k)}
-  =
-  \max\!\Big(
-      \big|\lambda_1^{(k)}(\mathbf{W}^-)\big|,
-      \big|\lambda_2^{(k)}(\mathbf{W}^-)\big|,
-      \big|\lambda_1^{(k)}(\mathbf{W}^+)\big|,
-      \big|\lambda_2^{(k)}(\mathbf{W}^+)\big|
-  \Big),
-\]
-with the characteristic speeds
-\[
-  \lambda_{1,2}^{(k)}(\mathbf{W})
-  =
-  U_h^{n+1,(k)} \mp c_h^{n+1,(k)},
-  \qquad
-  c_h^{n+1,(k)} =
-  \sqrt{\frac{A_h^{n+1,(k)}}{\rho}\frac{dP}{dA}\!\big(A_h^{n+1,(k)}\big)}.
-\]
-Hence, on an interior face $e = K^-\cap K^+$, the weak flux term in
-\eqref{jacobian_weak} is expressed as
-\[
-  \int_{e}
-    \widehat{\mathbf{F}}(\mathbf{W}_h^{-,(k)},\mathbf{W}_h^{+,(k)};\bm n^-)
-    \cdot \big(\phi^+ - \phi^-\big)\, ds,
-\]
-while on a boundary face, the exterior state $\mathbf{W}^+$ is replaced
-by the prescribed boundary data $\mathbf{W}_b$.
-\begin{equation}\label{LF_flux_componentwise}
-\boxed{
-\begin{aligned}
-\widehat{F}_A(A^-,U^-;A^+,U^+)
-&=
-\frac{1}{2}\Big[
-    (A^- U^-)(b \cdot n)^{-}
-  + (A^+ U^+)(b \cdot n)^{+}
-\Big]
--\frac{1}{2}\,\alpha^{(k)}\,
-  ( A^+ - A^- ), \\[2mm]
-\widehat{F}_U(A^-,U^-;A^+,U^+)
-&=
-\frac{1}{2}\Bigg[
-    \left(\frac{(U^-)^2}{2} + \frac{1}{\rho}P(A^-)\right)(b \cdot n)^{-}
-  + \left(\frac{(U^+)^2}{2} + \frac{1}{\rho}P(A^+)\right)(b \cdot n)^{+}
-\Bigg]  \\[2mm]
-&-\frac{1}{2}\,\alpha^{(k)}\,
-  ( U^+  - U^- ).
-\end{aligned}
-}
-\end{equation}
-
-
-
-\paragraph{General definition of the flux derivative.}
-
-Let $\mathbf{F}:\R^m\to\R^m$ be a differentiable nonlinear flux
-depending on a vector of conservative variables
-$\mathbf{W}=(W_1,\ldots,W_m)^{\!\top}$.
-Its Fréchet derivative at $\mathbf{W}$ is the linear map
-\[
-  D\mathbf{F}(\mathbf{W}) : \R^m \to \R^m, \qquad
-  D\mathbf{F}(\mathbf{W})[\delta\mathbf{W}]
-  = \lim_{\varepsilon\to0}
-    \frac{\mathbf{F}(\mathbf{W}+\varepsilon\delta\mathbf{W})
-          -\mathbf{F}(\mathbf{W})}{\varepsilon}.
-\]
-In matrix notation, this linear map is represented by the
-\emph{flux Jacobian matrix}
+with the physical flux Jacobian
 \[
   \mathbf{H}(\mathbf{W})
-  = \frac{\partial\mathbf{F}}{\partial\mathbf{W}}
   =
   \begin{pmatrix}
-    \dfrac{\partial F_1}{\partial W_1} &
-    \dfrac{\partial F_1}{\partial W_2} & \cdots &
-    \dfrac{\partial F_1}{\partial W_m} \\[1mm]
-    \dfrac{\partial F_2}{\partial W_1} &
-    \dfrac{\partial F_2}{\partial W_2} & \cdots &
-    \dfrac{\partial F_2}{\partial W_m} \\[-1mm]
-    \vdots & \vdots & \ddots & \vdots \\[-1mm]
-    \dfrac{\partial F_m}{\partial W_1} &
-    \dfrac{\partial F_m}{\partial W_2} & \cdots &
-    \dfrac{\partial F_m}{\partial W_m}
-  \end{pmatrix}.
-\]
-For any perturbation $\delta\mathbf{W}$, the first-order variation of the flux
-is therefore
-\[
-  D\mathbf{F}(\mathbf{W})[\delta\mathbf{W}]
-  = \mathbf{H}(\mathbf{W})\,\delta\mathbf{W}.
-\]
-In particular, for a two-component state $\mathbf{W}=(A,U)^{\!\top}$,
-this gives the familiar $2\times2$ matrix form.
-
-\vspace{0.5em}
-\paragraph{Componentwise flux Jacobian for the blood-flow system.}
-
-For the physical flux
-\[
-  \mathbf{F}(\mathbf{W}) =
-  \begin{pmatrix}
-    F_1 \\[1mm] F_2
-  \end{pmatrix}
-  =
-  \begin{pmatrix}
-    A\,U \\[1mm]
-    \dfrac{U^2}{2} + \dfrac{1}{\rho}P(A)
-  \end{pmatrix},
-\]
-we have
-\[
-  \mathbf{H}(\mathbf{W})
-  = \frac{\partial\mathbf{F}}{\partial\mathbf{W}}
-  =
-  \begin{pmatrix}
-    \dfrac{\partial F_1}{\partial A} &
-    \dfrac{\partial F_1}{\partial U} \\[2mm]
-    \dfrac{\partial F_2}{\partial A} &
-    \dfrac{\partial F_2}{\partial U}
-  \end{pmatrix}
-  =
-  \begin{pmatrix}
-    U & A \\[2mm]
-    \dfrac{1}{\rho}\dfrac{dP}{dA}(A) & U
-  \end{pmatrix}
-  =
-  \begin{pmatrix}
-    U & A \\[2mm]
+    U & A \\[1mm]
     \dfrac{c^2}{A} & U
   \end{pmatrix},
+  \qquad
+  c = \sqrt{\frac{A}{\rho}\frac{dP}{dA}(A)}.
 \]
-where $c=\sqrt{A\rho^{-1}\frac{dP}{dA}}$ is the local wave speed.
-Hence the first-order variation of the physical flux is
-\[
-  \delta\mathbf{F}
-  = \mathbf{H}(\mathbf{W})\,\delta\mathbf{W}
+For the Lax--Friedrichs numerical flux the consistent linearization appearing
+in \eqref{eq:ark-jacobian} is
+\begin{equation}\label{eq:LF-derivative-ark}
+  \delta\widehat{\mathbf{F}}
   =
-  \begin{pmatrix}
-   U\,\delta A + A\,\delta U \\[1mm]
-    \dfrac{c^2}{A}\,\delta A + U\,\delta U
-  \end{pmatrix}  = \begin{pmatrix}
-      \delta\mathbf{F}_A \\[1mm]
-      \delta\mathbf{F}_U
-  \end{pmatrix}
-\]
-
-\vspace{0.5em}
-\paragraph{Componentwise derivative of the numerical flux.}
-
-For the local Lax--Friedrichs flux
-\[
-  \widehat{\mathbf{F}}(\mathbf{W}^-,\mathbf{W}^+)
-  =
-  \tfrac{1}{2}\big(\mathbf{F}(\mathbf{W}^-)(b \cdot n)^{-}+\mathbf{F}(\mathbf{W}^+)(b \cdot n)^{+}\big)
-  -\tfrac{1}{2}\alpha^{(k)}(\mathbf{W}^+ - \mathbf{W}^-),
-\]
-the linearization at the current iterate is obtained by differentiating
-$\mathbf{F}(\mathbf{W}^\pm)$:
-\begin{equation}\label{eq:LF-derivative-component}
-  \boxed{
-  \delta\widehat{\mathbf{F}}^{(k)}
-  =
-  \tfrac{1}{2}
-  \big(
-    \mathbf{H}^-\,\delta\mathbf{W}^- (b \cdot n)^{-}
-    + \mathbf{H}^+\,\delta\mathbf{W}^+ (b \cdot n)^{+}
-  \big)
-  - \tfrac{1}{2}\alpha^{(k)}
+  \tfrac12\Big(
+    \mathbf{H}^-\,\delta\mathbf{W}^-\,\beta^-
+    + \mathbf{H}^+\,\delta\mathbf{W}^+\,\beta^+
+  \Big)
+  - \tfrac12\,\alpha
     (\delta\mathbf{W}^+ - \delta\mathbf{W}^-),
-  }
+  \qquad \beta^\pm := \bm b\!\cdot\!\bm n^\pm ,
 \end{equation}
-where $\mathbf{H}^\pm=\tfrac{\partial\mathbf{F}}{\partial\mathbf{W}}(\mathbf{W}^\pm)$
-are the local flux Jacobians on the two sides of the face.
-
-Writing \eqref{eq:LF-derivative-component} componentwise for
-$\mathbf{W}=(A,U)^{\!\top}$ gives:
+where $\alpha$ is the usual Rusanov penalty
+$\alpha=\max(|U^\pm\!-\!c^\pm|,|U^\pm\!+\!c^\pm|)$.  Componentwise,
 \[
-\delta\widehat{\mathbf{F}}
-=
-\begin{pmatrix}
-\delta\widehat{F}_1\\[1mm]
-\delta\widehat{F}_2
-\end{pmatrix},
-\qquad
-\begin{cases}
-\displaystyle
-\delta\widehat{F}_1
-=
-\tfrac{1}{2}\Big[
-  (U^-\,\delta A^- + A^-\,\delta U^-)(b \cdot n)^{-}
-  + (U^+\,\delta A^+ + A^+\,\delta U^+)(b \cdot n)^{+}
-\Big] \\
--\tfrac{1}{2}\alpha^{(k)}(\delta A^+ - \delta A^-),\\[3mm]
-\displaystyle
-\delta\widehat{F}_2
-=
-\tfrac{1}{2}\Big[
-  \Big(\tfrac{(c^-)^2}{A^-}\,\delta A^- + U^-\,\delta U^-\Big)(b \cdot n)^{-}
-  + \Big(\tfrac{(c^+)^2}{A^+}\,\delta A^+ + U^+\,\delta U^+\Big)(b \cdot n)^{+}
-\Big] \\
--\tfrac{1}{2}\alpha^{(k)}(\delta U^+ - \delta U^-).
-\end{cases}
-\]
-These expressions provide the explicit componentwise form of the
-linearized numerical flux used in the weak Jacobian formulation.
-
-\subsection*{Weak form of the Newton correction}
-
-Hence, at iteration $k$ and time level $t_{n+1}$, the linearized (Newton) problem with the help  of \eqref{jacobian_weak} reads:
-
-\begin{equation}\label{eq:newton-weak-final}
-\boxed{
 \begin{aligned}
-\sum_{K\in\Th}
-\Big[
-  &\int_K
-    \frac{1}{\Delta t}\,
-    \delta\mathbf{W}_h^{n+1,(k)}\!\cdot\!\bm\phi
-    \;-\;
-    \big(\mathbf{H}^{(k)}\,\delta\mathbf{W}_h^{n+1,(k)},\,\bm b\!\cdot\!\nabla\bm\phi\big)_K
-    \;-\;
-    \Big(
-      \frac{\partial S}{\partial\mathbf{W}}(\mathbf{W}_h^{n+1,(k)})\,\delta\mathbf{W}_h^{n+1,(k)},
-      \bm\phi
-    \Big)_K  \\[2mm]
-  &\qquad
-  +\;
-  \int_{\partial K}
-    \widehat{\big(\mathbf{H}^{(k)}\delta\mathbf{W}_h^{n+1,(k)}\big)}^{\mathrm{LF}}
-    \!\!\jump{\phi}(\bm b\!\cdot\!\bm n)\,ds
-\Big]
-\\[2mm]
-&= -\!
-\sum_{K\in\Th}
-\Big[
-  \int_K
-  \Big(
-    \frac{\mathbf{W}_h^{n+1,(k)}-\mathbf{W}_h^n}{\Delta t}
-    - S(\mathbf{W}_h^{n+1,(k)})
-  \Big)\!\cdot\!\bm\phi
-  \;+\;
-  \big(\mathbf{F}(\mathbf{W}_h^{n+1,(k)}),\,\bm b\!\cdot\!\nabla\bm\phi\big)_K  \\[2mm]
-  &\qquad
-  -\;
-  \int_{\partial K}
-    \widehat{\mathbf{F}}^{\mathrm{LF}}(\mathbf{W}_h^{n+1,(k)})\! \jump{\phi} \,(\bm b\!\cdot\!\bm n)\,ds
-\Big].
-\end{aligned}}
-\end{equation}
-
-Componentwise, since
-\[
-  \mathbf{H}^{(k)}\,\delta\mathbf{W}_h^{n+1,(k)}
-  =
-  \begin{pmatrix}
-    U_h^{n+1,(k)}\,\delta A_h^{n+1,(k)}
-    + A_h^{n+1,(k)}\,\delta U_h^{n+1,(k)} \\[2mm]
-    \dfrac{(c_h^{n+1,(k)})^{2}}{A_h^{n+1,(k)}}\,\delta A_h^{n+1,(k)}
-    + U_h^{n+1,(k)}\,\delta U_h^{n+1,(k)}
-  \end{pmatrix},
-\]
-And from equation \eqref{eq:LF-derivative-component} we have
-\[ \widehat{\big(\mathbf{H}^{(k)}\delta\mathbf{W}_h^{n+1,(k)}\big)}^{\mathrm{LF}} = \delta\widehat{\mathbf{F}}^{(k)}
-\]
-the two scalar weak equations become:
-
-\paragraph{(i) Area equation.}
-\begin{align}
-\int_K
-  \frac{\delta A_h^{n+1,(k)}}{\Delta t}\,\phi_A
-  &\;-\;
-  \int_K
-    \bm b\!\cdot\!
-    \delta\mathbf{F}_1
-    \nabla\phi_A\,dx
-  \;+\;
-  \int_{\partial K}
-   \widehat{ \delta \mathbf{F}}_1\,
-    \phi_A^{-}\,
-    (\bm b\!\cdot\! n)\,ds
-  \nonumber\\[4pt]
-  &=
-  -\int_K
-    \frac{A_h^{n+1,(k)} - A_h^n}{\Delta t}\,\phi_A\,dx
-  \;+\;
-  \int_K
-    \bm b\!\cdot\!\nabla\phi_A\,
-   F_1 \,dx
-    \nonumber\\[4pt]
- & \;-\; 
- \int_{\partial K}
-    \widehat{\mathbf{F_1}}\,
-    \phi_A^{-}\,
-    (\bm b\!\cdot\! n)\,ds.
-  \label{eq:newton-A-nk1}
-\end{align}
-where $\alpha$ denotes the local Lax--Friedrichs penalty parameter.
-
-\vspace{1em}
-
-\paragraph{(ii) Momentum equation.}
-
-\begin{align}
-\int_K
-  \frac{\delta U_h^{n+1,(k)}}{\Delta t}\,\phi_U
-  &\;-\;
-  \int_K
-    \bm b\!\cdot\!
-    \delta\mathbf{F}_2
-    \nabla\phi_U\,dx
-  \;+\;
-  \int_{\partial K}
-    \widehat{\delta\mathbf{F}_2},
-    \phi_U^{-}\,
-    (\bm b\!\cdot\! n)\,ds  \nonumber\\[4pt]
-  &
-  \;+\;
-  \int_K c\,\delta U_h^{n+1,(k)}\,\phi_U\,dx
-  =
-  -\int_K
-    \frac{U_h^{n+1,(k)} - U_h^n}{\Delta t}\,\phi_U\,dx
-  \;+\;
-  \int_K
-    \bm b\!\cdot\!\nabla\phi_U\,
-    \mathbf{F}_2 \,dx \nonumber\\[4pt]
-  &
-  \;-\;
-  \int_{\partial K}
-     \widehat{\mathbf{F}_2},\,
-    \phi_U^{-}\,
-    (\bm b\!\cdot\! n)\,ds
-  \;-\;
-  \int_K c\,U_h^{n+1,(k)}\,\phi_U\,dx.
-  \label{eq:newton-U-nk1}
-\end{align}
-
-\subsection{Boundary treatment in the Newton linearization}
-This algorithm based on the paper \textit{Boundary conditions for hyperbolic systems of partial differentials equations} by \textit{Amr G. Guaily , Marcelo Epstein}.
-
-At a boundary face $e \subset \partial\Omega$, the Newton linearization of the
-Lax–Friedrichs flux requires replacing the exterior trace
-$\mathbf{W}^+$ by a boundary state $\mathbf{W}_b$.
-Because the blood–flow equations are hyperbolic, the number of boundary
-conditions that must be imposed depends on the signs of the characteristic
-speeds
-\[
-  \lambda_{1,2} = U \mp c , \qquad
-  c = \sqrt{\frac{A}{\rho}\frac{dP}{dA}(A)} .
-\]
-The linearized numerical flux is
-\[
-\delta\widehat{\mathbf{F}}^{(k)}
-=
-\tfrac12\!\left(
-\mathbf{H}^-\,\delta\mathbf{W}^- (b \cdot n)^{-} +
-\mathbf{H}^+\,\delta\mathbf{W}^+ (b \cdot n)^{+}
-\right)
--\tfrac12\alpha^{(k)}\,
-  (\delta\mathbf{W}^+ - \delta\mathbf{W}^-),
-\]
-where the key question is how the boundary variation $\delta\mathbf{W}^+$ is
-assigned.  
-This depends on the flow regime and on whether the boundary is an inlet or
-outlet.  We distinguish the three physically relevant cases.
-
-% ===============================================================
-\subsubsection{Subcritical flow (one incoming characteristic)}
-
-Subcritical flow is characterised by one incoming and one outgoing
-characteristic:
-\[
-  \lambda_1 < 0 < \lambda_2 .
-\]
-Hence exactly one scalar boundary condition is required; the other component
-must be taken from the interior.
-
-\paragraph{(a) Subcritical inlet ($x=0$).}
-At an inlet, the incoming characteristic is associated with the area variable.
-Thus
-\[
-  A^+ = A_b, \qquad U^+ = U^-,
-\]
-and therefore
-\[
-  \delta A^+ = 0, \qquad
-  \delta U^+ = \delta U^- .
-\]
-Numerical Flux in residual becomes 
-\begin{align*}
- \widehat{F}_A &= \tfrac{1}{2} (A^{+} U^{+}  + A^{-}U^{-})(b \cdot n) - \tfrac{\alpha}{2}(A^{+} - A^{-})\\
- & = \frac{1}{2}(A_b U^{-} + A^{-}U^{-}) - \tfrac{\alpha}{2}(A_b -A^{-}).\\
-\widehat{F}_U &= \tfrac{1}{2} \left(\frac{(U^-)^2}{2} + \frac{1}{\rho}P(A^-) + \frac{(U^+)^2}{2} + \frac{1}{\rho}P(A^+)\right)(b \cdot n) -\tfrac{\alpha}{2}(U^+ - U^-) \\
-& = \frac{1}{2}\left( (U^{-})^2 +\frac{1}{\rho} P(A^-)  + \frac{1}{\rho} P(A_b)   \right).
-\end{align*}
-
-The linearized numerical flux components become:
-\[
 \delta\widehat{F}_A
-=
-\tfrac12\left(U^-\,\delta A^- +A_b\,\delta U^-\right)(b \cdot n)
-+ \tfrac12\alpha\delta A^-,
-\]
-\begin{align*}
+&= \tfrac12\Big[(U^-\,\delta A^- + A^-\,\delta U^-)\beta^-
+                 + (U^+\,\delta A^+ + A^+\,\delta U^+)\beta^+\Big]
+   - \tfrac12\alpha(\delta A^+ - \delta A^-), \\[1mm]
 \delta\widehat{F}_U
-& =
-\tfrac12\left(\frac{(c^-)^2}{A^-}\delta A^- + U^-\,\delta U^-\right)(b \cdot n) + \tfrac12\left(\frac{(c^+)^2}{A^+}\delta A^+ + U^+\,\delta U^+\right)(b \cdot n) - \tfrac\alpha2(\delta U^{+} - \delta U^{-}), \\
-& = \tfrac12\left(\frac{(c^-)^2}{A^-}\delta A^- + 2 U^-\,\delta U^-\right)(b \cdot n).
-\end{align*}
-
-\paragraph{(b) Subcritical outlet ($x=L$).}
-Here the incoming characteristic is associated with the momentum.
-Hence
-\[
-  A^+ = A^-, \qquad U^+ = U_b,
+&= \tfrac12\Big[\big(\tfrac{(c^-)^2}{A^-}\delta A^- + U^-\,\delta U^-\big)\beta^-
+                 + \big(\tfrac{(c^+)^2}{A^+}\delta A^+ + U^+\,\delta U^+\big)\beta^+\Big]
+   - \tfrac12\alpha(\delta U^+ - \delta U^-).
+\end{aligned}
 \]
-and therefore
-\[
-  \delta A^+ = \delta A^-, \qquad
-  \delta U^+ = 0.
-\]
-Numerical Flux in residual becomes 
-\begin{align*}
- \widehat{F}_A &= \tfrac{1}{2} (A^{+} U^{+}  + A^{-}U^{-})(b \cdot n) - \tfrac{\alpha}{2}(A^{+} - A^{-})\\
- & = \frac{1}{2}(A^{-} U_b + A^{-}U^{-}) .\\
-\widehat{F}_U &= \tfrac{1}{2} \left(\frac{(U^-)^2}{2} + \frac{1}{\rho}P(A^-) + \frac{(U^+)^2}{2} + \frac{1}{\rho}P(A^+)\right)(b \cdot n) -\tfrac{\alpha}{2}(U^+ - U^-) \\
-& = \frac{1}{2}\left( \frac{(U^-)^2}{2} +2 \frac{1}{\rho} P(A^-) + \frac{(U_b)^2}{2}\right) (b\cdot n) - \tfrac{\alpha}{2}(U_b -U^{-})).
-\end{align*}
+Inserting \eqref{eq:ark-jacobian} in \eqref{eq:ark-newton} yields the matrix-free
+operator needed by \texttt{jacobian\_times\_vector} in
+\texttt{deal.II/sundials/arkode.h}; the mass term in \eqref{eq:ark-newton} is
+handled by the ARKode wrapper through the supplied $\mathcal{M}$.
 
-The linearized flux becomes
-\begin{align*}
-\delta\widehat{F}_A
-&=
-\tfrac12\left(U^-\,\delta A^- + A^-\,\delta U^-\right)(b \cdot n) + \tfrac12\left(U^+\,\delta A^+ + A^+\,\delta U^+\right)(b \cdot n) - \tfrac\alpha2 ( \delta A^+ - \delta A^{-})\\
-& = \tfrac{1}{2}\left( U^-\,\delta A^- + A^-\,\delta U^- + U_b \delta A^-\right)(b\cdot n)
-\end{align*}
-\begin{align*}
-\delta\widehat{F}_U
-&=
-\tfrac12\left(\frac{(c^{-})^2}{A^-}\delta A^- + U^-\,\delta U^-\right)(b \cdot n)+\tfrac12\left(\frac{(c^{+})^2}{A^+}\delta A^+ + U^+\,\delta U^+\right)(b \cdot n)
-- \tfrac12\alpha\,(\delta U^+ - \delta U^{-}) ,\\
-& = \tfrac12\left( 2 \frac{(c^{-})^2}{A^-}\delta A^- +  U^-\,\delta U^-\right) + \tfrac{\alpha}{2}\delta U^{-}
-\end{align*}
+\subsection*{Boundary data inside the ARKode callbacks}
 
-% ===============================================================
-\subsubsection{Supercritical inflow (two incoming characteristics)}
-
-In this regime
-\[
-  \lambda_1 < 0,\qquad \lambda_2 < 0,
-\]
-both characteristics enter the domain, so \emph{both} components of the
-boundary state must be prescribed:
-\[
-  A^+ = A_b, \qquad U^+ = U_b.
-\]
-Thus the variations vanish:
-\[
-  \delta A^+ = 0, \qquad \delta U^+ = 0.
-\]
-
-Numerical Flux in residual becomes 
-\begin{align*}
- \widehat{F}_A &= \tfrac{1}{2} (A^{+} U^{+}  + A^{-}U^{-})(b \cdot n) - \tfrac{\alpha}{2}(A^{+} - A^{-})\\
- & = \frac{1}{2}(A_b U_b + A^{-}U^{-}) - \tfrac{\alpha}{2}(A_b - A^{-}).\\
-\widehat{F}_U &= \tfrac{1}{2} \left(\frac{(U^-)^2}{2} + \frac{1}{\rho}P(A^-) + \frac{(U^+)^2}{2} + \frac{1}{\rho}P(A^+)\right)(b \cdot n) -\tfrac{\alpha}{2}(U^+ - U^-) \\
-& = \frac{1}{2}\left( \frac{(U^-)^2}{2} +\frac{1}{\rho} P(A^-) + \frac{(U_b)^2}{2} +\frac{1}{\rho} P(A_b)\right) (b\cdot n) - \tfrac{\alpha}{2}(U_b -U^{-})).
-\end{align*}
-
-Hence no boundary degrees of freedom contribute to the Jacobian at such a face,
-and
-\[
-\delta\widehat{F}_A
-=
-\tfrac12\left(U^-\,\delta A^- + A^-\,\delta U^-\right)
-+ \tfrac12\alpha (\delta A^-),
-\qquad
-\delta\widehat{F}_U
-=
-\tfrac12\left(\frac{c^2}{A^-}\delta A^- + U^-\,\delta U^-\right)
-+ \tfrac12\alpha (\delta U^-).
-\]
-
-% ===============================================================
-\subsubsection{Supercritical outflow (two outgoing characteristics)}
-
-Finally, when
-\[
-  \lambda_1 > 0,\qquad \lambda_2 > 0 ,
-\]
-all characteristics leave the domain, so no physical boundary condition is
-imposed.  Thus
-\[
-  A^+ = A^-,\qquad U^+ = U^-,
-\qquad\Longrightarrow\qquad
-  \delta A^+ = \delta A^-,\quad
-  \delta U^+ = \delta U^- .
-\]
-Numerical Flux in residual becomes 
-\begin{align*}
- \widehat{F}_A &= \tfrac{1}{2} (A^{+} U^{+}  + A^{-}U^{-})(b \cdot n) - \tfrac{\alpha}{2}(A^{+} - A^{-})\\
- & = \frac{1}{2}( 2 A^{-}U^{-}).\\
-\widehat{F}_U &= \tfrac{1}{2} \left(\frac{(U^-)^2}{2} + \frac{1}{\rho}P(A^-) + \frac{(U^+)^2}{2} + \frac{1}{\rho}P(A^+)\right)(b \cdot n) -\tfrac{\alpha}{2}(U^+ - U^-) \\
-& = \frac{1}{2}\left( 2 \frac{(U^-)^2}{2} + 2\frac{1}{\rho} P(A^-) \right) (b\cdot n).
-\end{align*}
-
-In this case, the Lax--Friedrichs dissipation vanishes because
-$\delta\mathbf{W}^+=\delta\mathbf{W}^-$, and the linearized flux reduces to
-\[
-\delta\widehat{\mathbf{F}}
-=
-\begin{pmatrix}
-U^-\,\delta A^- + A^-\,\delta U^- \\[1mm]
-\dfrac{c^2}{A^-}\,\delta A^- + U^-\,\delta U^-
-\end{pmatrix}.
-\]
-
-\paragraph{Summary.}
-The mapping for the exterior state and its Newton variation is summarised in
-Table~\ref{tab:bd-newton}.
+When evaluating either $f_I$ or $J$, the exterior trace $\mathbf{W}^+$ in the
+flux and its variation follows the same characteristic-based logic as before.
+Let $\lambda_{1,2}=U\mp c$ denote the characteristic speeds.  The mapping from
+interior data to boundary data is summarised in
+Table~\ref{tab:bd-arkode}; it is applied identically inside
+$\widehat{\mathbf{F}}$ and $\delta\widehat{\mathbf{F}}$ in
+\eqref{eq:LF-derivative-ark}.
 
 \begin{table}[h!]
 \centering
@@ -749,30 +261,25 @@ Supercritical inflow & $A_b$ & $U_b$ & $(0,\ 0)$ \\[2mm]
 Supercritical outflow & $A^-$ & $U^-$ & $(\delta A^-,\ \delta U^-)$ \\
 \hline
 \end{tabular}
-\caption{Exterior state and Newton variation at boundaries.}
-\label{tab:bd-newton}
+\caption{Boundary states used inside the ARKode callbacks.}
+\label{tab:bd-arkode}
 \end{table}
-
 
 \begin{remark}
 \begin{itemize}
-    \item {Newton update.}
-Once the corrections $(\delta A_h^{n+1,(k)},\,\delta U_h^{n+1,(k)})$ are computed,
-the iterates are updated as
-\[
-  A_h^{n+1,(k+1)} = A_h^{n+1,(k)} + \delta A_h^{n+1,(k)}, 
-  \qquad
-  U_h^{n+1,(k+1)} = U_h^{n+1,(k)} + \delta U_h^{n+1,(k)}.
-\]
-The process is repeated until 
-$\|\delta\mathbf{W}_h^{n+1,(k)}\|$ falls below a prescribed tolerance.
-\item The increment $\delta\mathbf{W}_h^{n+1,(k)}$ represents the Newton correction at
-time level $t_{n+1}$ and iteration $k$, while the Jacobian
-$\mathcal{J}^{(k)}$ is obtained by differentiating the discrete residual
-$\mathcal{R}^{n+1}(\mathbf{W})$ with respect to $\mathbf{W}$.
-The term $\mathbf{H}^{(k)}\delta\mathbf{W}_h^{n+1,(k)}$ originates from the
-first-order Taylor expansion of the nonlinear flux
-$\mathbf{F}(\mathbf{W})$ about $\mathbf{W}_h^{n+1,(k)}$.
+  \item The choice $f_E\equiv0$ yields a DIRK scheme identical in spirit to the
+  backward Euler step used previously; switching terms between $f_E$ and $f_I$
+  gives ImEx schemes without altering the formulas for $\widehat{\mathbf{F}}$
+  and $J$.
+  \item In code, \texttt{explicit\_function} and \texttt{implicit\_function}
+  assemble the vectors corresponding to $\mathcal{L}_E$ and $\mathcal{L}_I$,
+  \texttt{mass\_operator} (or the default mass matrix action) supplies
+  $\mathcal{M}$, and \texttt{jacobian\_times\_vector} applies
+  $N(\cdot)=\mathcal{M}-\gamma J(\cdot)$ using \eqref{eq:ark-jacobian}.
+  \item Newton updates returned by ARKode are coefficient vectors; recovering
+  the physical variables uses $\mathbf{W}_h^{m+1}=z_i^{m}+\delta z^{m+1}$ at the
+  stage level and $\mathbf{W}_h^{n+1}=y_n$ at the time-step level, matching the
+  notation of \eqref{eq:ark-ivp}.
 \end{itemize}
 \end{remark}
 \end{document}

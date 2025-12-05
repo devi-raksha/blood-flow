@@ -42,38 +42,43 @@ test()
 
   problem.compute_initial_solution(problem.solution, problem.time);
 
+  const double   t = problem.time;
   Vector<double> residual(problem.solution.size());
-  problem.assemble_implicit_function(problem.time, problem.solution, residual);
-  problem.assemble_jacobian(problem.time,
+  problem.assemble_implicit_function(t, problem.solution, residual);
+  problem.assemble_jacobian(t,
                             problem.solution,
                             Vector<double>(problem.solution.size()));
 
-  // The residual should be zero.
-  deallog << "Jacobian norm: " << problem.jacobian_matrix.l1_norm()
+  // Finite-difference check: J*v ≈ (f(y+eps v)-f(y))/eps
+  std::mt19937                     gen(42);
+  std::uniform_real_distribution<> dist(-1.0, 1.0);
+  Vector<double>                   v(problem.solution.size());
+  for (unsigned int i = 0; i < v.size(); ++i)
+    v[i] = dist(gen);
+
+  const double eps = 1e-7 * std::max(1.0, v.linfty_norm()) /
+                     std::max(1.0, problem.solution.linfty_norm());
+
+  Vector<double> y_plus = problem.solution;
+  y_plus.add(eps, v);
+
+  Vector<double> res_plus(problem.solution.size());
+  problem.assemble_implicit_function(t, y_plus, res_plus);
+
+  Vector<double> Jv(problem.solution.size());
+  problem.jacobian_matrix.vmult(Jv, v);
+
+  // fd = (f(y+eps v)-f(y))/eps
+  res_plus.add(-1.0, residual);
+  res_plus /= eps;
+
+  Vector<double> diff = res_plus;
+  diff.add(-1.0, Jv);
+
+  const double max_diff = diff.linfty_norm();
+  const double ref      = std::max(1.0, Jv.linfty_norm());
+  deallog << "Jacobian FD check: max_diff=" << max_diff << " ref=" << ref
           << std::endl;
-
-
-  // FunctionParser<3> my_test_function(2);
-  // my_test_function.initialize("x,y,z", "1.0; 0.0", {});
-
-  // VectorTools::project(problem.dof_handler,
-  //                      constraints,
-  //                      QGauss<1>(problem.fe_degree + 1),
-  //                      my_test_function,
-  //                      problem.solution);
-
-  // auto rhs = problem.solution;
-  // problem.jacobian_matrix.vmult(rhs, problem.solution);
-
-  // problem.assemble_mass_matrix();
-  // SparseDirectUMFPACK inv_mass;
-  // inv_mass.initialize(problem.mass_matrix);
-  // inv_mass.vmult(rhs, rhs);
-
-  // deallog << rhs << std::endl;
-
-
-  // deallog << "Solution norm: " << rhs.linfty_norm() << std::endl;
 }
 
 

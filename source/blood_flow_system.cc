@@ -191,7 +191,7 @@ BloodFlowSystem<dim, spacedim>::assemble_jacobian(const double          t,
                                                       current_velocity[point],
                                                       trial_area);
 
-                copy_data.cell_matrix(i, j) -=
+                copy_data.cell_matrix(i, j) +=
                   flux_jacobian_A * test_area_grad * JxW[point];
 
                 // ===== MOMENTUM EQUATION Jacobian=====
@@ -540,10 +540,10 @@ BloodFlowSystem<dim, spacedim>::assemble_implicit_function(
             copy_data.cell_rhs(i) +=
               (
                 // Area equation
-                rhs_A_value * test_area -
+                rhs_A_value * test_area +
                 current_flux_A * test_area_grad
                 // Momentum equation
-                + rhs_U_value * test_velocity -
+                + rhs_U_value * test_velocity +
                 current_flux_U * test_velocity_grad -
                 par["eta_c"] * current_velocity[point] * test_velocity) *
               JxW[point];
@@ -598,10 +598,10 @@ BloodFlowSystem<dim, spacedim>::assemble_implicit_function(
 
         for (unsigned int i = 0; i < nd; ++i)
           {
-            face.cell_rhs(i) +=
+            face.cell_rhs(i) -=
               flux_A_hll * fe_iv[area_extractor].jump_in_values(i, q) * JxW[q];
 
-            face.cell_rhs(i) += flux_U_hll *
+            face.cell_rhs(i) -= flux_U_hll *
                                 fe_iv[velocity_extractor].jump_in_values(i, q) *
                                 JxW[q];
           }
@@ -655,7 +655,7 @@ BloodFlowSystem<dim, spacedim>::assemble_implicit_function(
         bool is_supercritical_inflow  = (incoming_count == 2);
         bool is_supercritical_outflow = (incoming_count == 0);
 
-        double A_ext, U_ext;
+        double A_ext = 0, U_ext = 0;
 
         if (is_subcritical_inflow)
           {
@@ -693,8 +693,8 @@ BloodFlowSystem<dim, spacedim>::assemble_implicit_function(
             const double test_A = fe_face[area_extractor].value(i, q);
             const double test_U = fe_face[velocity_extractor].value(i, q);
 
-            copy.cell_rhs(i) += F_area_boundary * test_A * JxW[q];
-            copy.cell_rhs(i) += F_momentum_boundary * test_U * JxW[q];
+            copy.cell_rhs(i) -= F_area_boundary * test_A * JxW[q];
+            copy.cell_rhs(i) -= F_momentum_boundary * test_U * JxW[q];
           }
 
         deallog.push("boundary_debug");
