@@ -25,7 +25,7 @@
 
 #include <deal.II/numerics/vector_tools.h>
 
-#include "blood_flow_system_updated_1d3d.h"
+#include "blood_flow_system.h"
 #include "tests.h"
 
 using namespace dealii;
@@ -45,8 +45,8 @@ test()
   Vector<double> residual(problem.solution.size());
   problem.assemble_implicit_function(problem.time, problem.solution, residual);
   problem.assemble_jacobian(problem.time,
-                             problem.solution,
-                             Vector<double>(problem.solution.size()));
+                            problem.solution,
+                            Vector<double>(problem.solution.size()));
 
   // The residual should be zero.
   deallog << "Jacobian norm: " << problem.jacobian_matrix.l1_norm()

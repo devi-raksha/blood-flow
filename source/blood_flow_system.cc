@@ -1,6 +1,6 @@
 /* --------------------------------------------------------------------------
  */
-#include "../include/blood_flow_system_updated_1d3d.h"
+#include "blood_flow_system.h"
 
 #include <deal.II/base/function_parser.h>
 #include <deal.II/base/types.h>
@@ -1107,7 +1107,7 @@ BloodFlowSystem<dim, spacedim>::assemble_mass_matrix()
 template <int dim, int spacedim>
 void
 BloodFlowSystem<dim, spacedim>::compute_initial_solution(Vector<double> &dst,
-                                                         const double     t)
+                                                         const double    t)
 {
   initial_condition.set_time(t);
   AffineConstraints<double> constraints;

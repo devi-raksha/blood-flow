@@ -489,7 +489,7 @@ private:
   SparseMatrix<double> linear_system_matrix;
   SparseDirectUMFPACK  linear_solver;
   SparseDirectUMFPACK  mass_solver;
-  unsigned int         verbosity = 0;
+  unsigned int         verbosity        = 0;
   std::string          output_directory = "";
   Vector<double>       solution;
   Vector<double>       pressure;

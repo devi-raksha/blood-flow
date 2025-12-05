@@ -14,7 +14,7 @@
 // ---------------------------------------------------------------------
 
 
-#include "../include/function.h"
+#include "function.h"
 
 using namespace dealii;
 
