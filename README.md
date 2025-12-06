@@ -4,11 +4,38 @@ This project solves a 1D blood–flow model embedded in 3D using discontinuous G
 
 ## What We Solve
 
-- Unknowns: cross-sectional area `A` and mean velocity `U` along a 1D centerline embedded in 3D.
-- Governing equations:
-  - Area: `∂_t A + ∇·(b A U) = 0`
-  - Momentum: `∂_t U + ∇·(b (U^2/2 + P(A)/ρ)) + η_c U = 0`
-- Tube law (pressure–area relation): `P(A) = p0 + μ[(A/A0)^m – 1]`, wave speed `c = sqrt(A/ρ dP/dA)`.
+### Unknowns
+
+- Cross-sectional area: $A(x,t)$
+- Mean velocity along the centerline: $U(x,t)$
+
+### Governing equations (conservation form)
+
+Mass (area):
+$$
+\partial_t A + \nabla\cdot\bigl(b\,A\,U\bigr) = 0
+$$
+
+Momentum:
+$$
+\partial_t U + \nabla\cdot \biggl(b\Bigl(\frac{U^2}{2} + \frac{P(A)}{\rho}\Bigr)\biggr) + \eta_c\,U = 0
+$$
+
+### Tube law and wave speed
+
+Pressure–area (tube) law:
+$$
+P(A) = p_0 + \mu\Bigl[\Bigl(\frac{A}{A_0}\Bigr)^m - 1\Bigr],
+\qquad
+\frac{dP}{dA} = \mu\,m\,\frac{A^{\,m-1}}{A_0^{\,m}} = \mu\,m\,\frac{1}{A_0}\Bigl(\frac{A}{A_0}\Bigr)^{m-1}.
+$$
+Wave speed:
+$$
+c = \sqrt{\frac{A}{\rho}\frac{dP}{dA}}
+= \sqrt{\frac{\mu\,m}{\rho}\Bigl(\frac{A}{A_0}\Bigr)^{m}}.
+$$
+
+(Here $\rho$ is fluid density, $\eta_c$ a friction coefficient, $b$ a geometric weighting, and $p_0,A_0,\mu,m$ tube-law constants.)
 
 ## Numerical Method
 
