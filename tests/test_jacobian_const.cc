@@ -58,27 +58,6 @@ test()
           << std::endl;
 
 
-  // FunctionParser<3> my_test_function(2);
-  // my_test_function.initialize("x,y,z", "1.0; 0.0", {});
-
-  // VectorTools::project(problem.dof_handler,
-  //                      constraints,
-  //                      QGauss<1>(problem.fe_degree + 1),
-  //                      my_test_function,
-  //                      problem.solution);
-
-  // auto rhs = problem.solution;
-  // problem.jacobian_matrix.vmult(rhs, problem.solution);
-
-  // problem.assemble_mass_matrix();
-  // SparseDirectUMFPACK inv_mass;
-  // inv_mass.initialize(problem.mass_matrix);
-  // inv_mass.vmult(rhs, rhs);
-
-  // deallog << rhs << std::endl;
-
-
-  // deallog << "Solution norm: " << rhs.linfty_norm() << std::endl;
 }
 
 
