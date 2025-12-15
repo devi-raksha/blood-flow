@@ -63,6 +63,7 @@ BloodFlowSystem<dim, spacedim>::BloodFlowSystem()
   add_parameter("Theta Boundary (stability parameter)", theta_bd);
   add_parameter("Verbosity (console depth)", verbosity);
   add_parameter("Output directory", output_directory);
+  add_parameter("Numerical flux type", numerical_flux_type_str);
 
   this->enter_subsection("ARKOde parameters");
   this->enter_my_subsection(this->prm);
@@ -92,6 +93,17 @@ BloodFlowSystem<dim, spacedim>::initialize_params(const std::string &filename)
   exact_solution.update_constants(par);
   initial_condition.update_constants(par);
   rhs_function.update_constants(par);
+
+  if (numerical_flux_type_str == "HLL")
+    numerical_flux_type = NumericalFluxType::HLL;
+  else if (numerical_flux_type_str == "LAX_FRIEDRICHS")
+    numerical_flux_type = NumericalFluxType::LAX_FRIEDRICHS;
+  else
+    AssertThrow(false,
+                ExcMessage("Unknown numerical flux type: " +
+                           numerical_flux_type_str));
+  deallog << "Selected numerical flux: " << numerical_flux_type_str
+          << std::endl;
 }
 
 // ========================================================================
@@ -222,7 +234,7 @@ BloodFlowSystem<dim, spacedim>::assemble_jacobian(const double          t,
       }
   };
 
-  // ========== FACE WORKER (Interior Faces) - WITH HLL FLUX ==========
+  // ========== FACE WORKER (Interior Faces) - WITH HLL FLUX Jacobian ==========
   auto face_worker = [&](const Iterator                      &cell,
                          const unsigned int                   f,
                          const unsigned int                   sf,
@@ -260,47 +272,46 @@ BloodFlowSystem<dim, spacedim>::assemble_jacobian(const double          t,
 
     for (unsigned int q = 0; q < n_q; ++q)
       {
-        for (unsigned int i = 0; i < nd; ++i)
+        for (unsigned int j = 0; j < nd; ++j)
           {
-            for (unsigned int j = 0; j < nd; ++j)
+            const auto trial_area = fe_iv[area_extractor].value(0, j, q);
+            const auto trial_area_neighbor =
+              fe_iv[area_extractor].value(1, j, q);
+            const auto trial_velocity =
+              fe_iv[velocity_extractor].value(0, j, q);
+            const auto trial_velocity_neighbor =
+              fe_iv[velocity_extractor].value(1, j, q);
+
+            // ===== HLL JACOBIAN FLUX (for Jacobian matrix) =====
+            auto [flux_A_jac, flux_U_jac] =
+              numerical_flux_jacobian(cell,
+                                      ncell,
+                                      current_area[q],
+                                      current_velocity[q],
+                                      current_area_neighbor[q],
+                                      current_velocity_neighbor[q],
+                                      trial_area,              // trial_A_L
+                                      trial_velocity,          // trial_U_L
+                                      trial_area_neighbor,     // trial_A_R
+                                      trial_velocity_neighbor, // trial_U_R
+                                      normals[q]);
+            for (unsigned int i = 0; i < nd; ++i)
               {
-                const auto trial_area = fe_iv[area_extractor].value(0, j, q);
-                const auto trial_area_neighbor =
-                  fe_iv[area_extractor].value(1, j, q);
-                const auto trial_velocity =
-                  fe_iv[velocity_extractor].value(0, j, q);
-                const auto trial_velocity_neighbor =
-                  fe_iv[velocity_extractor].value(1, j, q);
-
-                // ===== HLL JACOBIAN FLUX (for Jacobian matrix) =====
-                auto [flux_A_jac_hll, flux_U_jac_hll] =
-                  HLL_jacobian_flux(cell,
-                                    ncell,
-                                    current_area[q],
-                                    current_velocity[q],
-                                    current_area_neighbor[q],
-                                    current_velocity_neighbor[q],
-                                    trial_area,              // trial_A_L
-                                    trial_velocity,          // trial_U_L
-                                    trial_area_neighbor,     // trial_A_R
-                                    trial_velocity_neighbor, // trial_U_R
-                                    normals[q]);
-
                 // Area equation contribution to Jacobian
                 face.cell_matrix(i, j) -=
-                  flux_A_jac_hll * fe_iv[area_extractor].jump_in_values(i, q) *
+                  flux_A_jac * fe_iv[area_extractor].jump_in_values(i, q) *
                   JxW[q];
 
                 // Momentum equation contribution to Jacobian
                 face.cell_matrix(i, j) -=
-                  flux_U_jac_hll *
-                  fe_iv[velocity_extractor].jump_in_values(i, q) * JxW[q];
+                  flux_U_jac * fe_iv[velocity_extractor].jump_in_values(i, q) *
+                  JxW[q];
               }
           }
       }
   };
 
-  //========== BOUNDARY WORKER - WITH HLL FLUX ==========
+  //========== BOUNDARY WORKER Jacobian - WITH HLL FLUX ==========
   exact_solution.set_time(t);
   auto boundary_worker = [&](const Iterator                      &cell,
                              const unsigned int                   face_no,
@@ -396,7 +407,7 @@ BloodFlowSystem<dim, spacedim>::assemble_jacobian(const double          t,
             // Only trial functions on interior side are active (j comes from
             // interior cell) Exterior state does not change with trial
             // functions
-            auto [flux_A_jac_boundary, flux_U_jac_boundary] = HLL_jacobian_flux(
+            auto [flux_A_jac, flux_U_jac] = numerical_flux_jacobian(
               cell,
               cell,
               A_int,   // interior current (left)
@@ -416,10 +427,10 @@ BloodFlowSystem<dim, spacedim>::assemble_jacobian(const double          t,
                 const double test_U = fe_face[velocity_extractor].value(i, q);
 
                 // Area equation Jacobian
-                copy.cell_matrix(i, j) -= flux_A_jac_boundary * test_A * JxW[q];
+                copy.cell_matrix(i, j) -= flux_A_jac * test_A * JxW[q];
 
                 // Momentum equation Jacobian
-                copy.cell_matrix(i, j) -= flux_U_jac_boundary * test_U * JxW[q];
+                copy.cell_matrix(i, j) -= flux_U_jac * test_U * JxW[q];
               }
           }
 
@@ -592,23 +603,22 @@ BloodFlowSystem<dim, spacedim>::assemble_implicit_function(
 
     for (unsigned int q = 0; q < n_q; ++q)
       {
-        auto [flux_A_hll, flux_U_hll] =
-          HLL_residual_flux(cell,
-                            ncell,
-                            current_area[q],
-                            current_velocity[q],
-                            current_area_neighbor[q],
-                            current_velocity_neighbor[q],
-                            normals[q]);
+        auto [flux_A, flux_U] =
+          numerical_flux_residual(cell,
+                                  ncell,
+                                  current_area[q],
+                                  current_velocity[q],
+                                  current_area_neighbor[q],
+                                  current_velocity_neighbor[q],
+                                  normals[q]);
 
         for (unsigned int i = 0; i < nd; ++i)
           {
             face.cell_rhs(i) -=
-              flux_A_hll * fe_iv[area_extractor].jump_in_values(i, q) * JxW[q];
+              flux_A * fe_iv[area_extractor].jump_in_values(i, q) * JxW[q];
 
-            face.cell_rhs(i) -= flux_U_hll *
-                                fe_iv[velocity_extractor].jump_in_values(i, q) *
-                                JxW[q];
+            face.cell_rhs(i) -=
+              flux_U * fe_iv[velocity_extractor].jump_in_values(i, q) * JxW[q];
           }
       }
   };
@@ -687,11 +697,11 @@ BloodFlowSystem<dim, spacedim>::assemble_implicit_function(
             Assert(false, ExcMessage("Unclassified boundary condition."));
           }
 
-        auto [flux_A_boundary, flux_U_boundary] =
-          HLL_residual_flux(cell, cell, A_int, U_int, A_ext, U_ext, normals[q]);
+        auto [flux_A, flux_U] = numerical_flux_residual(
+          cell, cell, A_int, U_int, A_ext, U_ext, normals[q]);
 
-        const double F_area_boundary     = flux_A_boundary;
-        const double F_momentum_boundary = flux_U_boundary;
+        const double F_area_boundary     = flux_A;
+        const double F_momentum_boundary = flux_U;
 
         for (unsigned int i = 0; i < fe_face.get_fe().dofs_per_cell; ++i)
           {

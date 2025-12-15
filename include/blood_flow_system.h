@@ -156,10 +156,90 @@ public:
   void
   run();
 
+  enum class NumericalFluxType
+  {
+    HLL,
+    LAX_FRIEDRICHS
+  };
+  void
+  set_numerical_flux(NumericalFluxType flux_type)
+  {
+    numerical_flux_type = flux_type;
+  }
+
+  NumericalFluxType
+  get_numerical_flux() const
+  {
+    return numerical_flux_type;
+  }
+
 private:
   ParsedTools::Constants                           par;
   AffineConstraints<double>                        constraints;
   SUNDIALS::ARKode<Vector<double>>::AdditionalData arkode_parameters;
+  NumericalFluxType numerical_flux_type     = NumericalFluxType::HLL;
+  std::string       numerical_flux_type_str = "HLL";
+  /**
+   * Wrapper for residual flux - selects HLL or Lax-Friedrichs
+   */
+  std::array<double, 2>
+  numerical_flux_residual(
+    const typename DoFHandler<dim, spacedim>::active_cell_iterator &cell,
+    const typename DoFHandler<dim, spacedim>::active_cell_iterator &ncell,
+    double                                                          A_L,
+    double                                                          U_L,
+    double                                                          A_R,
+    double                                                          U_R,
+    const Tensor<1, spacedim> &normal) const
+  {
+    if (numerical_flux_type == NumericalFluxType::HLL)
+      return HLL_residual_flux(cell, ncell, A_L, U_L, A_R, U_R, normal);
+    else
+      return LF_flux(cell, ncell, A_L, U_L, A_R, U_R, normal);
+  }
+
+  /**
+   * Wrapper for Jacobian flux - selects HLL or Lax-Friedrichs
+   */
+  std::array<double, 2>
+  numerical_flux_jacobian(
+    const typename DoFHandler<dim, spacedim>::active_cell_iterator &cell,
+    const typename DoFHandler<dim, spacedim>::active_cell_iterator &ncell,
+    double                                                          A_L,
+    double                                                          U_L,
+    double                                                          A_R,
+    double                                                          U_R,
+    double                                                          trial_A_L,
+    double                                                          trial_U_L,
+    double                                                          trial_A_R,
+    double                                                          trial_U_R,
+    const Tensor<1, spacedim> &normal) const
+  {
+    if (numerical_flux_type == NumericalFluxType::HLL)
+      return HLL_jacobian_flux(cell,
+                               ncell,
+                               A_L,
+                               U_L,
+                               A_R,
+                               U_R,
+                               trial_A_L,
+                               trial_U_L,
+                               trial_A_R,
+                               trial_U_R,
+                               normal);
+    else
+      return LF_jacobian_flux(cell,
+                              ncell,
+                              A_L,
+                              U_L,
+                              A_R,
+                              U_R,
+                              trial_A_L,
+                              trial_U_L,
+                              trial_A_R,
+                              trial_U_R,
+                              normal);
+  }
 
   // --------------------------------------------------
   // ===  Physical and Constitutive Relations  ===
@@ -358,6 +438,95 @@ private:
   }
 
   /**
+   * compute the Lax-Friedrich flux for residual computation
+   */
+
+  std::array<double, 2>
+  LF_flux(const typename DoFHandler<dim, spacedim>::active_cell_iterator &cell,
+          const typename DoFHandler<dim, spacedim>::active_cell_iterator &ncell,
+          double                                                          A_L,
+          double                                                          U_L,
+          double                                                          A_R,
+          double                                                          U_R,
+          const Tensor<1, spacedim> &normal) const
+  {
+    // physical fluxes projected on normal
+    double FAL = compute_physical_area_flux(cell, A_L, U_L) * normal;
+    double FUL = compute_physical_momentum_flux(cell,
+                                                U_L,
+                                                U_L,
+                                                compute_pressure_value(A_L)) *
+                 normal;
+
+    double FAR = compute_physical_area_flux(ncell, A_R, U_R) * normal;
+    double FUR = compute_physical_momentum_flux(ncell,
+                                                U_R,
+                                                U_R,
+                                                compute_pressure_value(A_R)) *
+                 normal;
+
+    double bn          = compute_tangent_normal_product(cell, normal);
+    double bn_neighbor = compute_tangent_normal_product(ncell, normal);
+
+    double beta  = compute_LF_penalty(A_L, A_R, U_L, U_R, bn, bn_neighbor);
+    double alpha = theta * beta;
+    // LF flux
+    double FLF_A = 0.5 * (FAL + FAR) - 0.5 * alpha * (A_R - A_L);
+    double FLF_U = 0.5 * (FUL + FUR) - 0.5 * alpha * (U_R - U_L);
+
+    return {{FLF_A, FLF_U}};
+  }
+
+  /**
+   * compute the Lax-Friedrich flux for JACOBIAN computation
+   * For jacobian: linearized fluxes using current state
+   */
+  std::array<double, 2>
+  LF_jacobian_flux(
+    const typename DoFHandler<dim, spacedim>::active_cell_iterator &cell,
+    const typename DoFHandler<dim, spacedim>::active_cell_iterator &ncell,
+    double                                                          A_L,
+    double                                                          U_L,
+    double                                                          A_R,
+    double                                                          U_R,
+    double                                                          trial_A_L,
+    double                                                          trial_U_L,
+    double                                                          trial_A_R,
+    double                                                          trial_U_R,
+    const Tensor<1, spacedim> &normal) const
+  {
+    // Jacobian of physical fluxes projected on normal
+    double FAL_jac = compute_physical_area_jacobian_flux(
+                       cell, A_L, trial_U_L, U_L, trial_A_L) *
+                     normal;
+    double c_L     = compute_wave_speed(A_L);
+    double c_L_sq  = c_L * c_L;
+    double FUL_jac = compute_physical_momentum_jacobian_flux(
+                       cell, c_L_sq, A_L, trial_A_L, U_L, trial_U_L) *
+                     normal;
+    double FAr_jac = compute_physical_area_jacobian_flux(
+                       ncell, A_R, trial_U_R, U_R, trial_A_R) *
+                     normal;
+    double c_R     = compute_wave_speed(A_R);
+    double c_R_sq  = c_R * c_R;
+    double FUR_jac = compute_physical_momentum_jacobian_flux(
+                       ncell, c_R_sq, A_R, trial_A_R, U_R, trial_U_R) *
+                     normal;
+    double bn          = compute_tangent_normal_product(cell, normal);
+    double bn_neighbor = compute_tangent_normal_product(ncell, normal);
+    double beta = compute_LF_penalty(A_L, A_R, U_L, U_R, bn, bn_neighbor);
+
+    double alpha = theta * beta;
+    // LF flux jacobian
+    double FLF_A_jac =
+      0.5 * (FAL_jac + FAr_jac) - 0.5 * alpha * (trial_A_R - trial_A_L);
+    double FLF_U_jac =
+      0.5 * (FUL_jac + FUR_jac) - 0.5 * alpha * (trial_U_R - trial_U_L);
+    return {{FLF_A_jac, FLF_U_jac}};
+  }
+
+
+  /**
    * Compute HLL flux at interface for residual computation
    */
   std::array<double, 2>
@@ -374,8 +543,14 @@ private:
     double c_L = compute_wave_speed(A_L);
     double c_R = compute_wave_speed(A_R);
 
-    double s_L = std::min(U_L - c_L, U_R - c_R);
-    double s_R = std::max(U_L + c_L, U_R + c_R);
+    // For Roe averages avg eigenvalues could be used instead of min/max
+    // See sec 10.5 in "Riemann Solvers and Numerical Methods for Fluids
+    // Dynamics" by E.F. Toro
+
+    double U_bar = 0.5 * (U_L + U_R);
+    double c_bar = 0.5 * (c_L + c_R);
+    double s_L   = U_bar - c_bar; // std::min(U_L - c_L, U_R - c_R);
+    double s_R   = U_bar + c_bar; // std::max(U_L + c_L, U_R + c_R);
 
     // physical fluxes projected on normal
     double FAL = compute_physical_area_flux(cell, A_L, U_L) * normal;
@@ -432,8 +607,10 @@ private:
     double c_L = compute_wave_speed(A_L);
     double c_R = compute_wave_speed(A_R);
 
-    double s_L = std::min(U_L - c_L, U_R - c_R);
-    double s_R = std::max(U_L + c_L, U_R + c_R);
+    double U_bar = 0.5 * (U_L + U_R);
+    double c_bar = 0.5 * (c_L + c_R);
+    double s_L   = U_bar - c_bar; // std::min(U_L - c_L, U_R - c_R);
+    double s_R   = U_bar + c_bar; // std::max(U_L + c_L, U_R + c_R);
 
     // Jacobian of area flux: ∂(A*U*b)/∂trial = (trial_U*A + trial_A*U)*b
     double FAL_jac = compute_physical_area_jacobian_flux(
