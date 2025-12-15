@@ -272,6 +272,9 @@ BloodFlowSystem<dim, spacedim>::assemble_jacobian(const double          t,
 
     for (unsigned int q = 0; q < n_q; ++q)
       {
+        double bn_L = compute_tangent_normal_product(cell, normals[q]);
+        double bn_R = compute_tangent_normal_product(ncell, normals[q]);
+
         for (unsigned int j = 0; j < nd; ++j)
           {
             const auto trial_area = fe_iv[area_extractor].value(0, j, q);
@@ -284,17 +287,18 @@ BloodFlowSystem<dim, spacedim>::assemble_jacobian(const double          t,
 
             // ===== HLL JACOBIAN FLUX (for Jacobian matrix) =====
             auto [flux_A_jac, flux_U_jac] =
-              numerical_flux_jacobian(cell,
-                                      ncell,
+              numerical_flux_jacobian(bn_L,
+                                      bn_R,
                                       current_area[q],
                                       current_velocity[q],
                                       current_area_neighbor[q],
                                       current_velocity_neighbor[q],
-                                      trial_area,              // trial_A_L
-                                      trial_velocity,          // trial_U_L
-                                      trial_area_neighbor,     // trial_A_R
-                                      trial_velocity_neighbor, // trial_U_R
-                                      normals[q]);
+                                      trial_area,               // trial_A_L
+                                      trial_velocity,           // trial_U_L
+                                      trial_area_neighbor,      // trial_A_R
+                                      trial_velocity_neighbor); // trial_U_R
+
+
             for (unsigned int i = 0; i < nd; ++i)
               {
                 // Area equation contribution to Jacobian
@@ -397,6 +401,8 @@ BloodFlowSystem<dim, spacedim>::assemble_jacobian(const double          t,
             Assert(false, ExcMessage("Unclassified boundary condition."));
           }
 
+        double bn_L = compute_tangent_normal_product(cell, normals[q]);
+        double bn_R = bn_L; // boundary face, same normal
         // ===== JACOBIAN ASSEMBLY AT BOUNDARY =====
         for (unsigned int j = 0; j < fe_face.get_fe().dofs_per_cell; ++j)
           {
@@ -408,8 +414,8 @@ BloodFlowSystem<dim, spacedim>::assemble_jacobian(const double          t,
             // interior cell) Exterior state does not change with trial
             // functions
             auto [flux_A_jac, flux_U_jac] = numerical_flux_jacobian(
-              cell,
-              cell,
+              bn_L,
+              bn_R,
               A_int,   // interior current (left)
               U_int,   // interior current (left)
               A_ext,   // exterior (right) - fixed by boundary condition
@@ -417,8 +423,8 @@ BloodFlowSystem<dim, spacedim>::assemble_jacobian(const double          t,
               trial_A, // trial_A_L (only interior varies)
               trial_U, // trial_U_L (only interior varies)
               0.0,     // trial_A_R = 0 (exterior is fixed)
-              0.0,     // trial_U_R = 0 (exterior is fixed)
-              normals[q]);
+              0.0);    // trial_U_R = 0 (exterior is fixed)
+
 
             // Test function loop
             for (unsigned int i = 0; i < fe_face.get_fe().dofs_per_cell; ++i)
@@ -603,14 +609,17 @@ BloodFlowSystem<dim, spacedim>::assemble_implicit_function(
 
     for (unsigned int q = 0; q < n_q; ++q)
       {
+        double bn_L = compute_tangent_normal_product(cell, normals[q]);
+        double bn_R = compute_tangent_normal_product(ncell, normals[q]);
+
         auto [flux_A, flux_U] =
-          numerical_flux_residual(cell,
-                                  ncell,
+          numerical_flux_residual(bn_L,
+                                  bn_R,
                                   current_area[q],
                                   current_velocity[q],
                                   current_area_neighbor[q],
-                                  current_velocity_neighbor[q],
-                                  normals[q]);
+                                  current_velocity_neighbor[q]);
+
 
         for (unsigned int i = 0; i < nd; ++i)
           {
@@ -697,8 +706,10 @@ BloodFlowSystem<dim, spacedim>::assemble_implicit_function(
             Assert(false, ExcMessage("Unclassified boundary condition."));
           }
 
-        auto [flux_A, flux_U] = numerical_flux_residual(
-          cell, cell, A_int, U_int, A_ext, U_ext, normals[q]);
+        double bn_L = compute_tangent_normal_product(cell, normals[q]);
+        double bn_R = bn_L; // boundary face, same normal
+        auto [flux_A, flux_U] =
+          numerical_flux_residual(bn_L, bn_R, A_int, U_int, A_ext, U_ext);
 
         const double F_area_boundary     = flux_A;
         const double F_momentum_boundary = flux_U;
