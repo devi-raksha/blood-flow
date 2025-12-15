@@ -39,7 +39,8 @@ test()
 
   // Sum over all dofs; expected momentum component contributes -eta_c times
   // measure
-  const double sum_Jdw = Jdw * ones;
+  const double sum_Jdw = Jdw * ones; // (J dw, ones)_L2 = int J&dW dx = -eta_c
+                                     // * measure
   deallog << "J*ones = " << sum_Jdw << " (it should be: -integral(eta_c, 0,1))"
           << std::endl;
   deallog << "eta_c = " << problem.par["eta_c"] << std::endl;
