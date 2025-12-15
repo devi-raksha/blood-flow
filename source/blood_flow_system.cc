@@ -98,6 +98,8 @@ BloodFlowSystem<dim, spacedim>::initialize_params(const std::string &filename)
     numerical_flux_type = NumericalFluxType::HLL;
   else if (numerical_flux_type_str == "LAX_FRIEDRICHS")
     numerical_flux_type = NumericalFluxType::LAX_FRIEDRICHS;
+  else if (numerical_flux_type_str == "HLL_SYMPY")
+    numerical_flux_type = NumericalFluxType::HLL_SYMPY;
   else
     AssertThrow(false,
                 ExcMessage("Unknown numerical flux type: " +
@@ -612,13 +614,12 @@ BloodFlowSystem<dim, spacedim>::assemble_implicit_function(
         double bn_L = compute_tangent_normal_product(cell, normals[q]);
         double bn_R = compute_tangent_normal_product(ncell, normals[q]);
 
-        auto [flux_A, flux_U] =
-          numerical_flux_residual(bn_L,
-                                  bn_R,
-                                  current_area[q],
-                                  current_velocity[q],
-                                  current_area_neighbor[q],
-                                  current_velocity_neighbor[q]);
+        auto [flux_A, flux_U] = numerical_flux(bn_L,
+                                               bn_R,
+                                               current_area[q],
+                                               current_velocity[q],
+                                               current_area_neighbor[q],
+                                               current_velocity_neighbor[q]);
 
 
         for (unsigned int i = 0; i < nd; ++i)
@@ -709,7 +710,7 @@ BloodFlowSystem<dim, spacedim>::assemble_implicit_function(
         double bn_L = compute_tangent_normal_product(cell, normals[q]);
         double bn_R = bn_L; // boundary face, same normal
         auto [flux_A, flux_U] =
-          numerical_flux_residual(bn_L, bn_R, A_int, U_int, A_ext, U_ext);
+          numerical_flux(bn_L, bn_R, A_int, U_int, A_ext, U_ext);
 
         const double F_area_boundary     = flux_A;
         const double F_momentum_boundary = flux_U;

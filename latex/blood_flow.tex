@@ -33,7 +33,8 @@ vector $\bm b(\bm x)$:
 \begin{align}
   \partial_t A + \nabla \cdot (\bm b A U) &= 0,
   && \text{(Area equation)}, \label{eq:area-eq}\\[2mm]
-  \partial_t U + \nabla \cdot \bm b  \!\left(\frac{U^2}{2}  + \frac{1}{\rho} P(A)\right)
+  \partial_t U + \nabla \cdot
+  \left( \bm b  \!\left(\frac{U^2}{2}  + \frac{1}{\rho} P(A)\right) \right)
   + c\,U &= 0,
   && \text{(Momentum equation).} \label{eq:momentum-eq}
 \end{align}
@@ -90,7 +91,7 @@ polynomial degree $k\ge0$ define the discontinuous finite element space
 For an interior face $F\in\Fh^\circ$ across two elements $E^+$ and $E^-$, with
 outward unit normals $\bm n^+$ and $\bm n^-$, the jump and average operators are
 \[
-  \jump{v}=v^-\bm n^- \cdot \bm b^- + v^+\bm n^- \cdot \bm b^+,
+  \jump{v}=v^-\bm n^- \cdot \bm b^- + v^+\bm n^+ \cdot \bm b^+ = \beta^- v^- + \beta^+v^+ ,
   \qquad
   \avg{v}=\tfrac12(v^-+v^+),
 \]
@@ -103,7 +104,7 @@ DG weak form for \eqref{eq:model-vector} is
   - (\mathbf{F}(\mathbf{W}), \bm b\cdot \nabla \phi) + \langle \widehat{\mathbf{F}}(\mathbf{W}), \jump{\phi} \rangle
   - (S(\mathbf{W}_h), \phi) = 0,
 \end{equation}
-where $\widehat{\mathbf{F}}$ is numerical flux defined later.
+where $\widehat{\mathbf{F}}$ is a numerical flux defined later.
 
 \section{Time integration with ARKode}
 

@@ -159,7 +159,8 @@ public:
   enum class NumericalFluxType
   {
     HLL,
-    LAX_FRIEDRICHS
+    LAX_FRIEDRICHS,
+    HLL_SYMPY
   };
   void
   set_numerical_flux(NumericalFluxType flux_type)
@@ -183,17 +184,19 @@ private:
    * Wrapper for residual flux - selects HLL or Lax-Friedrichs
    */
   std::array<double, 2>
-  numerical_flux_residual(double bn_L,
-                          double bn_R,
-                          double A_L,
-                          double U_L,
-                          double A_R,
-                          double U_R) const
+  numerical_flux(double bn_L,
+                 double bn_R,
+                 double A_L,
+                 double U_L,
+                 double A_R,
+                 double U_R) const
   {
     if (numerical_flux_type == NumericalFluxType::HLL)
-      return HLL_residual_flux(bn_L, bn_R, A_L, U_L, A_R, U_R);
+      return hll_numerical_flux(bn_L, bn_R, A_L, U_L, A_R, U_R);
+    else if (numerical_flux_type == NumericalFluxType::HLL_SYMPY)
+      return hll_sympy_numerical_flux(bn_L, bn_R, A_L, U_L, A_R, U_R);
     else
-      return LF_flux(bn_L, bn_R, A_L, U_L, A_R, U_R);
+      return lf_numerical_flux(bn_L, bn_R, A_L, U_L, A_R, U_R);
   }
 
   /**
@@ -212,27 +215,38 @@ private:
                           double trial_U_R) const
   {
     if (numerical_flux_type == NumericalFluxType::HLL)
-      return HLL_jacobian_flux(bn_L,
-                               bn_R,
-                               A_L,
-                               U_L,
-                               A_R,
-                               U_R,
-                               trial_A_L,
-                               trial_U_L,
-                               trial_A_R,
-                               trial_U_R);
+      return hll_numerical_flux_jacobian(bn_L,
+                                         bn_R,
+                                         A_L,
+                                         U_L,
+                                         A_R,
+                                         U_R,
+                                         trial_A_L,
+                                         trial_U_L,
+                                         trial_A_R,
+                                         trial_U_R);
+    else if (numerical_flux_type == NumericalFluxType::HLL_SYMPY)
+      return hll_sympy_numerical_flux_jacobian(bn_L,
+                                               bn_R,
+                                               A_L,
+                                               U_L,
+                                               A_R,
+                                               U_R,
+                                               trial_A_L,
+                                               trial_U_L,
+                                               trial_A_R,
+                                               trial_U_R);
     else
-      return LF_jacobian_flux(bn_L,
-                              bn_R,
-                              A_L,
-                              U_L,
-                              A_R,
-                              U_R,
-                              trial_A_L,
-                              trial_U_L,
-                              trial_A_R,
-                              trial_U_R);
+      return lf_numerical_flux_jacobian(bn_L,
+                                        bn_R,
+                                        A_L,
+                                        U_L,
+                                        A_R,
+                                        U_R,
+                                        trial_A_L,
+                                        trial_U_L,
+                                        trial_A_R,
+                                        trial_U_R);
   }
 
   // --------------------------------------------------
@@ -471,12 +485,12 @@ private:
    */
 
   std::array<double, 2>
-  LF_flux(double bn_L,
-          double bn_R,
-          double A_L,
-          double U_L,
-          double A_R,
-          double U_R) const
+  lf_numerical_flux(double bn_L,
+                    double bn_R,
+                    double A_L,
+                    double U_L,
+                    double A_R,
+                    double U_R) const
   {
     // physical fluxes projected on normal
     double FAL = compute_scalar_physical_area_flux(bn_L, A_L, U_L);
@@ -502,16 +516,16 @@ private:
    * For jacobian: linearized fluxes using current state
    */
   std::array<double, 2>
-  LF_jacobian_flux(double bn_L,
-                   double bn_R,
-                   double A_L,
-                   double U_L,
-                   double A_R,
-                   double U_R,
-                   double trial_A_L,
-                   double trial_U_L,
-                   double trial_A_R,
-                   double trial_U_R) const
+  lf_numerical_flux_jacobian(double bn_L,
+                             double bn_R,
+                             double A_L,
+                             double U_L,
+                             double A_R,
+                             double U_R,
+                             double trial_A_L,
+                             double trial_U_L,
+                             double trial_A_R,
+                             double trial_U_R) const
   {
     // Jacobian of physical fluxes projected on normal
     double FAL_jac = compute_scalar_physical_area_jacobian_flux(
@@ -537,17 +551,179 @@ private:
     return {{FLF_A_jac, FLF_U_jac}};
   }
 
+  std::array<double, 2>
+  hll_sympy_numerical_flux(double bn_L,
+                           double bn_R,
+                           double A_L,
+                           double U_L,
+                           double A_R,
+                           double U_R) const
+  {
+    double FHLL_A, FHLL_U;
+    // FHLL_A
+    {
+      const double t_0  = A_L * U_L * bn_L;
+      const double t_1  = 1.0 / par["a0"];
+      const double t_2  = par["m"] * par["mu"] / par["rho"];
+      const double t_3  = std::sqrt(t_2 * std::pow(A_L * t_1, par["m"]));
+      const double t_4  = (1.0 / 2.0) * t_3;
+      const double t_5  = std::sqrt(t_2 * std::pow(A_R * t_1, par["m"]));
+      const double t_6  = (1.0 / 2.0) * t_5;
+      const double t_7  = (1.0 / 2.0) * U_L + (1.0 / 2.0) * U_R;
+      const double t_8  = -t_4 - t_6 + t_7;
+      const double t_9  = A_R * U_R * bn_R;
+      const double t_10 = t_4 + t_6 + t_7;
+      FHLL_A =
+        ((t_8 >= 0) ? (t_0) :
+                      ((t_10 <= 0) ?
+                         (t_9) :
+                         ((t_0 * t_10 + t_10 * t_8 * (-A_L + A_R) - t_8 * t_9) /
+                          (t_3 + t_5))));
+    }
+
+    // FHLL_U
+    {
+      const double t_0  = 1.0 / par["rho"];
+      const double t_1  = 1.0 / par["a0"];
+      const double t_2  = std::pow(A_L * t_1, par["m"]);
+      const double t_3  = bn_L * (0.5 * std::pow(U_L, 2) +
+                                 t_0 * (par["mu"] * (t_2 - 1) + par["p0"]));
+      const double t_4  = par["m"] * par["mu"] * t_0;
+      const double t_5  = std::sqrt(t_2 * t_4);
+      const double t_6  = (1.0 / 2.0) * t_5;
+      const double t_7  = std::pow(A_R * t_1, par["m"]);
+      const double t_8  = std::sqrt(t_4 * t_7);
+      const double t_9  = (1.0 / 2.0) * t_8;
+      const double t_10 = (1.0 / 2.0) * U_L + (1.0 / 2.0) * U_R;
+      const double t_11 = t_10 - t_6 - t_9;
+      const double t_12 = bn_R * (0.5 * std::pow(U_R, 2) +
+                                  t_0 * (par["mu"] * (t_7 - 1) + par["p0"]));
+      const double t_13 = t_10 + t_6 + t_9;
+      FHLL_U            = ((t_11 >= 0) ?
+                             (t_3) :
+                             ((t_13 <= 0) ?
+                                (t_12) :
+                                ((-t_11 * t_12 + t_11 * t_13 * (-U_L + U_R) + t_13 * t_3) /
+                      (t_5 + t_8))));
+    }
+    return {{FHLL_A, FHLL_U}};
+  }
+
+  std::array<double, 2>
+  hll_sympy_numerical_flux_jacobian(double bn_L,
+                                    double bn_R,
+                                    double A_L,
+                                    double U_L,
+                                    double A_R,
+                                    double U_R,
+                                    double trial_A_L,
+                                    double trial_U_L,
+                                    double trial_A_R,
+                                    double trial_U_R) const
+  {
+    double dFHLL_A, dFHLL_U;
+    // dFHLL_A
+    {
+      const double t_0  = A_L * bn_L;
+      const double t_1  = t_0 * trial_U_L;
+      const double t_2  = U_L * bn_L * trial_A_L;
+      const double t_3  = 1.0 / par["a0"];
+      const double t_4  = par["m"] * par["mu"] / par["rho"];
+      const double t_5  = std::sqrt(t_4 * std::pow(A_L * t_3, par["m"]));
+      const double t_6  = (1.0 / 2.0) * t_5;
+      const double t_7  = std::sqrt(t_4 * std::pow(A_R * t_3, par["m"]));
+      const double t_8  = (1.0 / 2.0) * t_7;
+      const double t_9  = (1.0 / 2.0) * U_L + (1.0 / 2.0) * U_R;
+      const double t_10 = -t_6 - t_8 + t_9;
+      const double t_11 = A_R * bn_R;
+      const double t_12 = t_11 * trial_U_R;
+      const double t_13 = U_R * bn_R * trial_A_R;
+      const double t_14 = t_6 + t_8 + t_9;
+      const double t_15 = t_5 + t_7;
+      const double t_16 = trial_A_L / A_L;
+      const double t_17 = trial_A_R / A_R;
+      const double t_18 = U_L * t_0;
+      const double t_19 = U_R * t_11;
+      const double t_20 = -A_L + A_R;
+      const double t_21 = t_14 * t_20;
+      const double t_22 = (1.0 / 4.0) * par["m"];
+      const double t_23 = t_16 * t_22 * t_5;
+      const double t_24 = t_17 * t_22 * t_7;
+      const double t_25 = (1.0 / 2.0) * trial_U_L + (1.0 / 2.0) * trial_U_R;
+      const double t_26 = t_23 + t_24 + t_25;
+      const double t_27 = -t_23 - t_24 + t_25;
+      dFHLL_A =
+        ((t_10 >= 0) ?
+           (t_1 + t_2) :
+           ((t_14 <= 0) ?
+              (t_12 + t_13) :
+              ((t_1 * t_14 - t_10 * t_12 - t_10 * t_13 +
+                t_10 * t_14 * (-trial_A_L + trial_A_R) + t_10 * t_20 * t_26 +
+                t_14 * t_2 + t_18 * t_26 - t_19 * t_27 + t_21 * t_27) /
+                 t_15 +
+               (-par["m"] * t_16 * t_6 - par["m"] * t_17 * t_8) *
+                 (-t_10 * t_19 + t_10 * t_21 + t_14 * t_18) /
+                 std::pow(t_15, 2))));
+    }
+
+    // dFHLL_U
+    {
+      const double t_0  = 1.0 / par["a0"];
+      const double t_1  = std::pow(A_L * t_0, par["m"]);
+      const double t_2  = 1.0 / par["rho"];
+      const double t_3  = par["m"] * par["mu"] * t_2;
+      const double t_4  = t_1 * t_3;
+      const double t_5  = trial_A_L / A_L;
+      const double t_6  = bn_L * (1.0 * U_L * trial_U_L + t_4 * t_5);
+      const double t_7  = std::sqrt(t_4);
+      const double t_8  = (1.0 / 2.0) * t_7;
+      const double t_9  = std::pow(A_R * t_0, par["m"]);
+      const double t_10 = t_3 * t_9;
+      const double t_11 = std::sqrt(t_10);
+      const double t_12 = (1.0 / 2.0) * t_11;
+      const double t_13 = (1.0 / 2.0) * U_L + (1.0 / 2.0) * U_R;
+      const double t_14 = -t_12 + t_13 - t_8;
+      const double t_15 = trial_A_R / A_R;
+      const double t_16 = bn_R * (1.0 * U_R * trial_U_R + t_10 * t_15);
+      const double t_17 = t_12 + t_13 + t_8;
+      const double t_18 = t_11 + t_7;
+      const double t_19 = bn_L * (0.5 * std::pow(U_L, 2) +
+                                  t_2 * (par["mu"] * (t_1 - 1) + par["p0"]));
+      const double t_20 = bn_R * (0.5 * std::pow(U_R, 2) +
+                                  t_2 * (par["mu"] * (t_9 - 1) + par["p0"]));
+      const double t_21 = -U_L + U_R;
+      const double t_22 = t_17 * t_21;
+      const double t_23 = (1.0 / 4.0) * par["m"];
+      const double t_24 = t_23 * t_5 * t_7;
+      const double t_25 = t_11 * t_15 * t_23;
+      const double t_26 = (1.0 / 2.0) * trial_U_L + (1.0 / 2.0) * trial_U_R;
+      const double t_27 = t_24 + t_25 + t_26;
+      const double t_28 = -t_24 - t_25 + t_26;
+      dFHLL_U           = ((t_14 >= 0) ?
+                             (t_6) :
+                             ((t_17 <= 0) ?
+                                (t_16) :
+                                ((-t_14 * t_16 + t_14 * t_17 * (-trial_U_L + trial_U_R) +
+                        t_14 * t_21 * t_27 + t_17 * t_6 + t_19 * t_27 -
+                        t_20 * t_28 + t_22 * t_28) /
+                         t_18 +
+                       (-par["m"] * t_12 * t_15 - par["m"] * t_5 * t_8) *
+                         (-t_14 * t_20 + t_14 * t_22 + t_17 * t_19) /
+                         std::pow(t_18, 2))));
+    }
+    return {{dFHLL_A, dFHLL_U}};
+  }
 
   /**
    * Compute HLL flux at interface for residual computation
    */
   std::array<double, 2>
-  HLL_residual_flux(double bn_L,
-                    double bn_R,
-                    double A_L,
-                    double U_L,
-                    double A_R,
-                    double U_R) const
+  hll_numerical_flux(double bn_L,
+                     double bn_R,
+                     double A_L,
+                     double U_L,
+                     double A_R,
+                     double U_R) const
   {
     // wave speeds
     double c_L = compute_wave_speed(A_L);
@@ -596,16 +772,16 @@ private:
    * For jacobian: linearized fluxes using current state
    */
   std::array<double, 2>
-  HLL_jacobian_flux(double bn_L,
-                    double bn_R,
-                    double A_L,
-                    double U_L,
-                    double A_R,
-                    double U_R,
-                    double trial_A_L,
-                    double trial_U_L,
-                    double trial_A_R,
-                    double trial_U_R) const
+  hll_numerical_flux_jacobian(double bn_L,
+                              double bn_R,
+                              double A_L,
+                              double U_L,
+                              double A_R,
+                              double U_R,
+                              double trial_A_L,
+                              double trial_U_L,
+                              double trial_A_R,
+                              double trial_U_R) const
   {
     // wave speeds at current state
     double c_L = compute_wave_speed(A_L);
