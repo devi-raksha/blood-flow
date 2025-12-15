@@ -25,6 +25,8 @@
 
 #include <deal.II/numerics/vector_tools.h>
 
+#include <cstdlib>
+
 #include "blood_flow_system.h"
 #include "tests.h"
 
@@ -46,47 +48,38 @@ test()
   problem.compute_initial_solution(problem.solution, problem.time);
 
   const double       t = problem.time;
-  Vector<double>     residual(problem.solution.size());
-  Vector<double>     jac_rhs(problem.solution.size());
+  Vector<double>     M_y_dot(problem.solution.size());
   const unsigned int n_dofs = problem.solution.size();
 
-  problem.assemble_jacobian(t, problem.solution, jac_rhs);
+  problem.assemble_jacobian(t, problem.solution, M_y_dot);
 
-  Vector<double> e(n_dofs), Je(n_dofs), fd_col(n_dofs);
-  double         max_diff  = 0.0;
-  double         max_Jdiff = 0.0;
-  double         max_J     = 0.0;
+  Vector<double> dW(n_dofs);
+  for (unsigned int i = 0; i < n_dofs; ++i)
+    dW[i] = random_value();
 
   const double eps = 1e-8;
 
-  for (unsigned int j = 0; j < n_dofs; ++j)
-    {
-      Vector<double> y_plus  = problem.solution;
-      Vector<double> y_minus = problem.solution;
-      y_plus[j] += eps;
-      y_minus[j] -= eps;
+  auto newp = problem.solution;
+  newp.add(eps, dW);
+  Vector<double> r_plus(n_dofs);
+  problem.assemble_implicit_function(t, newp, r_plus);
 
-      Vector<double> r_plus(n_dofs), r_minus(n_dofs);
-      problem.assemble_implicit_function(t, y_plus, r_plus);
-      problem.assemble_implicit_function(t, y_minus, r_minus);
+  r_plus.add(-1.0, M_y_dot);
+  r_plus *= 1 / eps;
 
-      fd_col = r_plus;
-      fd_col.add(-1.0, r_minus);
-      fd_col /= (2.0 * eps);
+  // Now compute J dW
+  Vector<double> JdW(n_dofs);
+  problem.jacobian_matrix.vmult(JdW, dW);
 
-      e    = 0;
-      e[j] = 1.0;
-      problem.jacobian_matrix.vmult(Je, e);
+  double max_diff = r_plus.linfty_norm();
+  double max_J    = JdW.linfty_norm();
 
-      max_Jdiff = std::max(max_Jdiff, fd_col.linfty_norm());
-      fd_col.add(-1.0, Je);
-      max_diff = std::max(max_diff, fd_col.linfty_norm());
-      max_J    = std::max(max_J, Je.linfty_norm());
-    }
+  r_plus.add(-1.0, JdW);
+  const double error = r_plus.linfty_norm();
 
-  deallog << "Max FD vs Jacobian diff: " << max_diff << std::endl;
+  deallog << "Max FD: " << max_diff << std::endl;
   deallog << "Max Jacobian: " << max_J << std::endl;
-  deallog << "Max Jacobian difference: " << max_Jdiff << std::endl;
+  deallog << "Error : " << error << std::endl;
 }
 
 
