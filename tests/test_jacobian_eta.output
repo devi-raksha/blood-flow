@@ -1,0 +1,5 @@
+
+DEAL::Selected numerical flux: HLL
+DEAL::Residual = 1.79018e-15
+DEAL::J*ones = -1.00000 (it should be: -integral(eta_c, 0,1)
+DEAL::eta_c = 1.00000

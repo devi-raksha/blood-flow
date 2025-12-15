@@ -1,2 +1,3 @@
 
-DEAL::Jacobian norm: 4.75000
+DEAL::Selected numerical flux: HLL
+DEAL::Jacobian FD check: max_diff=2.29286 ref=2.28936

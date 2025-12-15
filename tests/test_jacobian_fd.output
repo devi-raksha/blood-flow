@@ -1,0 +1,5 @@
+
+DEAL::Selected numerical flux: HLL
+DEAL::Max FD vs Jacobian diff: 1.00000
+DEAL::Max Jacobian: 1.00000
+DEAL::Max Jacobian difference: 1.00000

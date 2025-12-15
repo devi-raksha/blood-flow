@@ -1,0 +1,5 @@
+
+DEAL::Selected numerical flux: HLL
+DEAL::rhs_l2 2.43238e-15
+DEAL::Jv_l2 0.0883883
+DEAL::Jv_sum -1.00000
