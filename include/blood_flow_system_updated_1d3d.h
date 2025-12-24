@@ -40,238 +40,145 @@
 
 using namespace dealii;
 
+struct JunctionConfiguration
+{
+  double A1_0, A2_0, A3_0; // reference areas
+  double P1_0;             // reference pressure
+  double mu, m, rho;       // parameters
+};
+
+
+// ========================================================================
+// JUNCTION HELPER STRUCTURES
+// ========================================================================
+
+struct JunctionInfo
+{
+  Point<3>                             point;
+  std::vector<types::global_dof_index> dof_indices;
+  std::vector<double>                  dof_values;
+
+  // Pack data for serialization/communication
+  void
+  pack(std::vector<char> &buffer) const
+  {
+    // Pack point coordinates (element by element)
+    for (unsigned int d = 0; d < 3; ++d)
+      {
+        const char *coord_data = reinterpret_cast<const char *>(&point[d]);
+        buffer.insert(buffer.end(), coord_data, coord_data + sizeof(double));
+      }
+
+    // Pack number of DOFs
+    const std::size_t n_dofs      = dof_indices.size();
+    const char       *n_dofs_data = reinterpret_cast<const char *>(&n_dofs);
+    buffer.insert(buffer.end(), n_dofs_data, n_dofs_data + sizeof(n_dofs));
+
+    // Pack dof_indices (if any)
+    if (n_dofs > 0)
+      {
+        const char *dof_indices_data =
+          reinterpret_cast<const char *>(dof_indices.data());
+        buffer.insert(buffer.end(),
+                      dof_indices_data,
+                      dof_indices_data +
+                        n_dofs * sizeof(types::global_dof_index));
+      }
+
+    // Pack dof_values (if any)
+    if (n_dofs > 0)
+      {
+        const char *dof_values_data =
+          reinterpret_cast<const char *>(dof_values.data());
+        buffer.insert(buffer.end(),
+                      dof_values_data,
+                      dof_values_data + n_dofs * sizeof(double));
+      }
+  }
+
+  void
+  unpack(const std::vector<char> &buffer, std::size_t &offset)
+  {
+    // Unpack coordinates (element by element)
+    for (unsigned int d = 0; d < 3; ++d)
+      {
+        const double *coord =
+          reinterpret_cast<const double *>(buffer.data() + offset);
+        point[d] = *coord; // ← Assign to individual element
+        offset += sizeof(double);
+      }
+
+    // Unpack number of DOFs
+    const std::size_t *n_dofs_ptr =
+      reinterpret_cast<const std::size_t *>(buffer.data() + offset);
+    std::size_t n_dofs = *n_dofs_ptr;
+    offset += sizeof(std::size_t);
+
+    // Unpack dof_indices (if any)
+    if (n_dofs > 0)
+      {
+        dof_indices.resize(n_dofs);
+        const types::global_dof_index *dof_indices_data =
+          reinterpret_cast<const types::global_dof_index *>(buffer.data() +
+                                                            offset);
+        std::copy(dof_indices_data,
+                  dof_indices_data + n_dofs,
+                  dof_indices.begin());
+        offset += n_dofs * sizeof(types::global_dof_index);
+      }
+
+    // Unpack dof_values (if any)
+    if (n_dofs > 0)
+      {
+        dof_values.resize(n_dofs);
+        const double *dof_values_data =
+          reinterpret_cast<const double *>(buffer.data() + offset);
+        std::copy(dof_values_data,
+                  dof_values_data + n_dofs,
+                  dof_values.begin());
+        offset += n_dofs * sizeof(double);
+      }
+  }
+};
+
+
+// ========================================================================
+// HELPER FUNCTION: Detect Non-Manifold Faces (Y-Junctions)
+// ========================================================================
+
+template <typename CellContainer>
+std::map<typename CellContainer::active_face_iterator,
+         std::vector<typename CellContainer::active_cell_iterator>>
+get_non_manifold_faces(const CellContainer &cell_container)
+{
+  // Map from face to list of cells touching that face
+  std::map<typename CellContainer::active_face_iterator,
+           std::vector<typename CellContainer::active_cell_iterator>>
+    face_to_cells;
+
+  // Loop over all cells and all faces
+  for (const auto &cell : cell_container.active_cell_iterators())
+    for (const auto f : cell->face_indices())
+      face_to_cells[cell->face(f)].push_back(cell);
+
+  // Remove all faces with only 2 neighbors (manifold faces)
+  // Keep only faces with > 2 neighbors (non-manifold = junctions!)
+  for (auto it = face_to_cells.begin(); it != face_to_cells.end();)
+    {
+      if (it->second.size() <= 2)
+        it = face_to_cells.erase(it);
+      else
+        ++it;
+    }
+
+  return face_to_cells;
+}
+
+
 //====================================================================
 // PHYSICAL CONSTANTS AND PARAMETERS
 //====================================================================
 using BloodFlowParameters = ParsedTools::Constants;
-
-//====================================================================
-// EXACT SOLUTION AND MANUFACTURED SOLUTION
-//====================================================================
-
-/**
- * Exact solution class for manufactured solution
- */
-// template <int spacedim>
-// class ExactSolutionBloodFlow : public Function<spacedim>
-// {
-// private:
-//   // Parameters for manufactured solution
-//   double r0, a0, L, T0, atilde, qtilde;
-
-// public:
-//   ExactSolutionBloodFlow()
-//     : Function<spacedim>(2) // 2 components: area and velocity
-//     , r0(BloodFlowParameters::R0)
-//     , a0(numbers::PI * r0 * r0)
-//     , L(BloodFlowParameters::L)
-//     , T0(BloodFlowParameters::T0)
-//     , atilde(0.1 * a0)
-//     , qtilde(0.0)
-//   {}
-
-//   virtual double
-//   value(const Point<spacedim> &p, const unsigned int component) const
-//   override
-//   {
-//     const double x = p[0];
-//     const double t = this->get_time();
-
-//     if (component == 0) // area A
-//       return a0 + atilde * std::sin(2.0 * numbers::PI * x / L) *
-//                     std::cos(2.0 * numbers::PI * t / T0);
-//     else // velocity U
-//       return qtilde - (atilde * L / T0) *
-//                         std::cos(2.0 * numbers::PI * x / L) *
-//                         std::sin(2.0 * numbers::PI * t / T0);
-//   }
-
-//   virtual void
-//   vector_value(const Point<spacedim> &p,
-//                Vector<double>        &values) const override
-//   {
-//     Assert(values.size() == 2, ExcDimensionMismatch(values.size(), 2));
-//     values[0] = value(p, 0);
-//     values[1] = value(p, 1);
-//   }
-
-//   virtual Tensor<1, spacedim>
-//   gradient(const Point<spacedim> &p,
-//            const unsigned int     component) const override
-//   {
-//     const double x = p[0];
-//     const double t = this->get_time();
-
-//     Tensor<1, spacedim> grad;
-
-//     if (component == 0) // area A gradient
-//       {
-//         grad[0] = atilde * (2.0 * numbers::PI / L) *
-//                   std::cos(2.0 * numbers::PI * x / L) *
-//                   std::cos(2.0 * numbers::PI * t / T0);
-//       }
-//     else if (component == 1) // velocity U gradient
-//       {
-//         grad[0] = (atilde * L / T0) * (2.0 * numbers::PI / L) *
-//                   std::sin(2.0 * numbers::PI * x / L) *
-//                   std::sin(2.0 * numbers::PI * t / T0);
-//       }
-
-//     return grad;
-//   }
-
-//   virtual void
-//   vector_gradient(const Point<spacedim>            &p,
-//                   std::vector<Tensor<1, spacedim>> &gradients) const
-//                   override
-//   {
-//     Assert(gradients.size() == 2, ExcDimensionMismatch(gradients.size(),
-//     2)); gradients[0] = gradient(p, 0); gradients[1] = gradient(p, 1);
-//   }
-
-//   virtual void
-//   vector_value_list(const std::vector<Point<spacedim>> &points,
-//                     std::vector<Vector<double>> &value_list) const override
-//   {
-//     const unsigned int n = points.size();
-//     Assert(value_list.size() == n,
-//            ExcDimensionMismatch(value_list.size(), n));
-//     for (unsigned int i = 0; i < n; ++i)
-//       vector_value(points[i], value_list[i]);
-//   }
-
-//   // Getters for parameters
-//   double
-//   get_reference_area() const
-//   {
-//     return a0;
-//   }
-//   double
-//   get_amplitude() const
-//   {
-//     return atilde;
-//   }
-//   double
-//   get_length() const
-//   {
-//     return L;
-//   }
-//   double
-//   get_period() const
-//   {
-//     return T0;
-//   }
-// };
-
-//====================================================================
-// RIGHT-HAND SIDE FUNCTIONS (MANUFACTURED SOLUTION)
-//====================================================================
-
-/**
- * RHS A-forcing term f_a(x,t) for manufactured solution
- */
-// template <int spacedim>
-// class RHS_A_BloodFlow : public Function<spacedim>
-// {
-// private:
-//   double r0, a0, L, T0, atilde, qtilde;
-
-// public:
-//   RHS_A_BloodFlow()
-//     : Function<spacedim>(1)
-//     , r0(BloodFlowParameters::R0)
-//     , a0(numbers::PI * r0 * r0)
-//     , L(BloodFlowParameters::L)
-//     , T0(BloodFlowParameters::T0)
-//     , atilde(0.1 * a0)
-//     , qtilde(0.0)
-//   {}
-
-//   virtual double
-//   value(const Point<spacedim> &p,
-//         const unsigned int /*component*/ = 0) const override
-//   {
-//     const double x = p[0];
-//     const double t = this->get_time();
-
-//     // Forcing term from manufactured solution
-//     return std::sin(2.0 * numbers::PI * x / L) *
-//              std::sin(2.0 * numbers::PI * t / T0) *
-//              (-2.0 * numbers::PI / T0 * atilde +
-//               (a0 + atilde * std::sin(2.0 * numbers::PI * x / L) *
-//                       std::cos(2.0 * numbers::PI * t / T0)) *
-//                 2.0 * numbers::PI / T0 * atilde) +
-//            atilde * std::cos(2.0 * numbers::PI * x / L) *
-//              std::cos(2.0 * numbers::PI * t / T0) * (2.0 * numbers::PI / L)
-//              * (qtilde - (atilde * L / T0) *
-//                          std::cos(2.0 * numbers::PI * x / L) *
-//                          std::sin(2.0 * numbers::PI * t / T0));
-//   }
-// };
-
-// /**
-//  * RHS U-forcing term f_u(x,t) for manufactured solution
-//  */
-// template <int spacedim>
-// class RHS_U_BloodFlow : public Function<spacedim>
-// {
-// private:
-//   double r0, a0, L, T0, atilde, rho, elastic_modulus, viscosity_c, m;
-
-// public:
-//   RHS_U_BloodFlow()
-//     : Function<spacedim>(1)
-//     , r0(BloodFlowParameters::R0)
-//     , a0(numbers::PI * r0 * r0)
-//     , L(BloodFlowParameters::L)
-//     , T0(BloodFlowParameters::T0)
-//     , atilde(0.1 * a0)
-//     , rho(BloodFlowParameters::RHO)
-//     , elastic_modulus(BloodFlowParameters::ELASTIC_MODULUS)
-//     , viscosity_c(BloodFlowParameters::VISCOSITY_C)
-//     , m(BloodFlowParameters::TUBE_LAW_EXPONENT)
-//   {}
-
-//   virtual double
-//   value(const Point<spacedim> &p,
-//         const unsigned int /*component*/ = 0) const override
-//   {
-//     const double x = p[0];
-//     const double t = this->get_time();
-//     const double A = a0 + atilde * std::sin(2.0 * numbers::PI * x / L) *
-//                             std::cos(2.0 * numbers::PI * t / T0);
-
-//     return std::cos(2.0 * numbers::PI * x / L) *
-//              std::cos(2.0 * numbers::PI * t / T0) *
-//              (-L * L / (T0 * T0) + elastic_modulus / (rho * std::pow(a0,
-//              m)) *
-//                                      std::pow(A, m - 1)) +
-//            (atilde - (atilde * L / T0) * std::cos(2.0 * numbers::PI * x /
-//            L) *
-//                        std::sin(2.0 * numbers::PI * t / T0)) *
-//              ((2.0 * numbers::PI / T0) * atilde *
-//                 std::sin(2.0 * numbers::PI * x / L) *
-//                 std::sin(2.0 * numbers::PI * t / T0) +
-//               viscosity_c);
-//   }
-
-//   // Setters for runtime parameter updates
-//   void
-//   set_rho(double new_rho)
-//   {
-//     rho = new_rho;
-//   }
-//   void
-//   set_elastic_modulus(double new_E)
-//   {
-//     elastic_modulus = new_E;
-//   }
-//   void
-//   set_viscosity_c(double new_c)
-//   {
-//     viscosity_c = new_c;
-//   }
-// };
 
 //====================================================================
 // SCRATCH AND COPY DATA STRUCTURES
@@ -357,6 +264,8 @@ public:
   void
   assemble_system();
   void
+  assemble_junction_terms();
+  void
   assemble_mass_matrix();
   void
   solve();
@@ -376,6 +285,24 @@ public:
 private:
   ParsedTools::Constants    par;
   AffineConstraints<double> constraints;
+
+  std::vector<JunctionInfo>                         junctions;
+  std::map<unsigned int, std::vector<unsigned int>> junction_id_to_cells;
+
+  void
+  detect_bifurcation_junctions();
+
+  // Embedded 1D-3D network coupling
+  struct EmbeddedVessel
+  {
+    std::vector<Point<3>> centerline;      // 1D vessel path
+    std::vector<double>   radius;          // Vessel radius at each point
+    unsigned int          material_id = 0; // Vessel properties
+  };
+
+  std::vector<EmbeddedVessel> embedded_vessels;
+  std::vector<Point<3>>       hypersingular_points; // Key coupling points
+
   // --------------------------------------------------
   // ===  Physical and Constitutive Relations  ===
   // --------------------------------------------------
@@ -394,7 +321,7 @@ private:
 
   /**
    * Inverse function to compute area from wave speed (Newton method)
-   */
+  */
 
   double
   inverse_compute_area_from_c(double c_target) const

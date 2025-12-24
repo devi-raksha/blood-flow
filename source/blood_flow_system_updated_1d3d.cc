@@ -88,6 +88,184 @@ BloodFlowSystem<dim, spacedim>::initialize_params(const std::string &filename)
 }
 
 // ========================================================================
+// For junction handling
+// ========================================================================
+
+template <int dim, int spacedim>
+void
+BloodFlowSystem<dim, spacedim>::detect_bifurcation_junctions()
+{
+  junctions.clear();
+  junction_id_to_cells.clear();
+
+  // Get all non-manifold faces (Y-junctions)
+  auto non_manifold_faces = get_non_manifold_faces(dof_handler);
+
+  std::cout << " Found " << non_manifold_faces.size() << " Y-junctions"
+            << std::endl;
+
+  // For each junction, extract the junction point and cells
+  for (const auto &[face, cells] : non_manifold_faces)
+    {
+      // Get junction point (center of the face)
+      Point<spacedim> junction_pt = face->center();
+
+      std::cout << "\n  Junction at " << junction_pt << " has " << cells.size()
+                << " incident cells" << std::endl;
+
+      // Collect DOF information at this junction
+      JunctionInfo info;
+      info.point = junction_pt;
+
+      std::set<types::global_dof_index> unique_dofs;
+
+      // For each cell at the junction, collect DOFs
+      for (const auto &cell : cells)
+        {
+          std::vector<types::global_dof_index> cell_dofs(fe->n_dofs_per_cell());
+          cell->get_dof_indices(cell_dofs);
+
+          for (const auto dof : cell_dofs)
+            {
+              unique_dofs.insert(dof);
+            }
+        }
+
+      // Store DOF indices and values
+      info.dof_indices.assign(unique_dofs.begin(), unique_dofs.end());
+      info.dof_values.resize(info.dof_indices.size());
+
+      for (size_t i = 0; i < info.dof_indices.size(); ++i)
+        {
+          info.dof_values[i] = solution[info.dof_indices[i]];
+        }
+
+      // Store junction info and map junction ID to cells
+      junctions.push_back(info);
+      junction_id_to_cells[junctions.size() - 1] =
+        {}; // Clear vector for this junction ID
+
+      for (const auto &cell : cells)
+        {
+          junction_id_to_cells[junctions.size() - 1].push_back(cell->index());
+        }
+
+      std::cout << "    DOFs at junction: " << info.dof_indices.size()
+                << std::endl;
+    }
+}
+
+// ========================================================================
+// Assemble junction coupling terms
+// ========================================================================
+
+template <int dim, int spacedim>
+void
+BloodFlowSystem<dim, spacedim>::assemble_junction_terms()
+{
+  if (junctions.empty())
+    return;
+
+  for (size_t j = 0; j < junctions.size(); ++j)
+    {
+      const auto &cell_indices = junction_id_to_cells[j];
+
+      // Only handle bifurcation: exactly 3 cells
+      if (cell_indices.size() != 3)
+        continue;
+
+      // -----------------------------------------
+      // Extract (A,U) from each incident cell
+      // -----------------------------------------
+      double                  A[3], U[3];
+      types::global_dof_index dof_A[3], dof_U[3];
+
+      for (unsigned int k = 0; k < 3; ++k)
+        {
+          auto cell = dof_handler.begin_active();
+          std::advance(cell, cell_indices[k]);
+
+          std::vector<types::global_dof_index> dofs(fe->n_dofs_per_cell());
+          cell->get_dof_indices(dofs);
+
+          // Take FIRST DoF of each component 
+          for (unsigned int i = 0; i < fe->n_dofs_per_cell(); ++i)
+            {
+              const auto comp = fe->system_to_component_index(i).first;
+              if (comp == 0)
+                {
+                  A[k]     = solution[dofs[i]];
+                  dof_A[k] = dofs[i];
+                  break;
+                }
+            }
+
+          for (unsigned int i = 0; i < fe->n_dofs_per_cell(); ++i)
+            {
+              const auto comp = fe->system_to_component_index(i).first;
+              if (comp == 1)
+                {
+                  U[k]     = solution[dofs[i]];
+                  dof_U[k] = dofs[i];
+                  break;
+                }
+            }
+        }
+
+      // -----------------------------------------
+      // Residuals
+      // -----------------------------------------
+      const double R_mass = A[0] * U[0] - A[1] * U[1] - A[2] * U[2];
+
+      const double P1 = compute_pressure_value(A[0]);
+      const double P2 = compute_pressure_value(A[1]);
+      const double P3 = compute_pressure_value(A[2]);
+
+      const double R_p2 = P1 - P2;
+      const double R_p3 = P1 - P3;
+
+      // -----------------------------------------
+      // Add residuals (distributed)
+      // -----------------------------------------
+      residual_vector[dof_A[0]] += R_mass;
+      residual_vector[dof_U[0]] += R_mass;
+
+      residual_vector[dof_A[1]] -= R_mass;
+      residual_vector[dof_U[1]] -= R_mass;
+
+      residual_vector[dof_A[2]] -= R_mass;
+      residual_vector[dof_U[2]] -= R_mass;
+
+      residual_vector[dof_A[0]] += R_p2 + R_p3;
+      residual_vector[dof_A[1]] -= R_p2;
+      residual_vector[dof_A[2]] -= R_p3;
+
+      // -----------------------------------------
+      // Jacobian
+      // -----------------------------------------
+
+      // Mass conservation derivatives
+      jacobian_matrix.add(dof_A[0], dof_U[0], U[0]);
+      jacobian_matrix.add(dof_U[0], dof_A[0], A[0]);
+
+      jacobian_matrix.add(dof_A[1], dof_U[1], -U[1]);
+      jacobian_matrix.add(dof_U[1], dof_A[1], -A[1]);
+
+      jacobian_matrix.add(dof_A[2], dof_U[2], -U[2]);
+      jacobian_matrix.add(dof_U[2], dof_A[2], -A[2]);
+
+      // Pressure continuity derivatives
+      const double dP1 = compute_pressure_derivative(A[0]);
+      const double dP2 = compute_pressure_derivative(A[1]);
+      const double dP3 = compute_pressure_derivative(A[2]);
+
+      jacobian_matrix.add(dof_A[0], dof_A[0], dP1);
+      jacobian_matrix.add(dof_A[1], dof_A[1], dP2);
+      jacobian_matrix.add(dof_A[2], dof_A[2], dP3);
+    }
+}
+
+// ========================================================================
 // SETUP SYSTEM
 // ========================================================================
 
@@ -103,6 +281,8 @@ BloodFlowSystem<dim, spacedim>::setup_system()
     }
 
   dof_handler.distribute_dofs(*fe);
+
+  detect_bifurcation_junctions();
 
   DynamicSparsityPattern dsp(dof_handler.n_dofs());
   DoFTools::make_flux_sparsity_pattern(dof_handler, dsp);
@@ -579,6 +759,7 @@ BloodFlowSystem<dim, spacedim>::assemble_system()
   //                             MeshWorker::assemble_own_interior_faces_once,
   //                           null_boundary,
   //                           face_worker);
+  assemble_junction_terms();
 }
 
 // ========================================================================
@@ -797,6 +978,97 @@ BloodFlowSystem<dim, spacedim>::compute_errors(unsigned int k)
   last_Velocity_H1_error = Velocity_H1_error;
 }
 
+// template <int dim, int spacedim>
+// void
+// BloodFlowSystem<dim, spacedim>::assemble_junction_terms()
+// {
+//   const double rho = density; // blood density
+
+//   for (const auto &junction : junctions)
+//     {
+//       // --------------------------------------------
+//       // Extract vessels
+//       // --------------------------------------------
+//       const auto &v_parent = junction.parent;
+//       const auto &v_d1     = junction.daughter1;
+//       const auto &v_d2     = junction.daughter2;
+
+//       // --------------------------------------------
+//       // Get DoF indices
+//       // --------------------------------------------
+//       std::vector<types::global_dof_index> dofs_p(fe->n_dofs_per_cell());
+//       std::vector<types::global_dof_index> dofs_d1(fe->n_dofs_per_cell());
+//       std::vector<types::global_dof_index> dofs_d2(fe->n_dofs_per_cell());
+
+//       v_parent.cell->get_dof_indices(dofs_p);
+//       v_d1.cell->get_dof_indices(dofs_d1);
+//       v_d2.cell->get_dof_indices(dofs_d2);
+
+//       // --------------------------------------------
+//       // Extract solution values at junction
+//       // (DG → take trace at endpoint)
+//       // --------------------------------------------
+//       const double A1 = solution[dofs_p[0]];
+//       const double U1 = solution[dofs_p[1]];
+
+//       const double A2 = solution[dofs_d1[0]];
+//       const double U2 = solution[dofs_d1[1]];
+
+//       const double A3 = solution[dofs_d2[0]];
+//       const double U3 = solution[dofs_d2[1]];
+
+//       // --------------------------------------------
+//       // Wave speeds
+//       // --------------------------------------------
+//       const double c1 = std::sqrt(A1 / (2.0 * rho));
+//       const double c2 = std::sqrt(A2 / (2.0 * rho));
+//       const double c3 = std::sqrt(A3 / (2.0 * rho));
+
+//       // --------------------------------------------
+//       // Old characteristic values (from previous time)
+//       // --------------------------------------------
+//       const double W1_plus_old  = junction.W1_plus_old;
+//       const double W2_minus_old = junction.W2_minus_old;
+//       const double W3_minus_old = junction.W3_minus_old;
+
+//       // --------------------------------------------
+//       // Residuals (3 characteristic equations)
+//       // --------------------------------------------
+//       const double R1 = U1 + 4.0 * c1 - W1_plus_old;
+//       const double R2 = U2 - 4.0 * c2 - W2_minus_old;
+//       const double R3 = U3 - 4.0 * c3 - W3_minus_old;
+
+//       // --------------------------------------------
+//       // Add to residual vector
+//       // --------------------------------------------
+//       residual_vector[dofs_p[1]] += R1;
+//       residual_vector[dofs_d1[1]] += R2;
+//       residual_vector[dofs_d2[1]] += R3;
+
+//       // --------------------------------------------
+//       // Jacobian contributions
+//       // c(A) = sqrt(A / (2 rho))
+//       // dc/dA = 1 / (4 rho c)
+//       // --------------------------------------------
+//       const double dc1_dA = 1.0 / (4.0 * rho * c1);
+//       const double dc2_dA = 1.0 / (4.0 * rho * c2);
+//       const double dc3_dA = 1.0 / (4.0 * rho * c3);
+
+//       // ---- Parent vessel Jacobian
+//       jacobian_matrix.add(dofs_p[1], dofs_p[1], 1.0);          // ∂R1/∂U1
+//       jacobian_matrix.add(dofs_p[1], dofs_p[0], 4.0 * dc1_dA); // ∂R1/∂A1
+
+//       // ---- Daughter 1
+//       jacobian_matrix.add(dofs_d1[1], dofs_d1[1], 1.0);           // ∂R2/∂U2
+//       jacobian_matrix.add(dofs_d1[1], dofs_d1[0], -4.0 * dc2_dA); // ∂R2/∂A2
+
+//       // ---- Daughter 2
+//       jacobian_matrix.add(dofs_d2[1], dofs_d2[1], 1.0);           // ∂R3/∂U3
+//       jacobian_matrix.add(dofs_d2[1], dofs_d2[0], -4.0 * dc3_dA); // ∂R3/∂A3
+//     }
+// }
+
+
 // ========================================================================
 // RUN CONVERGENCE STUDY WITH NEWTON ITERATION
 // ========================================================================
@@ -912,6 +1184,12 @@ BloodFlowSystem<dim, spacedim>::run_convergence_study()
                 }
             }
           while (!converged);
+
+          // if (converged && !junctions.empty())
+          //    {
+          //      apply_junction_coupling();
+          //    }
+          // Update solution at new time level
 
           solution_old = solution;
           compute_pressure();
