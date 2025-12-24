@@ -76,9 +76,6 @@ void test()
 
 int main()
 {
-    deallog.depth_console(0);
-
-    test();
-
-    return 0;
+  initlog();
+  test();
 }
