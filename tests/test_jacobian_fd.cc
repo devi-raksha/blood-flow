@@ -1,80 +1,87 @@
-#include "../include/blood_flow_system_updated_1d3d.h"
-#include <deal.II/grid/grid_generator.h>
 #include <deal.II/base/logstream.h>
+
+#include <deal.II/grid/grid_generator.h>
+
+#include "../include/blood_flow_system_updated_1d3d.h"
 
 using namespace dealii;
 
-template<int dim, int spacedim>
-void test()
+#include "tests.h"
+
+void
+test()
 {
-    BloodFlowSystem<dim, spacedim> problem;
+  constexpr unsigned int         dim      = 1;
+  constexpr unsigned int         spacedim = 3;
+  BloodFlowSystem<dim, spacedim> problem;
 
-    problem.initialize_params("parameters.prm");
+  problem.initialize_params(PRM_DIR "jacobian_fd.prm");
 
-    // Build mesh & system
-    GridGenerator::hyper_cube(problem.triangulation, 0.0, 1.0);
-    problem.triangulation.refine_global(problem.n_global_refinements);
+  // Build mesh & system
+  GridGenerator::hyper_cube(problem.triangulation, 0.0, 1.0);
+  problem.triangulation.refine_global(problem.n_global_refinements);
 
-    problem.setup_system();
+  problem.setup_system();
 
-    // Set initial solution
-    problem.solution = 0;
-    problem.solution_old = 0;
-    problem.time = 0.0;
+  // Set initial solution
+  problem.solution     = 0;
+  problem.solution_old = 0;
+  problem.time         = 0.0;
 
-    // Must compute residual once to initialize old state if used
-    problem.assemble_system();
+  // Must compute residual once to initialize old state if used
+  problem.assemble_system();
 
-    const unsigned int n = problem.solution.size();
-    const double eps = 1e-8;
+  const unsigned int n   = problem.solution.size();
+  const double       eps = 1e-8;
 
-    Vector<double> Jcol(n), FDcol(n);
+  Vector<double> Jcol(n), FDcol(n);
 
-    double max_err = 0.0;
+  double max_err = 0.0;
 
-    for (unsigned int j = 0; j < n; ++j)
+  for (unsigned int j = 0; j < n; ++j)
     {
-        // --- Build y+ and y− ---
-        Vector<double> y_plus = problem.solution;
-        Vector<double> y_minus = problem.solution;
+      // --- Build y+ and y− ---
+      Vector<double> y_plus  = problem.solution;
+      Vector<double> y_minus = problem.solution;
 
-        y_plus[j]  += eps;
-        y_minus[j] -= eps;
+      y_plus[j] += eps;
+      y_minus[j] -= eps;
 
-        // --- Compute F(y+) ---
-        problem.solution = y_plus;
-        problem.assemble_system();           // fills residual_vector
-        Vector<double> F_plus = problem.residual_vector;
+      // --- Compute F(y+) ---
+      problem.solution = y_plus;
+      problem.assemble_system(); // fills residual_vector
+      Vector<double> F_plus = problem.residual_vector;
 
-        // --- Compute F(y−) ---
-        problem.solution = y_minus;
-        problem.assemble_system();
-        Vector<double> F_minus = problem.residual_vector;
+      // --- Compute F(y−) ---
+      problem.solution = y_minus;
+      problem.assemble_system();
+      Vector<double> F_minus = problem.residual_vector;
 
-        // --- Central finite difference column ---
-        FDcol = F_plus;
-        FDcol.add(-1.0, F_minus);
-        FDcol /= (2.0 * eps);
+      // --- Central finite difference column ---
+      FDcol = F_plus;
+      FDcol.add(-1.0, F_minus);
+      FDcol /= (2.0 * eps);
 
-        // --- Extract Jacobian column: J e_j ---
-        Vector<double> ej(n), J_ej(n);
-        ej = 0.0;
-        ej[j] = 1.0;
-        problem.jacobian_matrix.vmult(J_ej, ej);
+      // --- Extract Jacobian column: J e_j ---
+      Vector<double> ej(n), J_ej(n);
+      ej    = 0.0;
+      ej[j] = 1.0;
+      problem.jacobian_matrix.vmult(J_ej, ej);
 
-        // --- Compare ---
-        Vector<double> diff = FDcol;
-        diff.add(-1.0, J_ej);
-        max_err = std::max(max_err, diff.linfty_norm());
+      // --- Compare ---
+      Vector<double> diff = FDcol;
+      diff.add(-1.0, J_ej);
+      max_err = std::max(max_err, diff.linfty_norm());
     }
 
-    std::cout << "\n========================================\n";
-    std::cout << " FINITE DIFFERENCE JACOBIAN CHECK\n";
-    std::cout << " max |FD - J|_inf = " << max_err << std::endl;
-    std::cout << "========================================\n";
+  deallog << "\n========================================\n";
+  deallog << " FINITE DIFFERENCE JACOBIAN CHECK\n";
+  deallog << " max |FD - J|_inf = " << max_err << std::endl;
+  deallog << "========================================\n";
 }
 
-int main()
+int
+main()
 {
   initlog();
   test();
