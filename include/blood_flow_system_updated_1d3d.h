@@ -281,6 +281,9 @@ public:
   compute_errors(unsigned int k);
   void
   run_convergence_study();
+  void
+  create_y_junction_mesh();
+
 
 private:
   ParsedTools::Constants    par;
@@ -321,7 +324,7 @@ private:
 
   /**
    * Inverse function to compute area from wave speed (Newton method)
-  */
+   */
 
   double
   inverse_compute_area_from_c(double c_target) const

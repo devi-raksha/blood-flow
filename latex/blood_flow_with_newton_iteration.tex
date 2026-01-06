@@ -753,6 +753,48 @@ Supercritical outflow & $A^-$ & $U^-$ & $(\delta A^-,\ \delta U^-)$ \\
 \label{tab:bd-newton}
 \end{table}
 
+\section{Junction Conditions}
+Based on sections $6.3$ and $6.4$ from the Formaggia et al. paper we have following junction conditions
+
+\begin{figure}
+    \centering
+    \includegraphics[width=0.5\linewidth]{arterial_tree_bifurcation.png}
+    \caption{Arterial tree bifurcation: Notations.}
+    \label{fig:arterial-tree}
+\end{figure}
+
+For each element $e$, $e+1$ and $e+2$ a function $f$ is continuous but it may be discontinuous at point $x= x_e^u = x^l_{e+1} = x^{l}_{e+2}$ at the interface between three elements (see figure \ref{fig:arterial-tree}). \\
+At the bifurcation we have three unknowns $(A_1, U_1)$ in the parent vessel, $(A_{11}, U_{11})$ in the upper vessel and $(A_{12}, U_{12})$ in the lower daughter vessel. \\
+The first three equations required to solve the problem are obtained by imposing that the characteristic variables at point $x$ in each vessel should remain constant. Their values are : 
+\begin{align}
+    W_1 = U_1 + 4 c_1 &= U_1 + 4 \sqrt{\frac{\mu m}{\rho} \left(\frac{A_1}{A_{1_0}} \right)^m} = \text{ constant }. \label{characteristic_1} \\ 
+    W_{11} &= U_{11} -  4 \sqrt{\frac{\mu m}{\rho} \left(\frac{A_{11}}{A_{11_0}} \right)^m}= \text{ constant }. \label{characteristic_2} \\ 
+    W_{12} &= U_{12} -  4 \sqrt{\frac{\mu m}{\rho} \left(\frac{A_{12}}{A_{12_0}} \right)^m} = \text{ constant }.  \label{characteristic_3}
+\end{align}
+The other three conditions are required to solve the problem are obtained by the continuity of mass flux and total pressure across the boundary of elements at the bifurcation, i.e. 
+\begin{align}
+    A_1 U_1 &= U_{11}A_{11} + U_{12}A_{12}. \label{mass_equation}\\
+    P_{1_{0}} + \mu \left[ \left( \frac{A_1}{A_{{1}_0}}\right)^m - 1 \right] &= P_{11_{0}} + \mu \left[ \left( \frac{A_{11}}{A_{{11}_0}}\right)^m - 1 \right] . \label{pressure_cont_1} \\
+    P_{1_{0}} + \mu \left[ \left( \frac{A_1}{A_{{1}_0}}\right)^m - 1 \right] &= P_{12_{0}} + \mu \left[ \left( \frac{A_{12}}{A_{{12}_0}}\right)^m - 1 \right] . \label{pressure_cont_2}
+\end{align}
+
+The six equations given by \ref{characteristic_1}--\ref{pressure_cont_2} define a nonlinear system of algebraic equations that determines the values of $(A_1,U_1)$ in the parent vessel and $(A_{11},U_{11})$, $(A_{12},U_{12})$ in the two daughter vessels at the bifurcation. In the \texttt{deal.II} framework, junction points are detected by identifying non-manifold faces using the function \texttt{get\_non\_manifold\_faces()}.
+
+For the numerical computation, we collect the unknowns into the vector
+\[
+X =
+\begin{pmatrix}
+A_1 \\[2pt]
+U_1 \\[2pt]
+A_{11} \\[2pt]
+U_{11} \\[2pt]
+A_{12} \\[2pt]
+U_{12}
+\end{pmatrix},
+\]
+and solve the nonlinear system defined by \eqref{characteristic_1}--\eqref{pressure_cont_2}. An initial guess for $X$ is obtained from the solution at the previous time level, corresponding to the traces of the numerical solution at the junction in each vessel. The resulting nonlinear system is solved by a Newton-type iteration, which is embedded consistently within the global implicit time-stepping scheme. This procedure ensures that the junction conditions are enforced implicitly at every time step while preserving stability and consistency of the overall discretization.
+
+
 
 \begin{remark}
 \begin{itemize}

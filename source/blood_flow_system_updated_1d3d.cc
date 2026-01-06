@@ -5,6 +5,11 @@
 #include <deal.II/base/function_parser.h>
 #include <deal.II/base/types.h>
 
+#include <deal.II/grid/grid_generator.h>
+#include <deal.II/grid/tria.h>
+#include <deal.II/grid/tria_accessor.h>
+#include <deal.II/grid/tria_iterator.h>
+
 #include <deal.II/lac/dynamic_sparsity_pattern.h>
 #include <deal.II/lac/sparse_direct.h>
 
@@ -88,7 +93,7 @@ BloodFlowSystem<dim, spacedim>::initialize_params(const std::string &filename)
 }
 
 // ========================================================================
-// For junction handling
+// For junction detection
 // ========================================================================
 
 template <int dim, int spacedim>
@@ -188,7 +193,7 @@ BloodFlowSystem<dim, spacedim>::assemble_junction_terms()
           std::vector<types::global_dof_index> dofs(fe->n_dofs_per_cell());
           cell->get_dof_indices(dofs);
 
-          // Take FIRST DoF of each component 
+          // Take FIRST DoF of each component
           for (unsigned int i = 0; i < fe->n_dofs_per_cell(); ++i)
             {
               const auto comp = fe->system_to_component_index(i).first;
@@ -282,7 +287,7 @@ BloodFlowSystem<dim, spacedim>::setup_system()
 
   dof_handler.distribute_dofs(*fe);
 
-  detect_bifurcation_junctions();
+  // detect_bifurcation_junctions();
 
   DynamicSparsityPattern dsp(dof_handler.n_dofs());
   DoFTools::make_flux_sparsity_pattern(dof_handler, dsp);
@@ -695,14 +700,14 @@ BloodFlowSystem<dim, spacedim>::assemble_system()
           }
 
         // ===== DEBUG OUTPUT =====
-        deallog.push("boundary_debug");
-        deallog << "BID=" << boundary_id << " q=" << q << " | A_int=" << A_int
-                << " U_int=" << U_int << " c=" << c_int
-                << " | lambda1=" << lambda1 << " lambda2=" << lambda2
-                << " | inlet=" << is_subcritical_inflow
-                << " outlet=" << is_subcritical_outflow << " | A_ext=" << A_ext
-                << " U_ext=" << U_ext << std::endl;
-        deallog.pop();
+        // deallog.push("boundary_debug");
+        // deallog << "BID=" << boundary_id << " q=" << q << " | A_int=" << A_int
+        //         << " U_int=" << U_int << " c=" << c_int
+        //         << " | lambda1=" << lambda1 << " lambda2=" << lambda2
+        //         << " | inlet=" << is_subcritical_inflow
+        //         << " outlet=" << is_subcritical_outflow << " | A_ext=" << A_ext
+        //         << " U_ext=" << U_ext << std::endl;
+        // deallog.pop();
       }
   };
 
@@ -745,20 +750,7 @@ BloodFlowSystem<dim, spacedim>::assemble_system()
                           MeshWorker::assemble_own_interior_faces_once,
                         boundary_worker,
                         face_worker);
-  // auto null_boundary = [](const auto &, const unsigned int, auto &, auto &) {
-  //     };
 
-  //     MeshWorker::mesh_loop(dof_handler.begin_active(),
-  //                           dof_handler.end(),
-  //                           cell_worker,
-  //                           copier,
-  //                           scratch_data,
-  //                           copy_data,
-  //                           MeshWorker::assemble_own_cells |
-  //                             MeshWorker::assemble_boundary_faces |
-  //                             MeshWorker::assemble_own_interior_faces_once,
-  //                           null_boundary,
-  //                           face_worker);
   assemble_junction_terms();
 }
 
@@ -978,97 +970,6 @@ BloodFlowSystem<dim, spacedim>::compute_errors(unsigned int k)
   last_Velocity_H1_error = Velocity_H1_error;
 }
 
-// template <int dim, int spacedim>
-// void
-// BloodFlowSystem<dim, spacedim>::assemble_junction_terms()
-// {
-//   const double rho = density; // blood density
-
-//   for (const auto &junction : junctions)
-//     {
-//       // --------------------------------------------
-//       // Extract vessels
-//       // --------------------------------------------
-//       const auto &v_parent = junction.parent;
-//       const auto &v_d1     = junction.daughter1;
-//       const auto &v_d2     = junction.daughter2;
-
-//       // --------------------------------------------
-//       // Get DoF indices
-//       // --------------------------------------------
-//       std::vector<types::global_dof_index> dofs_p(fe->n_dofs_per_cell());
-//       std::vector<types::global_dof_index> dofs_d1(fe->n_dofs_per_cell());
-//       std::vector<types::global_dof_index> dofs_d2(fe->n_dofs_per_cell());
-
-//       v_parent.cell->get_dof_indices(dofs_p);
-//       v_d1.cell->get_dof_indices(dofs_d1);
-//       v_d2.cell->get_dof_indices(dofs_d2);
-
-//       // --------------------------------------------
-//       // Extract solution values at junction
-//       // (DG → take trace at endpoint)
-//       // --------------------------------------------
-//       const double A1 = solution[dofs_p[0]];
-//       const double U1 = solution[dofs_p[1]];
-
-//       const double A2 = solution[dofs_d1[0]];
-//       const double U2 = solution[dofs_d1[1]];
-
-//       const double A3 = solution[dofs_d2[0]];
-//       const double U3 = solution[dofs_d2[1]];
-
-//       // --------------------------------------------
-//       // Wave speeds
-//       // --------------------------------------------
-//       const double c1 = std::sqrt(A1 / (2.0 * rho));
-//       const double c2 = std::sqrt(A2 / (2.0 * rho));
-//       const double c3 = std::sqrt(A3 / (2.0 * rho));
-
-//       // --------------------------------------------
-//       // Old characteristic values (from previous time)
-//       // --------------------------------------------
-//       const double W1_plus_old  = junction.W1_plus_old;
-//       const double W2_minus_old = junction.W2_minus_old;
-//       const double W3_minus_old = junction.W3_minus_old;
-
-//       // --------------------------------------------
-//       // Residuals (3 characteristic equations)
-//       // --------------------------------------------
-//       const double R1 = U1 + 4.0 * c1 - W1_plus_old;
-//       const double R2 = U2 - 4.0 * c2 - W2_minus_old;
-//       const double R3 = U3 - 4.0 * c3 - W3_minus_old;
-
-//       // --------------------------------------------
-//       // Add to residual vector
-//       // --------------------------------------------
-//       residual_vector[dofs_p[1]] += R1;
-//       residual_vector[dofs_d1[1]] += R2;
-//       residual_vector[dofs_d2[1]] += R3;
-
-//       // --------------------------------------------
-//       // Jacobian contributions
-//       // c(A) = sqrt(A / (2 rho))
-//       // dc/dA = 1 / (4 rho c)
-//       // --------------------------------------------
-//       const double dc1_dA = 1.0 / (4.0 * rho * c1);
-//       const double dc2_dA = 1.0 / (4.0 * rho * c2);
-//       const double dc3_dA = 1.0 / (4.0 * rho * c3);
-
-//       // ---- Parent vessel Jacobian
-//       jacobian_matrix.add(dofs_p[1], dofs_p[1], 1.0);          // ∂R1/∂U1
-//       jacobian_matrix.add(dofs_p[1], dofs_p[0], 4.0 * dc1_dA); // ∂R1/∂A1
-
-//       // ---- Daughter 1
-//       jacobian_matrix.add(dofs_d1[1], dofs_d1[1], 1.0);           // ∂R2/∂U2
-//       jacobian_matrix.add(dofs_d1[1], dofs_d1[0], -4.0 * dc2_dA); // ∂R2/∂A2
-
-//       // ---- Daughter 2
-//       jacobian_matrix.add(dofs_d2[1], dofs_d2[1], 1.0);           // ∂R3/∂U3
-//       jacobian_matrix.add(dofs_d2[1], dofs_d2[0], -4.0 * dc3_dA); // ∂R3/∂A3
-//     }
-// }
-
-
 // ========================================================================
 // RUN CONVERGENCE STUDY WITH NEWTON ITERATION
 // ========================================================================
@@ -1086,10 +987,31 @@ BloodFlowSystem<dim, spacedim>::run_convergence_study()
 
       if (cycle == 0)
         {
-          // GridGenerator::hyper_cube(triangulation);
-          GridGenerator::hyper_cube(triangulation, 0.0, 1); // 1 cm
+          // // GridGenerator::hyper_cube(triangulation, 0.0, 1); // 1 cm
+          // create_y_junction_mesh();
 
-          triangulation.refine_global(n_global_refinements);
+          triangulation.clear();
+
+          const unsigned int N = 1;
+
+          // 1D meshes embedded in 3D
+          Triangulation<1, 3> parent, d1, d2;
+
+          // Parent vessel: [0,1]
+          GridGenerator::subdivided_hyper_rectangle(
+            parent, std::vector<unsigned int>{N}, Point<1>(0.0), Point<1>(1.0));
+
+          // Daughter 1: [1,2]
+          GridGenerator::subdivided_hyper_rectangle(
+            d1, std::vector<unsigned int>{N}, Point<1>(1.0), Point<1>(2.0));
+
+          // Daughter 2: [1,2]
+          GridGenerator::subdivided_hyper_rectangle(
+            d2, std::vector<unsigned int>{N}, Point<1>(1.0), Point<1>(2.0));
+
+          // non-manifold junction
+          GridGenerator::merge_triangulations(parent, d1, triangulation);
+          GridGenerator::merge_triangulations(triangulation, d2, triangulation);
         }
       else
         {
@@ -1107,6 +1029,7 @@ BloodFlowSystem<dim, spacedim>::run_convergence_study()
                            initial_condition,
                            solution);
 
+      detect_bifurcation_junctions();
       solution_old = solution;
       compute_pressure();
       output_results(0);
