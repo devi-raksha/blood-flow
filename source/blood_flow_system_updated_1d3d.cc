@@ -5,6 +5,7 @@
 #include <deal.II/base/function_parser.h>
 #include <deal.II/base/types.h>
 
+#include <deal.II/grid/cell_data.h>
 #include <deal.II/grid/grid_generator.h>
 #include <deal.II/grid/tria.h>
 #include <deal.II/grid/tria_accessor.h>
@@ -192,6 +193,9 @@ BloodFlowSystem<dim, spacedim>::assemble_junction_terms()
 
           std::vector<types::global_dof_index> dofs(fe->n_dofs_per_cell());
           cell->get_dof_indices(dofs);
+
+          cell->vertex_dof_index(cell_junction_vertex_index, 0); // area
+          cell->vertex_dof_index(cell_junction_vertex_index, 1); // velocity
 
           // Take FIRST DoF of each component
           for (unsigned int i = 0; i < fe->n_dofs_per_cell(); ++i)
@@ -460,6 +464,8 @@ BloodFlowSystem<dim, spacedim>::assemble_system()
                          const unsigned int                   nsf,
                          BloodFlowScratchData<dim, spacedim> &scratch,
                          BloodFlowCopyData                   &copy) {
+    // is this a junction? If yes skip
+
     FEInterfaceValues<dim, spacedim> &fe_iv = scratch.fe_interface_values;
     fe_iv.reinit(cell, f, sf, ncell, nf, nsf);
 
@@ -994,24 +1000,53 @@ BloodFlowSystem<dim, spacedim>::run_convergence_study()
 
           const unsigned int N = 1;
 
-          // 1D meshes embedded in 3D
-          Triangulation<1, 3> parent, d1, d2;
+          if constexpr (dim == 1 && spacedim == 3)
+            {
+              std::vector<Point<3>> vertices;
 
-          // Parent vessel: [0,1]
-          GridGenerator::subdivided_hyper_rectangle(
-            parent, std::vector<unsigned int>{N}, Point<1>(0.0), Point<1>(1.0));
+              vertices.push_back(Point<3>());
+              vertices.push_back(Point<3>(0, .5, 0));
+              vertices.push_back(Point<3>(-.5, 1, 0));
+              vertices.push_back(Point<3>(.5, 1, 0));
 
-          // Daughter 1: [1,2]
-          GridGenerator::subdivided_hyper_rectangle(
-            d1, std::vector<unsigned int>{N}, Point<1>(1.0), Point<1>(2.0));
+              std::vector<CellData<1>> cells(3);
+              cells[0].vertices[0] = 0;
+              cells[0].vertices[1] = 1;
+              cells[1].vertices[0] = 1;
+              cells[1].vertices[1] = 2;
+              cells[2].vertices[0] = 1;
+              cells[2].vertices[1] = 3;
 
-          // Daughter 2: [1,2]
-          GridGenerator::subdivided_hyper_rectangle(
-            d2, std::vector<unsigned int>{N}, Point<1>(1.0), Point<1>(2.0));
+              triangulation.create_triangulation(vertices,
+                                                 cells,
+                                                 SubCellData());
+            }
+          else
+            {
+              // 1D meshes embedded in 3D
+              Triangulation<1, 3> parent, d1, d2;
 
-          // non-manifold junction
-          GridGenerator::merge_triangulations(parent, d1, triangulation);
-          GridGenerator::merge_triangulations(triangulation, d2, triangulation);
+              // Parent vessel: [0,1]
+              GridGenerator::subdivided_hyper_rectangle(
+                parent,
+                std::vector<unsigned int>{N},
+                Point<1>(0.0),
+                Point<1>(1.0));
+
+              // Daughter 1: [1,2]
+              GridGenerator::subdivided_hyper_rectangle(
+                d1, std::vector<unsigned int>{N}, Point<1>(1.0), Point<1>(2.0));
+
+              // Daughter 2: [1,2]
+              GridGenerator::subdivided_hyper_rectangle(
+                d2, std::vector<unsigned int>{N}, Point<1>(1.0), Point<1>(2.0));
+
+              // non-manifold junction
+              GridGenerator::merge_triangulations(parent, d1, triangulation);
+              GridGenerator::merge_triangulations(triangulation,
+                                                  d2,
+                                                  triangulation);
+            }
         }
       else
         {

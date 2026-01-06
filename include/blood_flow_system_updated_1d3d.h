@@ -289,8 +289,11 @@ private:
   ParsedTools::Constants    par;
   AffineConstraints<double> constraints;
 
-  std::vector<JunctionInfo>                         junctions;
-  std::map<unsigned int, std::vector<unsigned int>> junction_id_to_cells;
+  std::vector<JunctionInfo> junctions;
+  std::map<
+    unsigned int,
+    std::vector<std::pair<decltype(dof_handler.begin_active()), unsigned int>>>
+    junction_id_to_cells;
 
   void
   detect_bifurcation_junctions();
