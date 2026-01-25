@@ -102,175 +102,180 @@ void
 BloodFlowSystem<dim, spacedim>::detect_bifurcation_junctions()
 {
   junctions.clear();
-  junction_id_to_cells.clear();
 
-  // Get all non-manifold faces (Y-junctions)
-  auto non_manifold_faces = get_non_manifold_faces(dof_handler);
+  const unsigned int n_vertices = triangulation.n_vertices();
 
-  std::cout << " Found " << non_manifold_faces.size() << " Y-junctions"
-            << std::endl;
-
-  // For each junction, extract the junction point and cells
-  for (const auto &[face, cells] : non_manifold_faces)
+  for (unsigned int v = 0; v < n_vertices; ++v)
     {
-      // Get junction point (center of the face)
-      Point<spacedim> junction_pt = face->center();
+      std::vector<typename JunctionInfo::FaceData> incident_faces;
 
-      std::cout << "\n  Junction at " << junction_pt << " has " << cells.size()
-                << " incident cells" << std::endl;
-
-      // Collect DOF information at this junction
-      JunctionInfo info;
-      info.point = junction_pt;
-
-      std::set<types::global_dof_index> unique_dofs;
-
-      // For each cell at the junction, collect DOFs
-      for (const auto &cell : cells)
+      for (const auto &cell : dof_handler.active_cell_iterators())
         {
-          std::vector<types::global_dof_index> cell_dofs(fe->n_dofs_per_cell());
-          cell->get_dof_indices(cell_dofs);
-
-          for (const auto dof : cell_dofs)
+          for (unsigned int f = 0; f < GeometryInfo<dim>::faces_per_cell; ++f)
             {
-              unique_dofs.insert(dof);
+              // face corresponds to vertex in 1D
+              if (cell->face(f)->vertex(0) == triangulation.get_vertices()[v])
+                {
+                  typename JunctionInfo::FaceData fd;
+                  fd.cell    = cell;
+                  fd.face_no = f;
+                  incident_faces.push_back(fd);
+                }
             }
         }
 
-      // Store DOF indices and values
-      info.dof_indices.assign(unique_dofs.begin(), unique_dofs.end());
-      info.dof_values.resize(info.dof_indices.size());
-
-      for (size_t i = 0; i < info.dof_indices.size(); ++i)
+      // Y-junction = exactly 3 incident cells
+      if (incident_faces.size() == 3)
         {
-          info.dof_values[i] = solution[info.dof_indices[i]];
+          JunctionInfo J;
+          J.point = triangulation.get_vertices()[v];
+
+          // first = parent (temporary choice)
+          J.parent = incident_faces[0];
+          J.daughters.push_back(incident_faces[1]);
+          J.daughters.push_back(incident_faces[2]);
+
+          junctions.push_back(J);
+
+          std::cout << "Detected DG Y-junction at vertex " << v << " : "
+                    << J.point << std::endl;
         }
-
-      // Store junction info and map junction ID to cells
-      junctions.push_back(info);
-      junction_id_to_cells[junctions.size() - 1] =
-        {}; // Clear vector for this junction ID
-
-      for (const auto &cell : cells)
-        {
-          junction_id_to_cells[junctions.size() - 1].push_back(cell->index());
-        }
-
-      std::cout << "    DOFs at junction: " << info.dof_indices.size()
-                << std::endl;
     }
 }
 
+
+
 // ========================================================================
-// Assemble junction coupling terms
+// ASSEMBLE JUNCTION TERMS
 // ========================================================================
 
 template <int dim, int spacedim>
 void
 BloodFlowSystem<dim, spacedim>::assemble_junction_terms()
 {
+  if (fe->dofs_per_vertex > 0)
+    return; // CG not supported
   if (junctions.empty())
     return;
 
-  for (size_t j = 0; j < junctions.size(); ++j)
+  const FEValuesExtractors::Scalar area(0);
+  const FEValuesExtractors::Scalar velocity(1);
+
+  QGauss<dim - 1>             quad(1);
+  FEFaceValues<dim, spacedim> fe_face(*fe,
+                                      quad,
+                                      update_values | update_JxW_values);
+
+  for (const auto &J : junctions)
     {
-      const auto &cell_indices = junction_id_to_cells[j];
+      Assert(J.daughters.size() == 2, ExcInternalError());
 
-      // Only handle bifurcation: exactly 3 cells
-      if (cell_indices.size() != 3)
-        continue;
-
-      // -----------------------------------------
-      // Extract (A,U) from each incident cell
-      // -----------------------------------------
-      double                  A[3], U[3];
-      types::global_dof_index dof_A[3], dof_U[3];
-
-      for (unsigned int k = 0; k < 3; ++k)
-        {
-          auto cell = dof_handler.begin_active();
-          std::advance(cell, cell_indices[k]);
-
+      // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+      // 1. Extract DG traces
+      // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+      auto get_trace =
+        [&](const JunctionInfo::FaceData &fd, double &A, double &U) {
+          fe_face.reinit(fd.cell, fd.face_no);
+          const unsigned int                   q = 0;
           std::vector<types::global_dof_index> dofs(fe->n_dofs_per_cell());
-          cell->get_dof_indices(dofs);
+          fd.cell->get_dof_indices(dofs);
 
-          cell->vertex_dof_index(cell_junction_vertex_index, 0); // area
-          cell->vertex_dof_index(cell_junction_vertex_index, 1); // velocity
-
-          // Take FIRST DoF of each component
+          A = U = 0.0;
           for (unsigned int i = 0; i < fe->n_dofs_per_cell(); ++i)
             {
-              const auto comp = fe->system_to_component_index(i).first;
+              const unsigned int comp = fe->system_to_component_index(i).first;
+              const double       phi  = fe_face.shape_value(i, q);
+              const double       val  = solution(dofs[i]);
               if (comp == 0)
-                {
-                  A[k]     = solution[dofs[i]];
-                  dof_A[k] = dofs[i];
-                  break;
-                }
-            }
-
-          for (unsigned int i = 0; i < fe->n_dofs_per_cell(); ++i)
-            {
-              const auto comp = fe->system_to_component_index(i).first;
+                A += val * phi;
               if (comp == 1)
-                {
-                  U[k]     = solution[dofs[i]];
-                  dof_U[k] = dofs[i];
-                  break;
-                }
+                U += val * phi;
             }
+        };
+
+      double Ap, Up, Ad[2], Ud[2];
+      get_trace(J.parent, Ap, Up);
+      get_trace(J.daughters[0], Ad[0], Ud[0]);
+      get_trace(J.daughters[1], Ad[1], Ud[1]);
+
+      // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+      // 2. Characteristic variables
+      // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+      const double cp  = compute_wave_speed(Ap);
+      const double cd1 = compute_wave_speed(Ad[0]);
+      const double cd2 = compute_wave_speed(Ad[1]);
+
+      // Incoming characteristics
+      const double Wp_minus = Up - 4.0 * cp;
+      const double Wd1_plus = Ud[0] + 4.0 * cd1;
+      const double Wd2_plus = Ud[1] + 4.0 * cd2;
+
+      // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+      // 3. Solve junction coupling
+      // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+      // Area-weighted pressure
+      double       total_area = Ap + Ad[0] + Ad[1];
+      const double Pstar      = (Ap * compute_pressure_value(Ap) +
+                            Ad[0] * compute_pressure_value(Ad[0]) +
+                            Ad[1] * compute_pressure_value(Ad[1])) /
+                           total_area;
+
+      // Wave speeds at junction
+      const double Astar_p  = compute_area_from_pressure(Pstar);
+      const double Astar_d1 = compute_area_from_pressure(Pstar);
+      const double Astar_d2 = compute_area_from_pressure(Pstar);
+
+      const double cstar_p  = compute_wave_speed(Astar_p);
+      const double cstar_d1 = compute_wave_speed(Astar_d1);
+      const double cstar_d2 = compute_wave_speed(Astar_d2);
+
+      // USE characteristic invariants for velocities
+      const double Ustar_p  = Wp_minus + cstar_p;
+      const double Ustar_d1 = Wd1_plus - cstar_d1;
+      const double Ustar_d2 = Wd2_plus - cstar_d2;
+
+      // Mass conservation from characteristics
+      const double Qp  = Astar_p * Ustar_p;
+      const double Qd1 = Astar_d1 * Ustar_d1;
+      const double Qd2 = Astar_d2 * Ustar_d2;
+
+      // Diagnostic: check conservation
+      double mass_error = std::abs(Qp - (Qd1 + Qd2)) / (std::abs(Qp) + 1e-16);
+      if (mass_error > 1e-3)
+        {
+          std::cout << " Mass conservation error at junction: " << mass_error
+                    << "\n";
         }
 
-      // -----------------------------------------
-      // Residuals
-      // -----------------------------------------
-      const double R_mass = A[0] * U[0] - A[1] * U[1] - A[2] * U[2];
+      // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+      // 4. DG residual contribution
+      // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+      auto assemble_face =
+        [&](const JunctionInfo::FaceData &fd, double Fm, double Fp) {
+          fe_face.reinit(fd.cell, fd.face_no);
+          std::vector<types::global_dof_index> dofs(fe->n_dofs_per_cell());
+          fd.cell->get_dof_indices(dofs);
 
-      const double P1 = compute_pressure_value(A[0]);
-      const double P2 = compute_pressure_value(A[1]);
-      const double P3 = compute_pressure_value(A[2]);
+          for (unsigned int i = 0; i < fe->n_dofs_per_cell(); ++i)
+            {
+              const unsigned int comp = fe->system_to_component_index(i).first;
+              const double       phi  = fe_face.shape_value(i, 0);
+              const double       w    = fe_face.JxW(0);
 
-      const double R_p2 = P1 - P2;
-      const double R_p3 = P1 - P3;
+              if (comp == 1)
+                residual_vector[dofs[i]] += Fm * phi * w;
+              if (comp == 0)
+                residual_vector[dofs[i]] += Fp * phi * w;
+            }
+        };
 
-      // -----------------------------------------
-      // Add residuals (distributed)
-      // -----------------------------------------
-      residual_vector[dof_A[0]] += R_mass;
-      residual_vector[dof_U[0]] += R_mass;
+      // Parent: outgoing
+      assemble_face(J.parent, +Qp, +Pstar);
 
-      residual_vector[dof_A[1]] -= R_mass;
-      residual_vector[dof_U[1]] -= R_mass;
-
-      residual_vector[dof_A[2]] -= R_mass;
-      residual_vector[dof_U[2]] -= R_mass;
-
-      residual_vector[dof_A[0]] += R_p2 + R_p3;
-      residual_vector[dof_A[1]] -= R_p2;
-      residual_vector[dof_A[2]] -= R_p3;
-
-      // -----------------------------------------
-      // Jacobian
-      // -----------------------------------------
-
-      // Mass conservation derivatives
-      jacobian_matrix.add(dof_A[0], dof_U[0], U[0]);
-      jacobian_matrix.add(dof_U[0], dof_A[0], A[0]);
-
-      jacobian_matrix.add(dof_A[1], dof_U[1], -U[1]);
-      jacobian_matrix.add(dof_U[1], dof_A[1], -A[1]);
-
-      jacobian_matrix.add(dof_A[2], dof_U[2], -U[2]);
-      jacobian_matrix.add(dof_U[2], dof_A[2], -A[2]);
-
-      // Pressure continuity derivatives
-      const double dP1 = compute_pressure_derivative(A[0]);
-      const double dP2 = compute_pressure_derivative(A[1]);
-      const double dP3 = compute_pressure_derivative(A[2]);
-
-      jacobian_matrix.add(dof_A[0], dof_A[0], dP1);
-      jacobian_matrix.add(dof_A[1], dof_A[1], dP2);
-      jacobian_matrix.add(dof_A[2], dof_A[2], dP3);
+      // Daughters: incoming
+      assemble_face(J.daughters[0], -Qd1, -Pstar);
+      assemble_face(J.daughters[1], -Qd2, -Pstar);
     }
 }
 
@@ -1143,19 +1148,22 @@ BloodFlowSystem<dim, spacedim>::run_convergence_study()
             }
           while (!converged);
 
-          // if (converged && !junctions.empty())
-          //    {
-          //      apply_junction_coupling();
-          //    }
-          // Update solution at new time level
-
           solution_old = solution;
           compute_pressure();
           output_results(step);
         }
 
       // Compute errors at final time
-      compute_errors(cycle);
+      if (!junctions.empty())
+        {
+          std::cout
+            << "Skipping convergence study: junctions present "
+            << "(error norms not well-defined at non-manifold points).\n";
+        }
+      else
+        {
+          compute_errors(cycle);
+        }
     }
 }
 

@@ -47,99 +47,20 @@ struct JunctionConfiguration
   double mu, m, rho;       // parameters
 };
 
-
-// ========================================================================
-// JUNCTION HELPER STRUCTURES
-// ========================================================================
-
 struct JunctionInfo
 {
-  Point<3>                             point;
-  std::vector<types::global_dof_index> dof_indices;
-  std::vector<double>                  dof_values;
+  Point<3> point; // physical junction location
 
-  // Pack data for serialization/communication
-  void
-  pack(std::vector<char> &buffer) const
+  struct FaceData
   {
-    // Pack point coordinates (element by element)
-    for (unsigned int d = 0; d < 3; ++d)
-      {
-        const char *coord_data = reinterpret_cast<const char *>(&point[d]);
-        buffer.insert(buffer.end(), coord_data, coord_data + sizeof(double));
-      }
+    typename DoFHandler<1, 3>::active_cell_iterator cell;
+    unsigned int                                    face_no;
+  };
 
-    // Pack number of DOFs
-    const std::size_t n_dofs      = dof_indices.size();
-    const char       *n_dofs_data = reinterpret_cast<const char *>(&n_dofs);
-    buffer.insert(buffer.end(), n_dofs_data, n_dofs_data + sizeof(n_dofs));
-
-    // Pack dof_indices (if any)
-    if (n_dofs > 0)
-      {
-        const char *dof_indices_data =
-          reinterpret_cast<const char *>(dof_indices.data());
-        buffer.insert(buffer.end(),
-                      dof_indices_data,
-                      dof_indices_data +
-                        n_dofs * sizeof(types::global_dof_index));
-      }
-
-    // Pack dof_values (if any)
-    if (n_dofs > 0)
-      {
-        const char *dof_values_data =
-          reinterpret_cast<const char *>(dof_values.data());
-        buffer.insert(buffer.end(),
-                      dof_values_data,
-                      dof_values_data + n_dofs * sizeof(double));
-      }
-  }
-
-  void
-  unpack(const std::vector<char> &buffer, std::size_t &offset)
-  {
-    // Unpack coordinates (element by element)
-    for (unsigned int d = 0; d < 3; ++d)
-      {
-        const double *coord =
-          reinterpret_cast<const double *>(buffer.data() + offset);
-        point[d] = *coord; // ← Assign to individual element
-        offset += sizeof(double);
-      }
-
-    // Unpack number of DOFs
-    const std::size_t *n_dofs_ptr =
-      reinterpret_cast<const std::size_t *>(buffer.data() + offset);
-    std::size_t n_dofs = *n_dofs_ptr;
-    offset += sizeof(std::size_t);
-
-    // Unpack dof_indices (if any)
-    if (n_dofs > 0)
-      {
-        dof_indices.resize(n_dofs);
-        const types::global_dof_index *dof_indices_data =
-          reinterpret_cast<const types::global_dof_index *>(buffer.data() +
-                                                            offset);
-        std::copy(dof_indices_data,
-                  dof_indices_data + n_dofs,
-                  dof_indices.begin());
-        offset += n_dofs * sizeof(types::global_dof_index);
-      }
-
-    // Unpack dof_values (if any)
-    if (n_dofs > 0)
-      {
-        dof_values.resize(n_dofs);
-        const double *dof_values_data =
-          reinterpret_cast<const double *>(buffer.data() + offset);
-        std::copy(dof_values_data,
-                  dof_values_data + n_dofs,
-                  dof_values.begin());
-        offset += n_dofs * sizeof(double);
-      }
-  }
+  FaceData              parent;
+  std::vector<FaceData> daughters; // size = 2 for Y-junction
 };
+
 
 
 // ========================================================================
@@ -289,11 +210,17 @@ private:
   ParsedTools::Constants    par;
   AffineConstraints<double> constraints;
 
+  using CellIterator = typename DoFHandler<dim, spacedim>::active_cell_iterator;
+
+  struct JunctionCell
+  {
+    CellIterator cell;
+    unsigned int vertex;
+  };
+
   std::vector<JunctionInfo> junctions;
-  std::map<
-    unsigned int,
-    std::vector<std::pair<decltype(dof_handler.begin_active()), unsigned int>>>
-    junction_id_to_cells;
+
+
 
   void
   detect_bifurcation_junctions();
@@ -356,7 +283,21 @@ private:
     return A;
   }
 
+  /**
+   * compute area from pressure using tube law formula
+   */
 
+  double
+  compute_area_from_pressure(const double P) const
+  {
+    const double m  = par["m"];
+    const double mu = par["mu"];
+    const double p0 = par["p0"];
+    const double A0 = par["a0"];
+
+    const double ratio = std::max((P - p0) / mu + 1.0, 1e-12);
+    return A0 * std::pow(ratio, 1.0 / m);
+  }
 
   /**
    * Compute pressure using the shifted tube law
