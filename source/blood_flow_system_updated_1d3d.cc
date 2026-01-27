@@ -23,6 +23,8 @@
 #include <cmath>
 #include <iomanip>
 
+#include "../include/junction_solver.h"
+
 // Main class implementation
 template <int dim, int spacedim>
 BloodFlowSystem<dim, spacedim>::BloodFlowSystem()
@@ -102,6 +104,7 @@ void
 BloodFlowSystem<dim, spacedim>::detect_bifurcation_junctions()
 {
   junctions.clear();
+  all_junction_faces.clear();
 
   const unsigned int n_vertices = triangulation.n_vertices();
 
@@ -136,6 +139,12 @@ BloodFlowSystem<dim, spacedim>::detect_bifurcation_junctions()
           J.daughters.push_back(incident_faces[2]);
 
           junctions.push_back(J);
+          all_junction_faces.insert({J.parent.cell->id(), J.parent.face_no});
+          for (const auto &d : J.daughters)
+            all_junction_faces.insert({d.cell->id(), d.face_no});
+
+          std::cout << "Total junction faces marked: "
+                    << all_junction_faces.size() << std::endl;
 
           std::cout << "Detected DG Y-junction at vertex " << v << " : "
                     << J.point << std::endl;
@@ -143,6 +152,92 @@ BloodFlowSystem<dim, spacedim>::detect_bifurcation_junctions()
     }
 }
 
+
+// For solution at junction
+
+template <int dim, int spacedim>
+void
+BloodFlowSystem<dim, spacedim>::compute_junction_residual(
+  const JunctionState &X,
+  double               Wp_minus,
+  double               Wd1_plus,
+  double               Wd2_plus,
+  Vector<double>      &R) const
+{
+  AssertDimension(R.size(), 6);
+
+  const double Ap = X.Ap, Up = X.Up;
+  const double Ad1 = X.Ad1, Ud1 = X.Ud1;
+  const double Ad2 = X.Ad2, Ud2 = X.Ud2;
+
+  const double cp  = compute_wave_speed(Ap);
+  const double cd1 = compute_wave_speed(Ad1);
+  const double cd2 = compute_wave_speed(Ad2);
+
+  // (1) Mass conservation
+  R[0] = Ap * Up - Ad1 * Ud1 - Ad2 * Ud2;
+
+  // (2–3) Energy / pressure continuity
+  R[1] = 0.5 * Up * Up + compute_pressure_value(Ap) - 0.5 * Ud1 * Ud1 -
+         compute_pressure_value(Ad1);
+
+  R[2] = 0.5 * Up * Up + compute_pressure_value(Ap) - 0.5 * Ud2 * Ud2 -
+         compute_pressure_value(Ad2);
+
+  // (4–6) Characteristic compatibility
+  R[3] = Up - 4.0 * cp - Wp_minus;
+  R[4] = Ud1 + 4.0 * cd1 - Wd1_plus;
+  R[5] = Ud2 + 4.0 * cd2 - Wd2_plus;
+}
+
+template <int dim, int spacedim>
+void
+BloodFlowSystem<dim, spacedim>::compute_junction_jacobian(
+  const JunctionState &X,
+  FullMatrix<double>  &J) const
+{
+  AssertDimension(J.m(), 6);
+  AssertDimension(J.n(), 6);
+
+  J = 0.0;
+
+  const double Ap = X.Ap, Up = X.Up;
+  const double Ad1 = X.Ad1, Ud1 = X.Ud1;
+  const double Ad2 = X.Ad2, Ud2 = X.Ud2;
+
+  const double cp  = compute_wave_speed(Ap);
+  const double cd1 = compute_wave_speed(Ad1);
+  const double cd2 = compute_wave_speed(Ad2);
+
+  // Mass
+  J(0, 0) = Up;
+  J(0, 1) = Ap;
+  J(0, 2) = -Ud1;
+  J(0, 3) = -Ad1;
+  J(0, 4) = -Ud2;
+  J(0, 5) = -Ad2;
+
+  // Pressure continuity
+  J(1, 0) = compute_pressure_derivative(Ap);
+  J(1, 1) = Up;
+  J(1, 2) = -compute_pressure_derivative(Ad1);
+  J(1, 3) = -Ud1;
+
+  J(2, 0) = compute_pressure_derivative(Ap);
+  J(2, 1) = Up;
+  J(2, 4) = -compute_pressure_derivative(Ad2);
+  J(2, 5) = -Ud2;
+
+  // Characteristics
+  J(3, 0) = -4.0 * 0.5 / cp * compute_pressure_derivative(Ap);
+  J(3, 1) = 1.0;
+
+  J(4, 2) = +4.0 * 0.5 / cd1 * compute_pressure_derivative(Ad1);
+  J(4, 3) = 1.0;
+
+  J(5, 4) = +4.0 * 0.5 / cd2 * compute_pressure_derivative(Ad2);
+  J(5, 5) = 1.0;
+}
 
 
 // ========================================================================
@@ -153,8 +248,10 @@ template <int dim, int spacedim>
 void
 BloodFlowSystem<dim, spacedim>::assemble_junction_terms()
 {
+  // Only DG
   if (fe->dofs_per_vertex > 0)
-    return; // CG not supported
+    return;
+
   if (junctions.empty())
     return;
 
@@ -170,13 +267,13 @@ BloodFlowSystem<dim, spacedim>::assemble_junction_terms()
     {
       Assert(J.daughters.size() == 2, ExcInternalError());
 
-      // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-      // 1. Extract DG traces
-      // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+      // ======================================================
+      // 1. Extract DG traces (A, U) at the junction faces
+      // ======================================================
       auto get_trace =
         [&](const JunctionInfo::FaceData &fd, double &A, double &U) {
           fe_face.reinit(fd.cell, fd.face_no);
-          const unsigned int                   q = 0;
+
           std::vector<types::global_dof_index> dofs(fe->n_dofs_per_cell());
           fd.cell->get_dof_indices(dofs);
 
@@ -184,8 +281,9 @@ BloodFlowSystem<dim, spacedim>::assemble_junction_terms()
           for (unsigned int i = 0; i < fe->n_dofs_per_cell(); ++i)
             {
               const unsigned int comp = fe->system_to_component_index(i).first;
-              const double       phi  = fe_face.shape_value(i, q);
+              const double       phi  = fe_face.shape_value(i, 0);
               const double       val  = solution(dofs[i]);
+
               if (comp == 0)
                 A += val * phi;
               if (comp == 1)
@@ -193,91 +291,70 @@ BloodFlowSystem<dim, spacedim>::assemble_junction_terms()
             }
         };
 
-      double Ap, Up, Ad[2], Ud[2];
+      double Ap, Up, Ad1, Ud1, Ad2, Ud2;
       get_trace(J.parent, Ap, Up);
-      get_trace(J.daughters[0], Ad[0], Ud[0]);
-      get_trace(J.daughters[1], Ad[1], Ud[1]);
+      get_trace(J.daughters[0], Ad1, Ud1);
+      get_trace(J.daughters[1], Ad2, Ud2);
 
-      // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-      // 2. Characteristic variables
-      // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-      const double cp  = compute_wave_speed(Ap);
-      const double cd1 = compute_wave_speed(Ad[0]);
-      const double cd2 = compute_wave_speed(Ad[1]);
+      // ======================================================
+      // 2. Incoming characteristic invariants (fixed)
+      // ======================================================
+      const double Wp_minus = Up - 4.0 * compute_wave_speed(Ap);
 
-      // Incoming characteristics
-      const double Wp_minus = Up - 4.0 * cp;
-      const double Wd1_plus = Ud[0] + 4.0 * cd1;
-      const double Wd2_plus = Ud[1] + 4.0 * cd2;
+      const double Wd1_plus = Ud1 + 4.0 * compute_wave_speed(Ad1);
 
-      // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-      // 3. Solve junction coupling
-      // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+      const double Wd2_plus = Ud2 + 4.0 * compute_wave_speed(Ad2);
 
-      // Area-weighted pressure
-      double       total_area = Ap + Ad[0] + Ad[1];
-      const double Pstar      = (Ap * compute_pressure_value(Ap) +
-                            Ad[0] * compute_pressure_value(Ad[0]) +
-                            Ad[1] * compute_pressure_value(Ad[1])) /
-                           total_area;
+      // ======================================================
+      // 3. Solve 6×6 nonlinear junction system by Newton
+      // ======================================================
+      JunctionState X0{Ap, Up, Ad1, Ud1, Ad2, Ud2};
 
-      // Wave speeds at junction
-      const double Astar_p  = compute_area_from_pressure(Pstar);
-      const double Astar_d1 = compute_area_from_pressure(Pstar);
-      const double Astar_d2 = compute_area_from_pressure(Pstar);
+      JunctionState X =
+        junction_solver.solve(X0, Wp_minus, Wd1_plus, Wd2_plus, *this);
 
-      const double cstar_p  = compute_wave_speed(Astar_p);
-      const double cstar_d1 = compute_wave_speed(Astar_d1);
-      const double cstar_d2 = compute_wave_speed(Astar_d2);
+      // ======================================================
+      // 4. Inject junction contribution as DG boundary fluxes
+      // ======================================================
+      auto assemble_face = [&](const JunctionInfo::FaceData &fd,
+                               const double                  mass_flux,
+                               const double                  pressure) {
+        fe_face.reinit(fd.cell, fd.face_no);
 
-      // USE characteristic invariants for velocities
-      const double Ustar_p  = Wp_minus + cstar_p;
-      const double Ustar_d1 = Wd1_plus - cstar_d1;
-      const double Ustar_d2 = Wd2_plus - cstar_d2;
+        std::vector<types::global_dof_index> dofs(fe->n_dofs_per_cell());
+        fd.cell->get_dof_indices(dofs);
 
-      // Mass conservation from characteristics
-      const double Qp  = Astar_p * Ustar_p;
-      const double Qd1 = Astar_d1 * Ustar_d1;
-      const double Qd2 = Astar_d2 * Ustar_d2;
+        const double w = fe_face.JxW(0);
 
-      // Diagnostic: check conservation
-      double mass_error = std::abs(Qp - (Qd1 + Qd2)) / (std::abs(Qp) + 1e-16);
-      if (mass_error > 1e-3)
-        {
-          std::cout << " Mass conservation error at junction: " << mass_error
-                    << "\n";
-        }
+        for (unsigned int i = 0; i < fe->n_dofs_per_cell(); ++i)
+          {
+            const unsigned int comp = fe->system_to_component_index(i).first;
+            const double       phi  = fe_face.shape_value(i, 0);
 
-      // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-      // 4. DG residual contribution
-      // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-      auto assemble_face =
-        [&](const JunctionInfo::FaceData &fd, double Fm, double Fp) {
-          fe_face.reinit(fd.cell, fd.face_no);
-          std::vector<types::global_dof_index> dofs(fe->n_dofs_per_cell());
-          fd.cell->get_dof_indices(dofs);
+            // Area equation ← pressure
+            if (comp == 0)
+              residual_vector[dofs[i]] += pressure * phi * w;
 
-          for (unsigned int i = 0; i < fe->n_dofs_per_cell(); ++i)
-            {
-              const unsigned int comp = fe->system_to_component_index(i).first;
-              const double       phi  = fe_face.shape_value(i, 0);
-              const double       w    = fe_face.JxW(0);
-
-              if (comp == 1)
-                residual_vector[dofs[i]] += Fm * phi * w;
-              if (comp == 0)
-                residual_vector[dofs[i]] += Fp * phi * w;
-            }
-        };
+            // Momentum equation ← mass flux
+            if (comp == 1)
+              residual_vector[dofs[i]] += mass_flux * phi * w;
+          }
+      };
 
       // Parent: outgoing
-      assemble_face(J.parent, +Qp, +Pstar);
+      assemble_face(J.parent, +X.Ap * X.Up, +compute_pressure_value(X.Ap));
 
       // Daughters: incoming
-      assemble_face(J.daughters[0], -Qd1, -Pstar);
-      assemble_face(J.daughters[1], -Qd2, -Pstar);
+      assemble_face(J.daughters[0],
+                    -X.Ad1 * X.Ud1,
+                    -compute_pressure_value(X.Ad1));
+
+      assemble_face(J.daughters[1],
+                    -X.Ad2 * X.Ud2,
+                    -compute_pressure_value(X.Ad2));
     }
 }
+
 
 // ========================================================================
 // SETUP SYSTEM
@@ -469,7 +546,10 @@ BloodFlowSystem<dim, spacedim>::assemble_system()
                          const unsigned int                   nsf,
                          BloodFlowScratchData<dim, spacedim> &scratch,
                          BloodFlowCopyData                   &copy) {
-    // is this a junction? If yes skip
+    // is face a junction?
+    if (all_junction_faces.count({cell->id(), f}) > 0 ||
+        all_junction_faces.count({ncell->id(), nf}) > 0)
+      return; // Skip junction faces
 
     FEInterfaceValues<dim, spacedim> &fe_iv = scratch.fe_interface_values;
     fe_iv.reinit(cell, f, sf, ncell, nf, nsf);
@@ -565,6 +645,152 @@ BloodFlowSystem<dim, spacedim>::assemble_system()
                              const unsigned int                   face_no,
                              BloodFlowScratchData<dim, spacedim> &scratch,
                              BloodFlowCopyData                   &copy) {
+    if (all_junction_faces.count({cell->id(), face_no}) > 0)
+      return; // Skip boundary faces
+
+    //   // For adding boundary contribution by junction detection
+    //   // is this a junction? If yes add boundary condition contribution
+
+    // bool is_junction_face = all_junction_faces.count({cell->id(), face_no}) >
+    // 0;
+
+    // if (is_junction_face) {
+    //   scratch.fe_interface_values.reinit(cell, face_no);
+    //   const auto &fe_face =
+    //   scratch.fe_interface_values.get_fe_face_values(0); const auto &JxW =
+    //   fe_face.get_JxW_values(); const auto &normals =
+    //   fe_face.get_normal_vectors(); const unsigned int n_q =
+    //   fe_face.n_quadrature_points;
+
+    //   // Interior values
+    //   std::vector<double> current_area(n_q), current_velocity(n_q);
+    //   fe_face[area_extractor].get_function_values(solution, current_area);
+    //   fe_face[velocity_extractor].get_function_values(solution,
+    //   current_velocity);
+
+    //   // Find matching junction and compute Astar/Ustar
+    //   double A_junc = 0.0, U_junc = 0.0;
+    //   for (const auto &J : junctions) {
+    //     bool is_parent = (J.parent.cell->id() == cell->id() &&
+    //                      J.parent.face_no == face_no);
+    //     bool is_d1 = (J.daughters[0].cell->id() == cell->id() &&
+    //                  J.daughters[0].face_no == face_no);
+    //     bool is_d2 = (J.daughters[1].cell->id() == cell->id() &&
+    //                  J.daughters[1].face_no == face_no);
+
+    //     if (is_parent || is_d1 || is_d2) {
+    //       // Extract traces from all 3 junction cells
+    //       QGauss<dim-1> temp_quad(1);
+    //       FEFaceValues<dim, spacedim> temp_fe_face(*fe, temp_quad,
+    //       update_values);
+
+    //       double Ap, Up, Ad1, Ud1, Ad2, Ud2;
+
+    //       // Parent trace
+    //       temp_fe_face.reinit(J.parent.cell, J.parent.face_no);
+    //       std::vector<types::global_dof_index> dofs(fe->n_dofs_per_cell());
+    //       J.parent.cell->get_dof_indices(dofs);
+    //       Ap = Up = 0.0;
+    //       for (unsigned int i = 0; i < fe->n_dofs_per_cell(); ++i) {
+    //         const unsigned int comp = fe->system_to_component_index(i).first;
+    //         const double phi = temp_fe_face[area_extractor].value(i, 0);
+    //         const double val = solution(dofs[i]);
+    //         if (comp == 0) Ap += val * phi;
+    //         if (comp == 1) Up += val * phi;
+    //       }
+
+    //       // Daughter 1 and 2 traces (similar to parent)
+    //       temp_fe_face.reinit(J.daughters[0].cell, J.daughters[0].face_no);
+    //       J.daughters[0].cell->get_dof_indices(dofs);
+    //       Ad1 = Ud1 = 0.0;
+    //       for (unsigned int i = 0; i < fe->n_dofs_per_cell(); ++i) {
+    //         const unsigned int comp = fe->system_to_component_index(i).first;
+    //         const double phi = temp_fe_face[area_extractor].value(i, 0);
+    //         const double val = solution(dofs[i]);
+    //         if (comp == 0) Ad1 += val * phi;
+    //         if (comp == 1) Ud1 += val * phi;
+    //       }
+
+    //       temp_fe_face.reinit(J.daughters[1].cell, J.daughters[1].face_no);
+    //       J.daughters[1].cell->get_dof_indices(dofs);
+    //       Ad2 = Ud2 = 0.0;
+    //       for (unsigned int i = 0; i < fe->n_dofs_per_cell(); ++i) {
+    //         const unsigned int comp = fe->system_to_component_index(i).first;
+    //         const double phi = temp_fe_face[area_extractor].value(i, 0);
+    //         const double val = solution(dofs[i]);
+    //         if (comp == 0) Ad2 += val * phi;
+    //         if (comp == 1) Ud2 += val * phi;
+    //       }
+
+    //       // Compute Riemann invariants
+    //       const double cp = compute_wave_speed(Ap);
+    //       const double cd1 = compute_wave_speed(Ad1);
+    //       const double cd2 = compute_wave_speed(Ad2);
+
+    //       const double Wp_minus = Up - 4.0 * cp;
+    //       const double Wd1_plus = Ud1 + 4.0 * cd1;
+    //       const double Wd2_plus = Ud2 + 4.0 * cd2;
+
+    //       // Junction state
+    //       const double Astar = (Ap + Ad1 + Ad2) / 3.0;
+    //       const double cstar = compute_wave_speed(Astar);
+
+    //       // Get Ustar for this cell
+    //       if (is_parent) {
+    //         A_junc = Astar;
+    //         U_junc = Wp_minus + 4.0 * cstar;
+    //       } else if (is_d1) {
+    //         A_junc = Astar;
+    //         U_junc = Wd1_plus - 4.0 * cstar;
+    //       } else {
+    //         A_junc = Astar;
+    //         U_junc = Wd2_plus - 4.0 * cstar;
+    //       }
+    //       break;
+    //     }
+    //   }
+
+    //   // Apply junction as boundary condition with HLL flux
+    //   for (unsigned int q = 0; q < n_q; ++q) {
+    //     const double A_int = current_area[q];
+    //     const double U_int = current_velocity[q];
+    //     const double A_ext = A_junc;
+    //     const double U_ext = U_junc;
+
+    //     // HLL flux with junction as exterior
+    //     auto [flux_A_junc, flux_U_junc] = HLL_residual_flux(
+    //       cell, cell, A_int, U_int, A_ext, U_ext, normals[q]);
+
+    //     // RHS
+    //     for (unsigned int i = 0; i < fe_face.get_fe().dofs_per_cell; ++i) {
+    //       const double test_A = fe_face[area_extractor].value(i, q);
+    //       const double test_U = fe_face[velocity_extractor].value(i, q);
+    //       copy.cell_rhs(i) -= flux_A_junc * test_A * JxW[q];
+    //       copy.cell_rhs(i) -= flux_U_junc * test_U * JxW[q];
+    //     }
+
+    //     // Jacobian (linearize w.r.t. interior only)
+    //     for (unsigned int j = 0; j < fe_face.get_fe().dofs_per_cell; ++j) {
+    //       const double trial_A = fe_face[area_extractor].value(j, q);
+    //       const double trial_U = fe_face[velocity_extractor].value(j, q);
+
+    //       auto [flux_A_jac, flux_U_jac] = HLL_jacobian_flux(
+    //         cell, cell, A_int, U_int, A_ext, U_ext,
+    //         trial_A, trial_U, 0.0, 0.0,  // exterior is fixed!
+    //         normals[q]);
+
+    //       for (unsigned int i = 0; i < fe_face.get_fe().dofs_per_cell; ++i) {
+    //         const double test_A = fe_face[area_extractor].value(i, q);
+    //         const double test_U = fe_face[velocity_extractor].value(i, q);
+    //         copy.cell_matrix(i, j) += flux_A_jac * test_A * JxW[q];
+    //         copy.cell_matrix(i, j) += flux_U_jac * test_U * JxW[q];
+    //       }
+    //     }
+    //   }
+    //   return;  // Done with junction
+    // }
+
+    // Standard boundary condition treatment
     scratch.fe_interface_values.reinit(cell, face_no);
     const auto &fe_face = scratch.fe_interface_values.get_fe_face_values(0);
 
@@ -761,6 +987,7 @@ BloodFlowSystem<dim, spacedim>::assemble_system()
                           MeshWorker::assemble_own_interior_faces_once,
                         boundary_worker,
                         face_worker);
+
 
   assemble_junction_terms();
 }

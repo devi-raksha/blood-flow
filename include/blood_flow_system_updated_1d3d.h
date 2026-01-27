@@ -37,63 +37,42 @@
 
 #include "constants.h"
 #include "function.h"
+#include "junction_solver.h"
 
 using namespace dealii;
 
-struct JunctionConfiguration
-{
-  double A1_0, A2_0, A3_0; // reference areas
-  double P1_0;             // reference pressure
-  double mu, m, rho;       // parameters
-};
 
-struct JunctionInfo
-{
-  Point<3> point; // physical junction location
+// // ========================================================================
+// // HELPER FUNCTION: Detect Non-Manifold Faces (Y-Junctions)
+// // ========================================================================
 
-  struct FaceData
-  {
-    typename DoFHandler<1, 3>::active_cell_iterator cell;
-    unsigned int                                    face_no;
-  };
+// template <typename CellContainer>
+// std::map<typename CellContainer::active_face_iterator,
+//          std::vector<typename CellContainer::active_cell_iterator>>
+// get_non_manifold_faces(const CellContainer &cell_container)
+// {
+//   // Map from face to list of cells touching that face
+//   std::map<typename CellContainer::active_face_iterator,
+//            std::vector<typename CellContainer::active_cell_iterator>>
+//     face_to_cells;
 
-  FaceData              parent;
-  std::vector<FaceData> daughters; // size = 2 for Y-junction
-};
+//   // Loop over all cells and all faces
+//   for (const auto &cell : cell_container.active_cell_iterators())
+//     for (const auto f : cell->face_indices())
+//       face_to_cells[cell->face(f)].push_back(cell);
 
+//   // Remove all faces with only 2 neighbors (manifold faces)
+//   // Keep only faces with > 2 neighbors (non-manifold = junctions!)
+//   for (auto it = face_to_cells.begin(); it != face_to_cells.end();)
+//     {
+//       if (it->second.size() <= 2)
+//         it = face_to_cells.erase(it);
+//       else
+//         ++it;
+//     }
 
-
-// ========================================================================
-// HELPER FUNCTION: Detect Non-Manifold Faces (Y-Junctions)
-// ========================================================================
-
-template <typename CellContainer>
-std::map<typename CellContainer::active_face_iterator,
-         std::vector<typename CellContainer::active_cell_iterator>>
-get_non_manifold_faces(const CellContainer &cell_container)
-{
-  // Map from face to list of cells touching that face
-  std::map<typename CellContainer::active_face_iterator,
-           std::vector<typename CellContainer::active_cell_iterator>>
-    face_to_cells;
-
-  // Loop over all cells and all faces
-  for (const auto &cell : cell_container.active_cell_iterators())
-    for (const auto f : cell->face_indices())
-      face_to_cells[cell->face(f)].push_back(cell);
-
-  // Remove all faces with only 2 neighbors (manifold faces)
-  // Keep only faces with > 2 neighbors (non-manifold = junctions!)
-  for (auto it = face_to_cells.begin(); it != face_to_cells.end();)
-    {
-      if (it->second.size() <= 2)
-        it = face_to_cells.erase(it);
-      else
-        ++it;
-    }
-
-  return face_to_cells;
-}
+//   return face_to_cells;
+// }
 
 
 //====================================================================
@@ -191,9 +170,6 @@ public:
   void
   solve();
 
-  double
-  compute_max_wave_speed(const Vector<double> &solution) const;
-
   void
   output_results(const unsigned int cycle) const;
   void
@@ -203,8 +179,19 @@ public:
   void
   run_convergence_study();
   void
-  create_y_junction_mesh();
+  detect_bifurcation_junctions();
 
+  // Junction physics (called by JunctionSolver) ---
+  void
+  compute_junction_residual(const JunctionState &X,
+                            double               Wp_minus,
+                            double               Wd1_plus,
+                            double               Wd2_plus,
+                            Vector<double>      &R) const;
+
+  void
+  compute_junction_jacobian(const JunctionState &X,
+                            FullMatrix<double>  &J) const;
 
 private:
   ParsedTools::Constants    par;
@@ -218,12 +205,17 @@ private:
     unsigned int vertex;
   };
 
-  std::vector<JunctionInfo> junctions;
+  std::vector<JunctionInfo>                      junctions;
+  std::set<std::pair<CellId, unsigned int>>      all_junction_faces;
+  JunctionSolver<BloodFlowSystem<dim, spacedim>> junction_solver;
 
+  // to know junction faces
+  inline bool
+  is_junction_face(const CellId &cell_id, const unsigned int face_no) const
+  {
+    return all_junction_faces.count({cell_id, face_no}) > 0;
+  }
 
-
-  void
-  detect_bifurcation_junctions();
 
   // Embedded 1D-3D network coupling
   struct EmbeddedVessel
