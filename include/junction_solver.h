@@ -51,8 +51,8 @@ public:
 
     JunctionState X = X0;
 
-    constexpr unsigned int max_iter = 15;
-    constexpr double       tol      = 1e-12;
+    constexpr unsigned int max_iter = 20;
+    constexpr double       tol      = 1e-6;
 
     for (unsigned int it = 0; it < max_iter; ++it)
       {
@@ -63,13 +63,14 @@ public:
         phys.compute_junction_jacobian(X, J);
         J.gauss_jordan();
         J.vmult(dX, R);
-
-        X.Ap -= dX[0];
-        X.Up -= dX[1];
-        X.Ad1 -= dX[2];
-        X.Ud1 -= dX[3];
-        X.Ad2 -= dX[4];
-        X.Ud2 -= dX[5];
+       
+        const double omega1 = 0.5;
+        X.Ap -= omega1 *dX[0];
+        X.Up -= omega1 * dX[1];
+        X.Ad1 -= omega1* dX[2];
+        X.Ud1 -=  omega1 *dX[3];
+        X.Ad2 -=  omega1 *dX[4];
+        X.Ud2 -= omega1 * dX[5];
       }
 
     return X;
