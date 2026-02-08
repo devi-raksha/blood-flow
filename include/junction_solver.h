@@ -33,7 +33,7 @@ struct JunctionInfo
 
 
 // ======================================================
-// Generic junction solver
+// Generic junction solver (ROBUST VERSION)
 // ======================================================
 template <typename Physics>
 class JunctionSolver
@@ -51,28 +51,63 @@ public:
 
     JunctionState X = X0;
 
-    constexpr unsigned int max_iter = 20;
-    constexpr double       tol      = 1e-6;
+    constexpr unsigned int max_iter = 25;
+    constexpr double       tol      = 1e-8;
+    constexpr double       Amin     = 1e-8;
 
     for (unsigned int it = 0; it < max_iter; ++it)
+    {
+      // --------------------------------------------------
+      // Compute residual of junction equations (29–34)
+      // --------------------------------------------------
+      phys.compute_junction_residual(X, Wp_minus, Wd1_plus, Wd2_plus, R);
+
+      if (R.l2_norm() < tol)
+        return X;
+
+      // --------------------------------------------------
+      // Compute Jacobian of junction system (6x6)
+      // --------------------------------------------------
+      phys.compute_junction_jacobian(X, J);
+
+      // --------------------------------------------------
+      // Solve J * dX = -R
+      // --------------------------------------------------
+      R *= -1.0;
+      J.gauss_jordan();
+      J.vmult(dX, R);
+
+      // --------------------------------------------------
+      // Line-search Newton update (positivity preserving)
+      // --------------------------------------------------
+      double alpha = 1.0;
+      JunctionState X_trial;
+
+      while (alpha > 1e-6)
       {
-        phys.compute_junction_residual(X, Wp_minus, Wd1_plus, Wd2_plus, R);
-        if (R.l2_norm() < tol)
+        X_trial = X;
+
+        X_trial.Ap  += alpha * dX[0];
+        X_trial.Up  += alpha * dX[1];
+        X_trial.Ad1 += alpha * dX[2];
+        X_trial.Ud1 += alpha * dX[3];
+        X_trial.Ad2 += alpha * dX[4];
+        X_trial.Ud2 += alpha * dX[5];
+
+        // Enforce physical admissibility
+        if (X_trial.Ap  > Amin &&
+            X_trial.Ad1 > Amin &&
+            X_trial.Ad2 > Amin)
           break;
 
-        phys.compute_junction_jacobian(X, J);
-        J.gauss_jordan();
-        J.vmult(dX, R);
-       
-        const double omega1 = 0.5;
-        X.Ap -= omega1 *dX[0];
-        X.Up -= omega1 * dX[1];
-        X.Ad1 -= omega1* dX[2];
-        X.Ud1 -=  omega1 *dX[3];
-        X.Ad2 -=  omega1 *dX[4];
-        X.Ud2 -= omega1 * dX[5];
+        alpha *= 0.5;
       }
 
+      // Update iterate
+      X = X_trial;
+    }
+
+    // If Newton does not converge, return last iterate
     return X;
   }
 };

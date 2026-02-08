@@ -177,6 +177,8 @@ public:
   void
   compute_errors(unsigned int k);
   void
+  check_singular_rows()const;
+  void
   run_convergence_study();
   void
   detect_bifurcation_junctions();
@@ -306,15 +308,17 @@ private:
   }
 
   /**
-   * Compute pressure derivative dP/dA for shiftyed tube law
+   * Compute pressure derivative dP/dA for shifted tube law
    */
   double
   compute_pressure_derivative(const double area) const
   {
+
     const double eps   = 0; // to avoid zero division
     const double ratio = std::max(area / par["a0"], eps);
     const double m     = par["m"];
     return par["mu"] * m * std::pow(ratio, m - 1.0) / par["a0"];
+    
   }
 
   double
