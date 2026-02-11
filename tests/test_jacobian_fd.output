@@ -1,5 +1,4 @@
 
-DEAL::
-========================================
- FINITE DIFFERENCE JACOBIAN CHECK
- max |FD - J|_inf = 0.00000
+DEAL::delta : 9.807767e+00
+DEAL::Jacobian FD check: ||J*delta - FD||_2 = 9.335859e-02, ||FD||_2 = 1.364327e+01
+DEAL::Relative error: 6.842833e-03

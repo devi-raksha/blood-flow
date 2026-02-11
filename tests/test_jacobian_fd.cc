@@ -44,11 +44,11 @@ test()
   // ---------------------------
   Vector<double> delta(problem.solution.size());
   for (unsigned int i = 0; i < delta.size(); ++i)
-    delta[i] = 2.0 * (double(rand()) / RAND_MAX - 0.5);
+    delta[i] =  (double(rand()) / RAND_MAX - 0.5);
 
   delta /= delta.l2_norm(); // normalize direction
 
-  const double eps = 1e-7;
+  const double eps = 1e-8;
 
 // Store original solution
 Vector<double> U0 = problem.solution;
@@ -87,7 +87,8 @@ problem.solution = U0;
 problem.assemble_system();
 
 // ---------------------------
-// Compare
+// Compare Jacobian action with finite difference approximation 
+// + sign because residual vector already contains -R
 // ---------------------------
 Vector<double> error = Jdelta;
 error += FD;
@@ -95,6 +96,10 @@ error += FD;
 deallog << std::scientific << std::setprecision(6);
 
 deallog <<"delta : " << delta.l1_norm() << std::endl;
+deallog << "Jacobian FD check: "
+        << "||J*delta - FD||_2 = " << error.l2_norm()
+        << ", ||FD||_2 = " << FD.l2_norm()
+        << std::endl;
 
 deallog << "Relative error: "
         << error.l2_norm() / FD.l2_norm()
