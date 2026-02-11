@@ -159,9 +159,9 @@ template <int dim, int spacedim>
 void
 BloodFlowSystem<dim, spacedim>::compute_junction_residual(
   const JunctionState &X,
-  double               Wp_minus,
-  double               Wd1_plus,
-  double               Wd2_plus,
+  double               Wp_plus,
+  double               Wd1_minus,
+  double               Wd2_minus,
   Vector<double>      &R) const
 {
   AssertDimension(R.size(), 6);
@@ -183,17 +183,17 @@ BloodFlowSystem<dim, spacedim>::compute_junction_residual(
   // (1) Mass conservation
   R[0] = Ap * Up - Ad1 * Ud1 - Ad2 * Ud2;
 
-  // (2–3) Energy / pressure continuity
-  R[1] = 0.5 * Up * Up + compute_pressure_value(Ap) - 0.5 * Ud1 * Ud1 -
-         compute_pressure_value(Ad1);
+  // (2–3) Energy /total pressure continuity
+  R[1] = 0.5 * Up * Up + compute_pressure_value(Ap) / par["rho"] -
+         0.5 * Ud1 * Ud1 - compute_pressure_value(Ad1) / par["rho"];
 
-  R[2] = 0.5 * Up * Up + compute_pressure_value(Ap) - 0.5 * Ud2 * Ud2 -
-         compute_pressure_value(Ad2);
+  R[2] = 0.5 * Up * Up + compute_pressure_value(Ap) / par["rho"] -
+         0.5 * Ud2 * Ud2 - compute_pressure_value(Ad2) / par["rho"];
 
   // (4–6) Characteristic compatibility
-  R[3] = Up - 4.0 * cp - Wp_minus;
-  R[4] = Ud1 + 4.0 * cd1 - Wd1_plus;
-  R[5] = Ud2 + 4.0 * cd2 - Wd2_plus;
+  R[3] = Up + 4.0 * cp - Wp_plus;
+  R[4] = Ud1 - 4.0 * cd1 - Wd1_minus;
+  R[5] = Ud2 - 4.0 * cd2 - Wd2_minus;
 }
 
 template <int dim, int spacedim>
@@ -231,192 +231,29 @@ BloodFlowSystem<dim, spacedim>::compute_junction_jacobian(
   J(0, 5) = -Ad2;
 
   // Pressure continuity
-  J(1, 0) = compute_pressure_derivative(Ap);
+  J(1, 0) = compute_pressure_derivative(Ap) / par["rho"];
   J(1, 1) = Up;
-  J(1, 2) = -compute_pressure_derivative(Ad1);
+  J(1, 2) = -compute_pressure_derivative(Ad1) / par["rho"];
   J(1, 3) = -Ud1;
 
-  J(2, 0) = compute_pressure_derivative(Ap);
+  J(2, 0) = compute_pressure_derivative(Ap) / par["rho"];
   J(2, 1) = Up;
-  J(2, 4) = -compute_pressure_derivative(Ad2);
+  J(2, 4) = -compute_pressure_derivative(Ad2) / par["rho"];
   J(2, 5) = -Ud2;
 
   // Characteristics
-  J(3, 0) = -4.0 * 0.5 * par["m"] / cp * compute_pressure_derivative(Ap);
+  J(3, 0) =
+    4.0 * 0.5 * par["m"] / (par["rho"] * cp) * compute_pressure_derivative(Ap);
   J(3, 1) = 1.0;
 
-  J(4, 2) = +4.0 * 0.5 * par["m"] / cd1 * compute_pressure_derivative(Ad1);
+  J(4, 2) = -4.0 * 0.5 * par["m"] / (par["rho"] * cd1) *
+            compute_pressure_derivative(Ad1);
   J(4, 3) = 1.0;
 
-  J(5, 4) = +4.0 * 0.5 * par["m"] / cd2 * compute_pressure_derivative(Ad2);
+  J(5, 4) = -4.0 * 0.5 * par["m"] / (par["rho"] * cd2) *
+            compute_pressure_derivative(Ad2);
   J(5, 5) = 1.0;
 }
-
-// ========================================================================
-// ASSEMBLE JUNCTION TERMS
-// ========================================================================
-// template <int dim, int spacedim>
-// void
-// BloodFlowSystem<dim, spacedim>::assemble_junction_terms()
-// {
-//   if (fe->dofs_per_vertex > 0 || junctions.empty())
-//     return;
-
-//   const FEValuesExtractors::Scalar area_extractor(0);
-//   const FEValuesExtractors::Scalar velocity_extractor(1);
-
-//   QGauss<dim - 1> quad(1);
-
-//   FEFaceValues<dim, spacedim> fe_face(
-//     *fe, quad, update_values | update_JxW_values | update_normal_vectors);
-
-//   for (const auto &J : junctions)
-//     {
-//       Assert(J.daughters.size() == 2, ExcInternalError());
-
-//       // ======================================================
-//       // 1. DG traces (solution-based)
-//       // ======================================================
-//       auto get_trace = [&](const Vector<double>         &vec,
-//                            const JunctionInfo::FaceData &fd,
-//                            double                       &A,
-//                            double                       &U) {
-//         fe_face.reinit(fd.cell, fd.face_no);
-
-//         std::vector<double> A_vals(1), U_vals(1);
-//         fe_face[area_extractor].get_function_values(vec, A_vals);
-//         fe_face[velocity_extractor].get_function_values(vec, U_vals);
-
-//         A = A_vals[0];
-//         U = U_vals[0];
-//       };
-
-//       double Ap, Up, Ad1, Ud1, Ad2, Ud2;
-//       double Ap_old, Up_old, Ad1_old, Ud1_old, Ad2_old, Ud2_old;
-
-//       get_trace(solution, J.parent, Ap, Up);
-//       get_trace(solution, J.daughters[0], Ad1, Ud1);
-//       get_trace(solution, J.daughters[1], Ad2, Ud2);
-
-//       get_trace(solution_old, J.parent, Ap_old, Up_old);
-//       get_trace(solution_old, J.daughters[0], Ad1_old, Ud1_old);
-//       get_trace(solution_old, J.daughters[1], Ad2_old, Ud2_old);
-
-//       // ======================================================
-//       // 2. Incoming characteristics
-//       // ======================================================
-//       const double Wp_minus = Up_old - 4.0 * compute_wave_speed(Ap_old);
-//       const double Wd1_plus = Ud1_old + 4.0 * compute_wave_speed(Ad1_old);
-//       const double Wd2_plus = Ud2_old + 4.0 * compute_wave_speed(Ad2_old);
-
-//       // ======================================================
-//       // 3. Junction solve
-//       // ======================================================
-//       JunctionState X0{Ap, Up, Ad1, Ud1, Ad2, Ud2};
-//       JunctionState X =
-//         junction_solver.solve(X0, Wp_minus, Wd1_plus, Wd2_plus, *this);
-
-//       const double A_min = 1e-10;
-//       X.Ap               = std::max(X.Ap, A_min);
-//       X.Ad1              = std::max(X.Ad1, A_min);
-//       X.Ad2              = std::max(X.Ad2, A_min);
-
-//       // ======================================================
-//       // 4. Assemble numerical flux at junction face(HLL))
-//       //  NOte: A_start and U_star are values calculated from the junction
-//       //  states
-//       // for parent vessel A_star = X.Ap and U_star = X.Up, for daughter
-//       vessels
-//       // A_star = X.Ad1 or X.Ad2 and U_star = X.Ud1 or X.Ud2
-//       // ======================================================
-//       auto assemble_face = [&](const JunctionInfo::FaceData &fd,
-//                                double                        A_star,
-//                                double                        U_star) {
-//         fe_face.reinit(fd.cell, fd.face_no);
-
-//         const auto &normals = fe_face.get_normal_vectors();
-//         const auto &JxW     = fe_face.get_JxW_values();
-
-//         const unsigned int n_q = fe_face.n_quadrature_points;
-
-//         std::vector<double> Ah(n_q), Uh(n_q);
-//         fe_face[area_extractor].get_function_values(solution, Ah);
-//         fe_face[velocity_extractor].get_function_values(solution, Uh);
-
-//         std::vector<types::global_dof_index> dofs(fe->n_dofs_per_cell());
-//         fd.cell->get_dof_indices(dofs);
-
-//         for (unsigned int q = 0; q < n_q; ++q)
-//           {
-//             // ---- Residual flux
-//             const double Ah_safe     = std::max(Ah[q], A_min);
-//             const double A_star_safe = std::max(A_star, A_min);
-
-
-//             auto [FA, FU] = HLL_residual_flux(fd.cell,
-//                                               fd.cell,
-//                                               Ah_safe,
-//                                               Uh[q],
-//                                               A_star_safe,
-//                                               U_star,
-//                                               normals[q]);
-
-//             for (unsigned int i = 0; i < fe->n_dofs_per_cell(); ++i)
-//               {
-//                 const unsigned int comp =
-//                   fe->system_to_component_index(i).first;
-//                 const double       phi = fe_face.shape_value(i, q);
-//                 const unsigned int row = dofs[i];
-
-//                 if (comp == 0)
-//                   residual_vector(row) -= FA * phi * JxW[q];
-//                 else
-//                   residual_vector(row) -= FU * phi * JxW[q];
-//               }
-
-//             // ---- Jacobian
-//             for (unsigned int j = 0; j < fe->n_dofs_per_cell(); ++j)
-//               {
-//                 const double trial_A = fe_face[area_extractor].value(j, q);
-//                 const double trial_U = fe_face[velocity_extractor].value(j,
-//                 q); const double Ah_safe = std::max(Ah[q], A_min); const
-//                 double A_star_safe = std::max(A_star, A_min);
-
-
-//                 auto [dFA, dFU] = HLL_jacobian_flux(fd.cell,
-//                                                     fd.cell,
-//                                                     Ah_safe,
-//                                                     Uh[q],
-//                                                     A_star_safe,
-//                                                     U_star,
-//                                                     trial_A,
-//                                                     trial_U,
-//                                                     0.0,
-//                                                     0.0,
-//                                                     normals[q]);
-
-//                 for (unsigned int i = 0; i < fe->n_dofs_per_cell(); ++i)
-//                   {
-//                     const unsigned int comp =
-//                       fe->system_to_component_index(i).first;
-//                     const double       phi = fe_face.shape_value(i, q);
-//                     const unsigned int row = dofs[i];
-//                     const unsigned int col = dofs[j];
-
-//                     if (comp == 0)
-//                       jacobian_matrix.add(row, col, dFA * phi * JxW[q]);
-//                     else
-//                       jacobian_matrix.add(row, col, dFU * phi * JxW[q]);
-//                   }
-//               }
-//           }
-//       };
-
-//       assemble_face(J.parent, X.Ap, X.Up);
-//       assemble_face(J.daughters[0], X.Ad1, X.Ud1);
-//       assemble_face(J.daughters[1], X.Ad2, X.Ud2);
-//     }
-// }
 
 template <int dim, int spacedim>
 void
@@ -452,16 +289,8 @@ BloodFlowSystem<dim, spacedim>::assemble_junction_terms()
         fe_face[area_extractor].get_function_values(vec, A_vals);
         fe_face[velocity_extractor].get_function_values(vec, U_vals);
 
-        A = 0.0;
-        U = 0.0;
-
-        const auto &JxW = fe_face.get_JxW_values();
-
-        for (unsigned int q = 0; q < fe_face.n_quadrature_points; ++q)
-          {
-            A += A_vals[q] * JxW[q]; // A = sum_{q=1 to n_q} A(q) * w(q)
-            U += U_vals[q] * JxW[q];
-          }
+        A = A_vals[0];
+        U = U_vals[0];
       };
 
       double Ap, Up, Ad1, Ud1, Ad2, Ud2;
@@ -476,18 +305,21 @@ BloodFlowSystem<dim, spacedim>::assemble_junction_terms()
       get_trace(solution_old, J.daughters[1], Ad2_old, Ud2_old);
 
       // ======================================================
-      // 2. Incoming characteristics
+      // 2. characteristics AT JUNCTION
+      // 1) for parent vessles characteristic is outgoing, so we need to extract
+      // W_plus 2) for daughter vessels characteristic is incoming, so we need
+      // to extract W_minus
       // ======================================================
-      const double Wp_minus = Up_old - 4.0 * compute_wave_speed(Ap_old);
-      const double Wd1_plus = Ud1_old + 4.0 * compute_wave_speed(Ad1_old);
-      const double Wd2_plus = Ud2_old + 4.0 * compute_wave_speed(Ad2_old);
+      const double Wp_plus   = Up_old + 4.0 * compute_wave_speed(Ap_old);
+      const double Wd1_minus = Ud1_old - 4.0 * compute_wave_speed(Ad1_old);
+      const double Wd2_minus = Ud2_old - 4.0 * compute_wave_speed(Ad2_old);
 
       // ======================================================
       // 3. Solve junction nonlinear system
       // ======================================================
       JunctionState X0{Ap, Up, Ad1, Ud1, Ad2, Ud2};
       JunctionState X =
-        junction_solver.solve(X0, Wp_minus, Wd1_plus, Wd2_plus, *this);
+        junction_solver.solve(X0, Wp_plus, Wd1_minus, Wd2_minus, *this);
 
       X.Ap  = std::max(X.Ap, A_min);
       X.Ad1 = std::max(X.Ad1, A_min);
@@ -501,6 +333,7 @@ BloodFlowSystem<dim, spacedim>::assemble_junction_terms()
 
       FullMatrix<double> JX_inv = JX;
       JX_inv.gauss_jordan();
+      Assert(JX_inv.l1_norm() > 0, ExcInternalError());
 
       // ======================================================
       // 5. Assemble numerical flux and FULL Newton Jacobian
@@ -546,7 +379,7 @@ BloodFlowSystem<dim, spacedim>::assemble_junction_terms()
       //         ∂R_J/∂X* · ∂X*/∂(A_h, U_h)
       //       + ∂R_J/∂(A_h, U_h) = 0
       //
-      //       = ∂X*/∂(A_h, U_h)
+      //       -> ∂X*/∂(A_h, U_h)
       //          = - (∂R_J/∂X*)^{-1} · ∂R_J/∂(A_h, U_h)
       //
       //     - ∂R_J/∂X* is the 6×6 junction Jacobian JX,
@@ -572,10 +405,11 @@ BloodFlowSystem<dim, spacedim>::assemble_junction_terms()
       // ======================================================
 
       auto assemble_face = [&](const JunctionInfo::FaceData &fd,
-                               double                        A_star,
-                               double                        U_star,
-                               unsigned int                  A_idx,
-                               unsigned int                  U_idx) {
+
+                               double       A_star,
+                               double       U_star,
+                               unsigned int A_idx,
+                               unsigned int U_idx) {
         fe_face.reinit(fd.cell, fd.face_no);
 
         const auto        &normals = fe_face.get_normal_vectors();
@@ -639,9 +473,10 @@ BloodFlowSystem<dim, spacedim>::assemble_junction_terms()
                 Vector<double> dRJ_duh(6);
                 dRJ_duh = 0.0;
 
-                const double c_h = compute_wave_speed(Ah_safe);
-                const double dc_dA =
-                  par["m"] *0.5 * compute_pressure_derivative(Ah_safe) / c_h;  
+                const double c_h   = compute_wave_speed(Ah_safe);
+                const double dc_dA = par["m"] * 0.5 *
+                                     compute_pressure_derivative(Ah_safe) /
+                                     (par["rho"] * c_h);
 
                 dRJ_duh[3] += -trial_U + 4.0 * dc_dA * trial_A;
                 dRJ_duh[4] += -trial_U - 4.0 * dc_dA * trial_A;
@@ -656,7 +491,8 @@ BloodFlowSystem<dim, spacedim>::assemble_junction_terms()
                 const double dFA_dA = U_star;
                 const double dFA_dU = A_star;
 
-                const double dFU_dA = compute_pressure_derivative(A_star_safe);
+                const double dFU_dA =
+                  compute_pressure_derivative(A_star_safe) / par["rho"];
                 const double dFU_dU = U_star;
 
                 const double dFA_chain =
@@ -675,17 +511,16 @@ BloodFlowSystem<dim, spacedim>::assemble_junction_terms()
                     const unsigned int col = dofs[j];
 
                     if (comp == 0)
-                      jacobian_matrix.add(row,
-                                          col,
-                                          (dFA_dUh + dFA_chain) * phi * JxW[q]);
+                      jacobian_matrix.add(
+                        row, col, -(dFA_dUh + dFA_chain) * phi * JxW[q]);
                     else
-                      jacobian_matrix.add(row,
-                                          col,
-                                          (dFU_dUh + dFU_chain) * phi * JxW[q]);
+                      jacobian_matrix.add(
+                        row, col, -(dFU_dUh + dFU_chain) * phi * JxW[q]);
                   }
               }
           }
       };
+
 
       // Parent
       assemble_face(J.parent, X.Ap, X.Up, 0, 1);
@@ -694,6 +529,7 @@ BloodFlowSystem<dim, spacedim>::assemble_junction_terms()
       assemble_face(J.daughters[1], X.Ad2, X.Ud2, 4, 5);
     }
 }
+
 
 // ========================================================================
 // SETUP SYSTEM
@@ -1206,9 +1042,14 @@ BloodFlowSystem<dim, spacedim>::solve()
 {
   if (use_direct_solver)
     {
+#ifdef DEAL_II_WITH_MUMPS
+      SparseDirectMUMPS inverse;
+#else
       SparseDirectUMFPACK inverse;
-      inverse.initialize(jacobian_matrix);           // use jacobian_matrix
-      inverse.vmult(newton_update, residual_vector); // use newton_update
+#endif
+
+      inverse.initialize(jacobian_matrix);
+      inverse.vmult(newton_update, residual_vector);
     }
   else
     {
@@ -1460,7 +1301,7 @@ BloodFlowSystem<dim, spacedim>::run_convergence_study()
       if (cycle == 0)
         {
           // // GridGenerator::hyper_cube(triangulation, 0.0, 1); // 1 cm
-          // create_y_junction_mesh();
+
 
           triangulation.clear();
 
@@ -1470,11 +1311,12 @@ BloodFlowSystem<dim, spacedim>::run_convergence_study()
             {
               std::vector<Point<3>> vertices;
 
-              vertices.push_back(Point<3>());
-              vertices.push_back(Point<3>(0, .5, 0));
-              vertices.push_back(Point<3>(-.5, 1, 0));
-              vertices.push_back(Point<3>(.5, 1, 0));
-
+              // Starting from the x-direction
+              vertices.push_back(Point<3>(0, 0, 0)); // Origin (Start of trunk)
+              vertices.push_back(
+                Point<3>(0.5, 0, 0)); // Junction point (Middle of trunk)
+              vertices.push_back(Point<3>(1.0, 0.5, 0));  // Upper branch tip
+              vertices.push_back(Point<3>(1.0, -0.5, 0)); // Lower branch tip
               std::vector<CellData<1>> cells(3);
               cells[0].vertices[0] = 0;
               cells[0].vertices[1] = 1;
