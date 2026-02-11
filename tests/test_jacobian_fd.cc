@@ -1,83 +1,106 @@
 #include <deal.II/base/logstream.h>
-
 #include <deal.II/grid/grid_generator.h>
+#include <deal.II/numerics/vector_tools.h>
 
 #include "../include/blood_flow_system_updated_1d3d.h"
+#include "tests.h"
+
+#include <random>
+#include <iomanip>
 
 using namespace dealii;
-
-#include "tests.h"
 
 void
 test()
 {
-  constexpr unsigned int         dim      = 1;
-  constexpr unsigned int         spacedim = 3;
-  BloodFlowSystem<dim, spacedim> problem;
-
+  BloodFlowSystem<1, 3> problem;
   problem.initialize_params(PRM_DIR "jacobian_fd.prm");
 
-  // Build mesh & system
-  GridGenerator::hyper_cube(problem.triangulation, 0.0, 1.0);
+  GridGenerator::hyper_cube(problem.triangulation, 0, 1);
   problem.triangulation.refine_global(problem.n_global_refinements);
 
   problem.setup_system();
 
-  // Set initial solution
-  problem.solution     = 0;
-  problem.solution_old = 0;
-  problem.time         = 0.0;
+  AffineConstraints<double> constraints;
+  constraints.close();
 
-  // Must compute residual once to initialize old state if used
+  VectorTools::project(problem.dof_handler,
+                       constraints,
+                       QGauss<1>(problem.fe_degree + 1),
+                       problem.initial_condition,
+                       problem.solution);
+
+  problem.solution_old = problem.solution;
+
+  // ---------------------------
+  // Assemble at base state
+  // ---------------------------
   problem.assemble_system();
 
-  const unsigned int n   = problem.solution.size();
-  const double       eps = 1e-8;
+  Vector<double> R0 = problem.residual_vector;
 
-  Vector<double> Jcol(n), FDcol(n);
+  // ---------------------------
+  //  Create random vector for finite difference check
+  // ---------------------------
+  Vector<double> delta(problem.solution.size());
+  for (unsigned int i = 0; i < delta.size(); ++i)
+    delta[i] = 2.0 * (double(rand()) / RAND_MAX - 0.5);
 
-  double max_err = 0.0;
+  delta /= delta.l2_norm(); // normalize direction
 
-  for (unsigned int j = 0; j < n; ++j)
-    {
-      // --- Build y+ and y− ---
-      Vector<double> y_plus  = problem.solution;
-      Vector<double> y_minus = problem.solution;
+  const double eps = 1e-7;
 
-      y_plus[j] += eps;
-      y_minus[j] -= eps;
+// Store original solution
+Vector<double> U0 = problem.solution;
 
-      // --- Compute F(y+) ---
-      problem.solution = y_plus;
-      problem.assemble_system(); // fills residual_vector
-      Vector<double> F_plus = problem.residual_vector;
+// ---------------------------
+// Compute J * delta
+// ---------------------------
+Vector<double> Jdelta(problem.solution.size());
+problem.jacobian_matrix.vmult(Jdelta, delta);
 
-      // --- Compute F(y−) ---
-      problem.solution = y_minus;
-      problem.assemble_system();
-      Vector<double> F_minus = problem.residual_vector;
+// ---------------------------
+// Compute R(u + eps*delta)
+// ---------------------------
+problem.solution = U0;
+problem.solution.add(eps, delta);
+problem.assemble_system();
+Vector<double> R_plus = problem.residual_vector;
 
-      // --- Central finite difference column ---
-      FDcol = F_plus;
-      FDcol.add(-1.0, F_minus);
-      FDcol /= (2.0 * eps);
+// ---------------------------
+// Compute R(u - eps*delta)
+// ---------------------------
+problem.solution = U0;
+problem.solution.add(-eps, delta);
+problem.assemble_system();
+Vector<double> R_minus = problem.residual_vector;
 
-      // --- Extract Jacobian column: J e_j ---
-      Vector<double> ej(n), J_ej(n);
-      ej    = 0.0;
-      ej[j] = 1.0;
-      problem.jacobian_matrix.vmult(J_ej, ej);
+// ---------------------------
+// Central difference
+// ---------------------------
+Vector<double> FD = R_plus;
+FD -= R_minus;
+FD /= (2.0 * eps);
 
-      // --- Compare ---
-      Vector<double> diff = FDcol;
-      diff.add(-1.0, J_ej);
-      max_err = std::max(max_err, diff.linfty_norm());
-    }
+// Restore original solution
+problem.solution = U0;
+problem.assemble_system();
 
-  deallog << "\n========================================\n";
-  deallog << " FINITE DIFFERENCE JACOBIAN CHECK\n";
-  deallog << " max |FD - J|_inf = " << max_err << std::endl;
-  deallog << "========================================\n";
+// ---------------------------
+// Compare
+// ---------------------------
+Vector<double> error = Jdelta;
+error += FD;
+
+deallog << std::scientific << std::setprecision(6);
+
+deallog <<"delta : " << delta.l1_norm() << std::endl;
+
+deallog << "Relative error: "
+        << error.l2_norm() / FD.l2_norm()
+        << std::endl;
+
+  
 }
 
 int
