@@ -320,10 +320,16 @@ BloodFlowSystem<dim, spacedim>::assemble_junction_terms()
       JunctionState X0{Ap, Up, Ad1, Ud1, Ad2, Ud2};
       JunctionState X =
         junction_solver.solve(X0, Wp_plus, Wd1_minus, Wd2_minus, *this);
+      //   Vector<double> R(6);
+
+      //  compute_junction_residual(X, Wp_plus, Wd1_minus, Wd2_minus, R);
+      //  mass_residual_at_junction.push_back(R[0]);
+      //  std::cout << "Mass residual at junction: " << R[0] << std::endl;
 
       X.Ap  = std::max(X.Ap, A_min);
       X.Ad1 = std::max(X.Ad1, A_min);
       X.Ad2 = std::max(X.Ad2, A_min);
+
 
       // ======================================================
       // 4. Junction Jacobian inverse JX^{-1}
@@ -988,6 +994,122 @@ BloodFlowSystem<dim, spacedim>::assemble_system()
       }
   };
 
+  //   //========== BOUNDARY WORKER - RIEMANN INVARIANT METHOD ==========
+  // exact_solution.set_time(time);
+  // auto boundary_worker = [&](const Iterator                      &cell,
+  //                            const unsigned int                   face_no,
+  //                            BloodFlowScratchData<dim, spacedim> &scratch,
+  //                            BloodFlowCopyData                   &copy) {
+  //   if (all_junction_faces.count({cell->id(), face_no}) > 0)
+  //     return;
+
+  //   scratch.fe_interface_values.reinit(cell, face_no);
+  //   const auto &fe_face = scratch.fe_interface_values.get_fe_face_values(0);
+
+  //   const auto        &JxW     = fe_face.get_JxW_values();
+  //   const auto        &normals = fe_face.get_normal_vectors();
+  //   const unsigned int n_q     = fe_face.n_quadrature_points;
+
+  //   std::vector<double> current_area(n_q), current_velocity(n_q);
+  //   fe_face[area_extractor].get_function_values(solution, current_area);
+  //   fe_face[velocity_extractor].get_function_values(solution,
+  //   current_velocity);
+
+  //   exact_solution.set_time(time);
+  //   std::vector<Vector<double>> bc(n_q, Vector<double>(2));
+  //   exact_solution.vector_value_list(fe_face.get_quadrature_points(), bc);
+
+  //   unsigned int boundary_id = cell->face(face_no)->boundary_id();
+
+  //   for (unsigned int q = 0; q < n_q; ++q)
+  //     {
+  //       // Target boundary values (e.g., from exact solution or prescribed
+  //       data) const double U_bc = bc[q](1);
+
+  //       // 1. Interior state and characteristics
+  //       const double A_int = current_area[q];
+  //       const double U_int = current_velocity[q];
+  //       const double c_int = compute_wave_speed(A_int);
+
+  //       // 2. Riemann Invariants at the interior
+  //       const double W1_int = U_int + 4.0 * c_int;
+  //       const double W2_int = U_int - 4.0 * c_int;
+
+  //       double A_ext, U_ext;
+
+  //       // 3. Determine exterior state using Method of Characteristics
+  //       if (boundary_id == 0) // INLET (z=0)
+  //         {
+  //           // W2 is the outgoing characteristic at the inlet (moving left)
+  //           // Extrapolated from interior
+  //           double W2_ext = U_int - 4.0 * c_int;  // evaluated, but NOT
+  //           linked
+
+  //           // W1 is incoming; determined by physical condition (prescribed
+  //           Velocity U_bc)
+  //           // Since U = (W1 + W2)/2, then W1 = 2*U - W2
+  //           double W1_ext = 2.0 * U_bc - W2_ext;
+
+  //           // Recover A_ext and U_ext by inverting Riemann invariants
+  //           A_ext = std::pow((W1_ext -
+  //           W2_ext)*std::sqrt(par["rho"]*std::sqrt(par["a0"])/
+  //           (2*par["mu"])), 4.0); U_ext = (W1_ext + W2_ext) / 2.0;
+  //         }
+  //       else // OUTLET (z=L)
+  //         {
+  //           // W1 is the outgoing characteristic at the outlet (moving right)
+  //           double W1_ext = W1_int;
+
+  //           // W2 is incoming; determined by reflection coefficient Rt
+  //           double Rt = 1; // Non-reflective
+  //           double c0 = std::sqrt(par["mu"] *par["m"]/ par["rho"]); //
+  //           Equilibrium wave speed double W1_0 = 0.0 + 4.0 * c0; double W2_0
+  //           = 0.0 - 4.0 * c0;
+
+  //           double W2_ext = W2_0 - Rt * (W1_ext - W1_0);
+
+  //           // Recover A_ext and U_ext
+  //           A_ext = std::pow((W1_ext -
+  //           W2_ext)*std::sqrt(par["rho"]*std::sqrt(par["a0"])/
+  //           (2*par["mu"])), 4.0); U_ext = (W1_ext + W2_ext) / 2.0;
+  //         }
+
+  //       // 4. HLL RESIDUAL FLUX AT BOUNDARY
+  //       auto [flux_A_boundary, flux_U_boundary] =
+  //         HLL_residual_flux(cell, cell, A_int, U_int, A_ext, U_ext,
+  //         normals[q]);
+
+  //       // 5. JACOBIAN ASSEMBLY (only interior side varies)
+  //       for (unsigned int j = 0; j < fe_face.get_fe().dofs_per_cell; ++j)
+  //         {
+  //           const double trial_A = fe_face[area_extractor].value(j, q);
+  //           const double trial_U = fe_face[velocity_extractor].value(j, q);
+
+  //           auto [flux_A_jac_boundary, flux_U_jac_boundary] =
+  //           HLL_jacobian_flux(
+  //             cell, cell, A_int, U_int, A_ext, U_ext, trial_A, trial_U, 0.0,
+  //             0.0, normals[q]);
+
+  //           for (unsigned int i = 0; i < fe_face.get_fe().dofs_per_cell; ++i)
+  //             {
+  //               const double test_A = fe_face[area_extractor].value(i, q);
+  //               const double test_U = fe_face[velocity_extractor].value(i,
+  //               q); copy.cell_matrix(i, j) += (flux_A_jac_boundary * test_A +
+  //               flux_U_jac_boundary * test_U) * JxW[q];
+  //             }
+  //         }
+
+  //       // 6. RHS ASSEMBLY
+  //       for (unsigned int i = 0; i < fe_face.get_fe().dofs_per_cell; ++i)
+  //         {
+  //           const double test_A = fe_face[area_extractor].value(i, q);
+  //           const double test_U = fe_face[velocity_extractor].value(i, q);
+  //           copy.cell_rhs(i) -= (flux_A_boundary * test_A + flux_U_boundary *
+  //           test_U) * JxW[q];
+  //         }
+  //     }
+  // };
+
   // Copier lambda
   const AffineConstraints<double> constraints;
   auto                            copier = [&](const BloodFlowCopyData &c) {
@@ -1315,15 +1437,38 @@ BloodFlowSystem<dim, spacedim>::run_convergence_study()
               vertices.push_back(Point<3>(0, 0, 0)); // Origin (Start of trunk)
               vertices.push_back(
                 Point<3>(0.5, 0, 0)); // Junction point (Middle of trunk)
-              vertices.push_back(Point<3>(1.0, 0.5, 0));  // Upper branch tip
+              vertices.push_back(Point<3>(1.0, 0.5, 0)); // Upper branch tip
+
               vertices.push_back(Point<3>(1.0, -0.5, 0)); // Lower branch tip
-              std::vector<CellData<1>> cells(3);
+              // for second y junction
+              vertices.push_back(
+                Point<3>(1.5, 0.25, 0)); // Lower branch tip for second y
+                                         // junction with center at (1,0.5,0)
+              vertices.push_back(Point<3>(
+                1.5, 0.75, 0)); // Upper branch tip for second y junction
+
+              vertices.push_back(
+                Point<3>(1.5, -0.25, 0)); // Upper branch tip for third y
+                                          // junction with center at (1,-0.5,0)
+              vertices.push_back(Point<3>(
+                1.5, -0.75, 0)); // Lower branch tip for third y junction
+
+              std::vector<CellData<1>> cells(7);
               cells[0].vertices[0] = 0;
               cells[0].vertices[1] = 1;
               cells[1].vertices[0] = 1;
               cells[1].vertices[1] = 2;
               cells[2].vertices[0] = 1;
               cells[2].vertices[1] = 3;
+              cells[3].vertices[0] = 2;
+              cells[3].vertices[1] = 4;
+              cells[4].vertices[0] = 2;
+              cells[4].vertices[1] = 5;
+              cells[5].vertices[0] = 3;
+              cells[5].vertices[1] = 6;
+              cells[6].vertices[0] = 3;
+              cells[6].vertices[1] = 7;
+
 
               triangulation.create_triangulation(vertices,
                                                  cells,
@@ -1420,6 +1565,7 @@ BloodFlowSystem<dim, spacedim>::run_convergence_study()
                         << "  residual = " << std::scientific
                         << std::setprecision(6) << newton_residual_norm
                         << std::endl;
+
 
               // Step 5: Check for divergence
               if (!std::isfinite(newton_residual_norm) ||

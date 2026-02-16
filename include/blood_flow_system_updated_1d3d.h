@@ -574,6 +574,7 @@ private:
   Vector<double>       solution_old;
   Vector<double>       pressure;
   Vector<double>       tmp_vector;
+  std::vector<double>      mass_residual_at_junction;
 
   Vector<double> residual_vector;
   Vector<double> newton_update;
