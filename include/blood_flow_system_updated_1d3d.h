@@ -583,6 +583,7 @@ private:
   std::string  constants            = "1.0";
   std::string  output_filename      = "solution";
   bool         use_direct_solver    = true;
+  bool         use_riemann_invariants = false;
   unsigned int n_refinement_cycles  = 1;
   unsigned int n_global_refinements = 5;
 

@@ -6,6 +6,7 @@ subsection Blood Flow Parameters
   set Reference radius (r0)                   = 1
   set Tube law exponent (m)                   = 1 # We need this to ensure exact solution works and is linear
   set Viscosity coefficient (eta_c)           = 1
+  set Use Riemann Invariants               = false
 end
 
 subsection Functions

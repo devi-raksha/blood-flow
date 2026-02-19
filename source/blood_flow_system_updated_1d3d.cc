@@ -74,6 +74,7 @@ BloodFlowSystem<dim, spacedim>::BloodFlowSystem()
   // add_parameter("Picard iterations", max_picard_iterations);
   add_parameter("Newton iterations", max_newton_iterations);
   add_parameter("Newton tolerance", newton_tolerance);
+  add_parameter("Use Riemann Invariants", use_riemann_invariants);
 }
 
 // ========================================================================
@@ -495,18 +496,34 @@ BloodFlowSystem<dim, spacedim>::assemble_junction_terms()
                 dX_duh *= -1.0;
 
                 // (d) ∂F/∂X*
-                const double dFA_dA = U_star;
-                const double dFA_dU = A_star;
+                // const double dFA_dA = U_star;
+                // const double dFA_dU = A_star;
 
-                const double dFU_dA =
-                  compute_pressure_derivative(A_star_safe) / par["rho"];
-                const double dFU_dU = U_star;
+                // const double dFU_dA =
+                //   compute_pressure_derivative(A_star_safe) / par["rho"];
+                // const double dFU_dU = U_star;
 
-                const double dFA_chain =
-                  dFA_dA * dX_duh[A_idx] + dFA_dU * dX_duh[U_idx];
+                // const double dFA_chain =
+                //   dFA_dA * dX_duh[A_idx] + dFA_dU * dX_duh[U_idx];
 
-                const double dFU_chain =
-                  dFU_dA * dX_duh[A_idx] + dFU_dU * dX_duh[U_idx];
+                // const double dFU_chain =
+                //   dFU_dA * dX_duh[A_idx] + dFU_dU * dX_duh[U_idx];
+
+                // (d) ∂F_HLL / ∂X* (The HLL-consistent Chain Rule)
+                // We vary the "Right" state (the junction state X*) by the
+                // sensitivity dX_duh
+                auto [dFA_chain, dFU_chain] = HLL_jacobian_flux(
+                  fd.cell,
+                  fd.cell,
+                  Ah_safe,
+                  Uh[q],
+                  A_star_safe,
+                  U_star,
+                  0.0,           // No variation in interior A
+                  0.0,           // No variation in interior U
+                  dX_duh[A_idx], // Variation of junction Area
+                  dX_duh[U_idx], // Variation of junction Velocity
+                  normals[q]);
 
                 // (e) Assemble total Jacobian
                 for (unsigned int i = 0; i < fe->n_dofs_per_cell(); ++i)
@@ -821,193 +838,198 @@ BloodFlowSystem<dim, spacedim>::assemble_system()
       }
   };
 
-  // //========== BOUNDARY WORKER - WITH HLL FLUX ==========
-  // exact_solution.set_time(time);
-  // auto boundary_worker = [&](const Iterator                      &cell,
-  //                            const unsigned int                   face_no,
-  //                            BloodFlowScratchData<dim, spacedim> &scratch,
-  //                            BloodFlowCopyData                   &copy) {
-  //   if (all_junction_faces.count({cell->id(), face_no}) > 0)
-  //     return; // Skip boundary faces
+  //========== BOUNDARY WORKER - WITH HLL FLUX ==========
+  exact_solution.set_time(time);
+  auto boundary_worker_with_characteristics =
+    [&](const Iterator                      &cell,
+        const unsigned int                   face_no,
+        BloodFlowScratchData<dim, spacedim> &scratch,
+        BloodFlowCopyData                   &copy) {
+      if (all_junction_faces.count({cell->id(), face_no}) > 0)
+        return; // Skip boundary faces
 
-  //   // Standard boundary condition treatment
-  //   scratch.fe_interface_values.reinit(cell, face_no);
-  //   const auto &fe_face = scratch.fe_interface_values.get_fe_face_values(0);
+      // Standard boundary condition treatment
+      scratch.fe_interface_values.reinit(cell, face_no);
+      const auto &fe_face = scratch.fe_interface_values.get_fe_face_values(0);
 
-  //   const auto        &JxW     = fe_face.get_JxW_values();
-  //   const auto        &normals = fe_face.get_normal_vectors();
-  //   const unsigned int n_q     = fe_face.n_quadrature_points;
+      const auto        &JxW     = fe_face.get_JxW_values();
+      const auto        &normals = fe_face.get_normal_vectors();
+      const unsigned int n_q     = fe_face.n_quadrature_points;
 
-  //   // Interior trace (current Newton iterate)
-  //   std::vector<double> current_area(n_q), current_velocity(n_q);
-  //   fe_face[area_extractor].get_function_values(solution, current_area);
-  //   fe_face[velocity_extractor].get_function_values(solution,
-  //   current_velocity);
+      // Interior trace (current Newton iterate)
+      std::vector<double> current_area(n_q), current_velocity(n_q);
+      fe_face[area_extractor].get_function_values(solution, current_area);
+      fe_face[velocity_extractor].get_function_values(solution,
+                                                      current_velocity);
 
-  //   // Boundary values
-  //   exact_solution.set_time(time);
-  //   std::vector<Vector<double>> bc(n_q, Vector<double>(2));
-  //   exact_solution.vector_value_list(fe_face.get_quadrature_points(), bc);
+      // Boundary values
+      exact_solution.set_time(time);
+      std::vector<Vector<double>> bc(n_q, Vector<double>(2));
+      exact_solution.vector_value_list(fe_face.get_quadrature_points(), bc);
 
-  //   // Determine which boundary this is (BID=0 is inlet, BID=1 is outlet)
-  //   unsigned int boundary_id = cell->face(face_no)->boundary_id();
+      // Determine which boundary this is (BID=0 is inlet, BID=1 is outlet)
+      unsigned int boundary_id = cell->face(face_no)->boundary_id();
 
-  //   for (unsigned int q = 0; q < n_q; ++q)
-  //     {
-  //       const double A_bc = bc[q](0);
-  //       const double U_bc = bc[q](1);
+      for (unsigned int q = 0; q < n_q; ++q)
+        {
+          const double A_bc = bc[q](0);
+          const double U_bc = bc[q](1);
 
-  //       // Interior state
-  //       const double A_int = current_area[q];
-  //       const double U_int = current_velocity[q];
+          // Interior state
+          const double A_int = current_area[q];
+          const double U_int = current_velocity[q];
 
 
-  //       const double c_int = compute_wave_speed(A_int);
+          const double c_int = compute_wave_speed(A_int);
 
-  //       // ===== CHARACTERISTIC SPEEDS =====
-  //       const double lambda1 = (U_int - c_int);
-  //       const double lambda2 = (U_int + c_int);
+          // ===== CHARACTERISTIC SPEEDS =====
+          const double lambda1 = (U_int - c_int);
+          const double lambda2 = (U_int + c_int);
 
-  //       // ===== BOUNDARY CLASSIFICATION =====
-  //       // Count incoming characteristics
-  //       int incoming_count = 0;
-  //       if (lambda1 <= 0.0)
-  //         incoming_count++;
-  //       if (lambda2 <= 0.0)
-  //         incoming_count++;
+          // ===== BOUNDARY CLASSIFICATION =====
+          // Count incoming characteristics
+          int incoming_count = 0;
+          if (lambda1 <= 0.0)
+            incoming_count++;
+          if (lambda2 <= 0.0)
+            incoming_count++;
 
-  //       bool is_subcritical_inflow  = (incoming_count == 1) && (lambda1 <=
-  //       0.0); bool is_subcritical_outflow = (incoming_count == 1) && (lambda2
-  //       <= 0.0); bool is_supercritical_inflow  = (incoming_count == 2); bool
-  //       is_supercritical_outflow = (incoming_count == 0);
+          bool is_subcritical_inflow =
+            (incoming_count == 1) && (lambda1 <= 0.0);
+          bool is_subcritical_outflow =
+            (incoming_count == 1) && (lambda2 <= 0.0);
+          bool is_supercritical_inflow  = (incoming_count == 2);
+          bool is_supercritical_outflow = (incoming_count == 0);
 
-  //       // ===== DETERMINE EXTERIOR STATE (A_ext, U_ext) =====
-  //       double A_ext, U_ext;
+          // ===== DETERMINE EXTERIOR STATE (A_ext, U_ext) =====
+          double A_ext, U_ext;
 
-  //       if (is_subcritical_inflow)
-  //         {
-  //           // Subcritical: first characteristic is incoming
-  //           A_ext = A_bc;  // Impose area at boundary
-  //           U_ext = U_int; // velocity from interior
-  //         }
-  //       else if (is_subcritical_outflow)
-  //         {
-  //           // Subcritical: second characteristic is incoming
-  //           A_ext = A_int; // area from interior
-  //           U_ext = U_bc;  // Impose velocity at boundary
-  //         }
-  //       else if (is_supercritical_inflow)
-  //         {
-  //           // Supercritical inflow: both characteristics enter
-  //           A_ext = A_bc; // Impose area
-  //           U_ext = U_bc; // Impose velocity
-  //         }
-  //       else if (is_supercritical_outflow)
-  //         {
-  //           // Supercritical outflow: no characteristics enter
-  //           A_ext = A_int; // interior area
-  //           U_ext = U_int; // interior velocity
-  //                          // ---- WEAK OUTFLOW STABILIZATION ----
-  //           const double eps = 1e-10;
+          if (is_subcritical_inflow)
+            {
+              // Subcritical: first characteristic is incoming
+              A_ext = A_bc;  // Impose area at boundary
+              U_ext = U_int; // velocity from interior
+            }
+          else if (is_subcritical_outflow)
+            {
+              // Subcritical: second characteristic is incoming
+              A_ext = A_int; // area from interior
+              U_ext = U_bc;  // Impose velocity at boundary
+            }
+          else if (is_supercritical_inflow)
+            {
+              // Supercritical inflow: both characteristics enter
+              A_ext = A_bc; // Impose area
+              U_ext = U_bc; // Impose velocity
+            }
+          else if (is_supercritical_outflow)
+            {
+              // Supercritical outflow: no characteristics enter
+              A_ext = A_int; // interior area
+              U_ext = U_int; // interior velocity
+                             // ---- WEAK OUTFLOW STABILIZATION ----
+              const double eps = 1e-10;
 
-  //           for (unsigned int i = 0; i < fe_face.get_fe().dofs_per_cell; ++i)
-  //             {
-  //               copy.cell_matrix(i, i) += eps;
-  //             }
-  //         }
-  //       else
-  //         {
-  //           Assert(false, ExcMessage("Unclassified boundary condition."));
-  //         }
+              for (unsigned int i = 0; i < fe_face.get_fe().dofs_per_cell; ++i)
+                {
+                  copy.cell_matrix(i, i) += eps;
+                }
+            }
+          else
+            {
+              Assert(false, ExcMessage("Unclassified boundary condition."));
+            }
 
-  //       // ===== HLL RESIDUAL FLUX AT BOUNDARY =====
-  //       // For boundary: treat exterior as "right" state and interior as
-  //       "left" auto [flux_A_boundary, flux_U_boundary] =
-  //         HLL_residual_flux(cell,
-  //                           cell,
-  //                           A_int, // interior (left)
-  //                           U_int, // interior (left)
-  //                           A_ext, // exterior (right)
-  //                           U_ext, // exterior (right)
-  //                           normals[q]);
+          // ===== HLL RESIDUAL FLUX AT BOUNDARY =====
+          // For boundary: treat exterior as "right" state and interior as
+          // "left" state in HLL flux
+          auto [flux_A_boundary, flux_U_boundary] =
+            HLL_residual_flux(cell,
+                              cell,
+                              A_int, // interior (left)
+                              U_int, // interior (left)
+                              A_ext, // exterior (right)
+                              U_ext, // exterior (right)
+                              normals[q]);
 
-  //       const double F_area_boundary     = flux_A_boundary;
-  //       const double F_momentum_boundary = flux_U_boundary;
+          const double F_area_boundary     = flux_A_boundary;
+          const double F_momentum_boundary = flux_U_boundary;
 
-  //       // ===== JACOBIAN ASSEMBLY =====
-  //       for (unsigned int j = 0; j < fe_face.get_fe().dofs_per_cell; ++j)
-  //         {
-  //           const double trial_A = fe_face[area_extractor].value(j, q);
-  //           const double trial_U = fe_face[velocity_extractor].value(j, q);
+          // ===== JACOBIAN ASSEMBLY =====
+          for (unsigned int j = 0; j < fe_face.get_fe().dofs_per_cell; ++j)
+            {
+              const double trial_A = fe_face[area_extractor].value(j, q);
+              const double trial_U = fe_face[velocity_extractor].value(j, q);
 
-  //           // ===== HLL JACOBIAN AT BOUNDARY =====
-  //           // Only trial functions on interior side are active (j comes from
-  //           // interior cell) Exterior state does not change with trial
-  //           // functions
-  //           auto [flux_A_jac_boundary, flux_U_jac_boundary] =
-  //           HLL_jacobian_flux(
-  //             cell,
-  //             cell,
-  //             A_int,   // interior current (left)
-  //             U_int,   // interior current (left)
-  //             A_ext,   // exterior (right) - fixed by boundary condition
-  //             U_ext,   // exterior (right) - fixed by boundary condition
-  //             trial_A, // trial_A_L (only interior varies)
-  //             trial_U, // trial_U_L (only interior varies)
-  //             0.0,     // trial_A_R = 0 (exterior is fixed)
-  //             0.0,     // trial_U_R = 0 (exterior is fixed)
-  //             normals[q]);
+              // ===== HLL JACOBIAN AT BOUNDARY =====
+              // Only trial functions on interior side are active (j comes from
+              // interior cell) Exterior state does not change with trial
+              // functions
+              auto [flux_A_jac_boundary, flux_U_jac_boundary] =
+                HLL_jacobian_flux(
+                  cell,
+                  cell,
+                  A_int,   // interior current (left)
+                  U_int,   // interior current (left)
+                  A_ext,   // exterior (right) - fixed by boundary condition
+                  U_ext,   // exterior (right) - fixed by boundary condition
+                  trial_A, // trial_A_L (only interior varies)
+                  trial_U, // trial_U_L (only interior varies)
+                  0.0,     // trial_A_R = 0 (exterior is fixed)
+                  0.0,     // trial_U_R = 0 (exterior is fixed)
+                  normals[q]);
 
-  //           // Test function loop
-  //           for (unsigned int i = 0; i < fe_face.get_fe().dofs_per_cell; ++i)
-  //             {
-  //               const double test_A = fe_face[area_extractor].value(i, q);
-  //               const double test_U = fe_face[velocity_extractor].value(i,
-  //               q);
+              // Test function loop
+              for (unsigned int i = 0; i < fe_face.get_fe().dofs_per_cell; ++i)
+                {
+                  const double test_A = fe_face[area_extractor].value(i, q);
+                  const double test_U = fe_face[velocity_extractor].value(i, q);
 
-  //               // Area equation Jacobian
-  //               copy.cell_matrix(i, j) += flux_A_jac_boundary * test_A *
-  //               JxW[q];
+                  // Area equation Jacobian
+                  copy.cell_matrix(i, j) +=
+                    flux_A_jac_boundary * test_A * JxW[q];
 
-  //               // Momentum equation Jacobian
-  //               copy.cell_matrix(i, j) += flux_U_jac_boundary * test_U *
-  //               JxW[q];
-  //             }
-  //         }
+                  // Momentum equation Jacobian
+                  copy.cell_matrix(i, j) +=
+                    flux_U_jac_boundary * test_U * JxW[q];
+                }
+            }
 
-  //       // ===== RHS ASSEMBLY =====
-  //       for (unsigned int i = 0; i < fe_face.get_fe().dofs_per_cell; ++i)
-  //         {
-  //           const double test_A = fe_face[area_extractor].value(i, q);
-  //           const double test_U = fe_face[velocity_extractor].value(i, q);
+          // ===== RHS ASSEMBLY =====
+          for (unsigned int i = 0; i < fe_face.get_fe().dofs_per_cell; ++i)
+            {
+              const double test_A = fe_face[area_extractor].value(i, q);
+              const double test_U = fe_face[velocity_extractor].value(i, q);
 
-  //           // Area RHS
-  //           copy.cell_rhs(i) -= F_area_boundary * test_A * JxW[q];
+              // Area RHS
+              copy.cell_rhs(i) -= F_area_boundary * test_A * JxW[q];
 
-  //           // Momentum RHS
-  //           copy.cell_rhs(i) -= F_momentum_boundary * test_U * JxW[q];
-  //         }
+              // Momentum RHS
+              copy.cell_rhs(i) -= F_momentum_boundary * test_U * JxW[q];
+            }
 
-  //       // ===== DEBUG OUTPUT =====
-  //       // deallog.push("boundary_debug");
-  //       // deallog << "BID=" << boundary_id << " q=" << q << " | A_int=" << A_int
-  //       //         << " U_int=" << U_int << " c=" << c_int
-  //       //         << " | lambda1=" << lambda1 << " lambda2=" << lambda2
-  //       //         << " | inlet=" << is_subcritical_inflow
-  //       //         << " outlet=" << is_subcritical_outflow << " | A_ext=" << A_ext
-  //       //         << " U_ext=" << U_ext << std::endl;
-  //       // deallog.pop();
-  //     }
-  // };
+          // ===== DEBUG OUTPUT =====
+          // deallog.push("boundary_debug");
+          // deallog << "BID=" << boundary_id << " q=" << q << " | A_int=" << A_int
+          //         << " U_int=" << U_int << " c=" << c_int
+          //         << " | lambda1=" << lambda1 << " lambda2=" << lambda2
+          //         << " | inlet=" << is_subcritical_inflow
+          //         << " outlet=" << is_subcritical_outflow << " | A_ext=" << A_ext
+          //         << " U_ext=" << U_ext << std::endl;
+          // deallog.pop();
+        }
+    };
 
-  //========== BOUNDARY WORKER – FULLY IMPLICIT RI (SHERWIN TERMINAL BC)
+  //========== BOUNDARY WORKER – FULLY IMPLICIT RI
   //==========
   exact_solution.set_time(time);
 
-  auto boundary_worker = [&](const Iterator                      &cell,
-                             const unsigned int                   face_no,
-                             BloodFlowScratchData<dim, spacedim> &scratch,
-                             BloodFlowCopyData                   &copy) {
+  auto boundary_worker_riemann_invariant = [&](
+                                             const Iterator    &cell,
+                                             const unsigned int face_no,
+                                             BloodFlowScratchData<dim, spacedim>
+                                                               &scratch,
+                                             BloodFlowCopyData &copy) {
     if (all_junction_faces.count({cell->id(), face_no}) > 0)
       return;
 
@@ -1031,7 +1053,7 @@ BloodFlowSystem<dim, spacedim>::assemble_system()
 
     const unsigned int boundary_id = cell->face(face_no)->boundary_id();
 
-       // Boundary values
+    // Boundary values
     exact_solution.set_time(time);
     std::vector<Vector<double>> bc(n_q, Vector<double>(2));
     exact_solution.vector_value_list(fe_face.get_quadrature_points(), bc);
@@ -1055,7 +1077,6 @@ BloodFlowSystem<dim, spacedim>::assemble_system()
         // ---------------- Newton solve for boundary state ----------------
         double A_b = A_h;
         double U_b = U_h;
-
         for (unsigned int it = 0; it < 10; ++it)
           {
             const double A_b_safe = std::max(A_b, A_min);
@@ -1068,7 +1089,7 @@ BloodFlowSystem<dim, spacedim>::assemble_system()
 
             if (boundary_id == 0) // ================= INLET =================
               {
-                const double U_bc = bc[q](1);
+                const double U_bc  = bc[q](1);
                 const double W1_bc = 2.0 * U_bc - W2_h;
 
                 Rb[0] = U_b + 4.0 * c_b - W1_bc;
@@ -1157,17 +1178,29 @@ BloodFlowSystem<dim, spacedim>::assemble_system()
             Jb.vmult(dX_duh, dRb_duh);
             dX_duh *= -1.0;
 
-            const double dFA_chain = U_b * dX_duh[0] + A_b * dX_duh[1];
-            const double dFU_chain =
-              compute_pressure_derivative(A_b) / par["rho"] * dX_duh[0] +
-              U_b * dX_duh[1];
+            // 2. Compute the HLL sensitivity to the boundary state variation.
+            // We pass 0.0 for trial_A/U (left variation) because we only want
+            // the part of the Jacobian that comes from the boundary state
+            // change.
+            auto [dFA_chain, dFU_chain] =
+              HLL_jacobian_flux(cell,
+                                cell,
+                                A_h,
+                                U_h,
+                                A_b,
+                                U_b,
+                                0.0,       // No change to left Area
+                                0.0,       // No change to left Velocity
+                                dX_duh[0], // Variation of boundary Area
+                                dX_duh[1], // Variation of boundary Velocity
+                                normals[q]);
 
-            if (boundary_id != 0) // outlet just for stability 
-              {
-                const double eps = 1e-10;
-                for (unsigned int i = 0; i < fe->n_dofs_per_cell(); ++i)
-                  copy.cell_matrix(i, i) += eps;
-              }              
+            // if (boundary_id != 0) // outlet just for stability
+            //   {
+            //     const double eps = 1e-10;
+            //     for (unsigned int i = 0; i < fe->n_dofs_per_cell(); ++i)
+            //       copy.cell_matrix(i, i) += eps;
+            //   }
 
 
             for (unsigned int i = 0; i < fe->n_dofs_per_cell(); ++i)
@@ -1227,17 +1260,34 @@ BloodFlowSystem<dim, spacedim>::assemble_system()
                                                    quadrature_face);
   BloodFlowCopyData                   copy_data;
 
-  MeshWorker::mesh_loop(dof_handler.begin_active(),
-                        dof_handler.end(),
-                        cell_worker,
-                        copier,
-                        scratch_data,
-                        copy_data,
-                        MeshWorker::assemble_own_cells |
-                          MeshWorker::assemble_boundary_faces |
-                          MeshWorker::assemble_own_interior_faces_once,
-                        boundary_worker,
-                        face_worker);
+  if (use_riemann_invariants)
+    {
+      MeshWorker::mesh_loop(dof_handler.begin_active(),
+                            dof_handler.end(),
+                            cell_worker,
+                            copier,
+                            scratch_data,
+                            copy_data,
+                            MeshWorker::assemble_own_cells |
+                              MeshWorker::assemble_boundary_faces |
+                              MeshWorker::assemble_own_interior_faces_once,
+                            boundary_worker_riemann_invariant,
+                            face_worker);
+    }
+  else
+    {
+      MeshWorker::mesh_loop(dof_handler.begin_active(),
+                            dof_handler.end(),
+                            cell_worker,
+                            copier,
+                            scratch_data,
+                            copy_data,
+                            MeshWorker::assemble_own_cells |
+                              MeshWorker::assemble_boundary_faces |
+                              MeshWorker::assemble_own_interior_faces_once,
+                            boundary_worker_with_characteristics,
+                            face_worker);
+    }
 
 
   assemble_junction_terms();
