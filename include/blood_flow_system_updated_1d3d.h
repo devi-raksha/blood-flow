@@ -579,13 +579,14 @@ private:
   Vector<double> residual_vector;
   Vector<double> newton_update;
   // Parameters
-  unsigned int fe_degree            = 1;
-  std::string  constants            = "1.0";
-  std::string  output_filename      = "solution";
-  bool         use_direct_solver    = true;
+  unsigned int fe_degree              = 1;
+  std::string  constants              = "1.0";
+  std::string  output_filename        = "solution";
+  bool         use_direct_solver      = true;
   bool         use_riemann_invariants = false;
-  unsigned int n_refinement_cycles  = 1;
-  unsigned int n_global_refinements = 5;
+  bool         use_junction_mesh      = false;
+  unsigned int n_refinement_cycles    = 1;
+  unsigned int n_global_refinements   = 5;
 
   // Time stepping parameters
   double       time_step    = 0.01;

@@ -75,6 +75,7 @@ BloodFlowSystem<dim, spacedim>::BloodFlowSystem()
   add_parameter("Newton iterations", max_newton_iterations);
   add_parameter("Newton tolerance", newton_tolerance);
   add_parameter("Use Riemann Invariants", use_riemann_invariants);
+  add_parameter("Use junction mesh", use_junction_mesh);
 }
 
 // ========================================================================
@@ -1543,7 +1544,6 @@ BloodFlowSystem<dim, spacedim>::check_singular_rows() const
     }
 }
 
-
 // ========================================================================
 // RUN CONVERGENCE STUDY WITH NEWTON ITERATION
 // ========================================================================
@@ -1561,89 +1561,60 @@ BloodFlowSystem<dim, spacedim>::run_convergence_study()
 
       if (cycle == 0)
         {
-          // // GridGenerator::hyper_cube(triangulation, 0.0, 1); // 1 cm
-
-
           triangulation.clear();
 
-          const unsigned int N = 1;
-
-          if constexpr (dim == 1 && spacedim == 3)
+          if (!use_junction_mesh)
             {
-              std::vector<Point<3>> vertices;
-
-              // Starting from the x-direction
-              vertices.push_back(Point<3>(0, 0, 0)); // Origin (Start of trunk)
-              vertices.push_back(
-                Point<3>(0.5, 0, 0)); // Junction point (Middle of trunk)
-              vertices.push_back(Point<3>(1.0, 0.5, 0)); // Upper branch tip
-
-              vertices.push_back(Point<3>(1.0, -0.5, 0)); // Lower branch tip
-              // for second y junction
-              vertices.push_back(
-                Point<3>(1.5, 0.25, 0)); // Lower branch tip for second y
-                                         // junction with center at (1,0.5,0)
-              vertices.push_back(Point<3>(
-                1.5, 0.75, 0)); // Upper branch tip for second y junction
-
-              vertices.push_back(
-                Point<3>(1.5, -0.25, 0)); // Upper branch tip for third y
-                                          // junction with center at (1,-0.5,0)
-              vertices.push_back(Point<3>(
-                1.5, -0.75, 0)); // Lower branch tip for third y junction
-
-              std::vector<CellData<1>> cells(7);
-              cells[0].vertices[0] = 0;
-              cells[0].vertices[1] = 1;
-              cells[1].vertices[0] = 1;
-              cells[1].vertices[1] = 2;
-              cells[2].vertices[0] = 1;
-              cells[2].vertices[1] = 3;
-              cells[3].vertices[0] = 2;
-              cells[3].vertices[1] = 4;
-              cells[4].vertices[0] = 2;
-              cells[4].vertices[1] = 5;
-              cells[5].vertices[0] = 3;
-              cells[5].vertices[1] = 6;
-              cells[6].vertices[0] = 3;
-              cells[6].vertices[1] = 7;
-
-
-              triangulation.create_triangulation(vertices,
-                                                 cells,
-                                                 SubCellData());
+              // ================= SINGLE VESSEL =================
+              GridGenerator::hyper_cube(triangulation, 0.0, 1.0);
+              triangulation.refine_global(n_global_refinements);
             }
           else
             {
-              // 1D meshes embedded in 3D
-              Triangulation<1, 3> parent, d1, d2;
+              // ================= JUNCTION NETWORK =================
 
-              // Parent vessel: [0,1]
-              GridGenerator::subdivided_hyper_rectangle(
-                parent,
-                std::vector<unsigned int>{N},
-                Point<1>(0.0),
-                Point<1>(1.0));
 
-              // Daughter 1: [1,2]
-              GridGenerator::subdivided_hyper_rectangle(
-                d1, std::vector<unsigned int>{N}, Point<1>(1.0), Point<1>(2.0));
+              if constexpr (dim == 1 && spacedim == 3)
+                {
+                  std::vector<Point<3>> vertices;
 
-              // Daughter 2: [1,2]
-              GridGenerator::subdivided_hyper_rectangle(
-                d2, std::vector<unsigned int>{N}, Point<1>(1.0), Point<1>(2.0));
+                  vertices.emplace_back(0, 0, 0);
+                  vertices.emplace_back(0.5, 0, 0);
+                  vertices.emplace_back(1.0, 0.5, 0);
+                  vertices.emplace_back(1.0, -0.5, 0);
 
-              // non-manifold junction
-              GridGenerator::merge_triangulations(parent, d1, triangulation);
-              GridGenerator::merge_triangulations(triangulation,
-                                                  d2,
-                                                  triangulation);
+                  vertices.emplace_back(1.5, 0.25, 0);
+                  vertices.emplace_back(1.5, 0.75, 0);
+                  vertices.emplace_back(1.5, -0.25, 0);
+                  vertices.emplace_back(1.5, -0.75, 0);
+
+                  std::vector<CellData<1>> cells(7);
+                  cells[0].vertices[0] = 0;
+                  cells[0].vertices[1] = 1;
+                  cells[1].vertices[0] = 1;
+                  cells[1].vertices[1] = 2;
+                  cells[2].vertices[0] = 1;
+                  cells[2].vertices[1] = 3;
+                  cells[3].vertices[0] = 2;
+                  cells[3].vertices[1] = 4;
+                  cells[4].vertices[0] = 2;
+                  cells[4].vertices[1] = 5;
+                  cells[5].vertices[0] = 3;
+                  cells[5].vertices[1] = 6;
+                  cells[6].vertices[0] = 3;
+                  cells[6].vertices[1] = 7;
+
+                  triangulation.create_triangulation(vertices,
+                                                     cells,
+                                                     SubCellData());
+                }
             }
         }
       else
         {
           triangulation.refine_global(1);
         }
+
 
       setup_system();
 
@@ -1744,16 +1715,7 @@ BloodFlowSystem<dim, spacedim>::run_convergence_study()
         }
 
       // Compute errors at final time
-      if (!junctions.empty())
-        {
-          std::cout
-            << "Skipping convergence study: junctions present "
-            << "(error norms not well-defined at non-manifold points).\n";
-        }
-      else
-        {
-          compute_errors(cycle);
-        }
+      compute_errors(cycle);
     }
 }
 
