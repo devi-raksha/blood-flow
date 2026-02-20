@@ -25,7 +25,7 @@
 
 #include <deal.II/numerics/vector_tools.h>
 
-#include "blood_flow_system_updated_1d3d.cc"
+#include "blood_flow_system.cc"
 #include "tests.h"
 
 using namespace dealii;

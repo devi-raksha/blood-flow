@@ -1,4 +1,4 @@
 
-DEAL::delta : 9.807767e+00
-DEAL::Jacobian FD check: ||J*delta - FD||_2 = 9.335859e-02, ||FD||_2 = 1.364327e+01
-DEAL::Relative error: 6.842833e-03
+DEAL::delta : 9.694321e+00
+DEAL::Jacobian FD check: ||J*delta - FD||_2 = 8.521048e-02, ||FD||_2 = 1.424299e+01
+DEAL::Relative error: 5.982626e-03

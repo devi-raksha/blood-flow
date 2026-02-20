@@ -1,6 +1,6 @@
 /* --------------------------------------------------------------------------
  */
-#include "../include/blood_flow_system_updated_1d3d.h"
+#include "blood_flow_system.h"
 
 #include <deal.II/base/function_parser.h>
 #include <deal.II/base/types.h>
@@ -869,7 +869,7 @@ BloodFlowSystem<dim, spacedim>::assemble_system()
       exact_solution.vector_value_list(fe_face.get_quadrature_points(), bc);
 
       // Determine which boundary this is (BID=0 is inlet, BID=1 is outlet)
-      unsigned int boundary_id = cell->face(face_no)->boundary_id();
+      // unsigned int boundary_id = cell->face(face_no)->boundary_id();
 
       for (unsigned int q = 0; q < n_q; ++q)
         {

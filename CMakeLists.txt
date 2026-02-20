@@ -28,40 +28,15 @@
 # DEAL_II_INVOKE_AUTOPILOT()
 
 # Set the names of the projects and targets:
-SET(TARGET1 "DG_advection_reaction_estimator")
-SET(TARGET2 "blood_flow_system_updated_1d3d")
-SET(TARGET3 "burger_equation")
-SET(TARGET4 "burger_with_periodic_bc")
-SET(TARGET5 "non_linear_conservation_law")
+SET(TARGET "blood_flow_system")
 
 # Declare all source files for each target:
-SET(TARGET1_SRC
-  source/DG_advection_reaction.cc
-  main.cc
-)
-
-set(TARGET2_SRC
-  source/blood_flow_system_updated_1d3d.cc
+SET(TARGET_SRC
+  source/blood_flow_system.cc
+  source/main.cc
   source/constants.cc
   source/function.cc
-  main_updated_1d3d.cc
 )
-
-set(TARGET3_SRC
-  source/burger_equation.cc
-  main_burger.cc
-)
-
-set(TARGET4_SRC
-  source/burger_with_periodic_bc.cc
-  main_burger.cc
-)
-
-set(TARGET5_SRC
-  source/non_linear_conservation_law.cc
-  main_non_linear_conservation_law.cc
-)
-
 
 CMAKE_MINIMUM_REQUIRED(VERSION 3.13.4)
 
@@ -79,24 +54,14 @@ ENDIF()
 DEAL_II_INITIALIZE_CACHED_VARIABLES()
 PROJECT(DG_advection_reaction_multi CXX)
 
+INCLUDE_DIRECTORIES(${CMAKE_CURRENT_SOURCE_DIR}/include)
+
 # Create first executable target
-ADD_EXECUTABLE(${TARGET1} ${TARGET1_SRC})
-DEAL_II_SETUP_TARGET(${TARGET1})
-
-# Create second executable target  
-ADD_EXECUTABLE(${TARGET2} ${TARGET2_SRC})
-DEAL_II_SETUP_TARGET(${TARGET2})
-
-ADD_EXECUTABLE(${TARGET3} ${TARGET3_SRC})
-DEAL_II_SETUP_TARGET(${TARGET3})
-
-ADD_EXECUTABLE(${TARGET4} ${TARGET4_SRC})
-DEAL_II_SETUP_TARGET(${TARGET4})
-
-ADD_EXECUTABLE(${TARGET5} ${TARGET5_SRC})
-DEAL_II_SETUP_TARGET(${TARGET5})
+ADD_EXECUTABLE(${TARGET} ${TARGET_SRC})
+DEAL_II_SETUP_TARGET(${TARGET})
 
 file(GLOB LIB_SRC source/*.cc)
+list(REMOVE_ITEM LIB_SRC ${CMAKE_CURRENT_SOURCE_DIR}/source/main.cc)
 ADD_LIBRARY(test_library SHARED ${LIB_SRC})
 set(TEST_LIBRARIES test_library)
 DEAL_II_SETUP_TARGET(test_library)

@@ -8,6 +8,8 @@
 # CMake (root)
 CMakeCache.txt
 CMakeFiles/
+LastTest.log
+CTestCostData.txt
 CTestTestfile.cmake
 Makefile
 cmake_install.cmake
@@ -33,3 +35,8 @@ latex/*.mp4
 
 # Backup files
 source/*.bak
+
+*.vtu
+*.pvd
+doc/html/
+deal.tag

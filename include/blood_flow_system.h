@@ -1,5 +1,5 @@
-#ifndef BLOOD_FLOW_SYSTEM_UPDATED_1D3D_H
-#define BLOOD_FLOW_SYSTEM_UPDATED_1D3D_H
+#ifndef blood_flow_system_H
+#define blood_flow_system_H
 
 #include <deal.II/base/function.h>
 #include <deal.II/base/function_parser.h>
@@ -616,4 +616,4 @@ private:
   ParsedTools::Function<spacedim> exact_solution;
 };
 
-#endif // BLOOD_FLOW_SYSTEM_UPDATED_1D3D_H
+#endif // blood_flow_system_H

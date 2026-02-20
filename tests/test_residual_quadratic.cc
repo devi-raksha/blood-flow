@@ -25,7 +25,7 @@
 
 #include <deal.II/numerics/vector_tools.h>
 
-#include "blood_flow_system_updated_1d3d.h"
+#include "blood_flow_system.h"
 #include "tests.h"
 
 using namespace dealii;
@@ -48,7 +48,7 @@ test()
                        QGauss<1>(problem.fe_degree + 1),
                        problem.initial_condition,
                        problem.solution);
-                       
+
 
   problem.solution_old = problem.solution;
 

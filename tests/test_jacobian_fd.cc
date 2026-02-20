@@ -1,12 +1,14 @@
 #include <deal.II/base/logstream.h>
+
 #include <deal.II/grid/grid_generator.h>
+
 #include <deal.II/numerics/vector_tools.h>
 
-#include "../include/blood_flow_system_updated_1d3d.h"
-#include "tests.h"
-
-#include <random>
 #include <iomanip>
+#include <random>
+
+#include "blood_flow_system.h"
+#include "tests.h"
 
 using namespace dealii;
 
@@ -44,68 +46,63 @@ test()
   // ---------------------------
   Vector<double> delta(problem.solution.size());
   for (unsigned int i = 0; i < delta.size(); ++i)
-    delta[i] =  (double(rand()) / RAND_MAX - 0.5);
+    delta[i] = (double(rand()) / RAND_MAX - 0.5);
 
   delta /= delta.l2_norm(); // normalize direction
 
   const double eps = 1e-8;
 
-// Store original solution
-Vector<double> U0 = problem.solution;
+  // Store original solution
+  Vector<double> U0 = problem.solution;
 
-// ---------------------------
-// Compute J * delta
-// ---------------------------
-Vector<double> Jdelta(problem.solution.size());
-problem.jacobian_matrix.vmult(Jdelta, delta);
+  // ---------------------------
+  // Compute J * delta
+  // ---------------------------
+  Vector<double> Jdelta(problem.solution.size());
+  problem.jacobian_matrix.vmult(Jdelta, delta);
 
-// ---------------------------
-// Compute R(u + eps*delta)
-// ---------------------------
-problem.solution = U0;
-problem.solution.add(eps, delta);
-problem.assemble_system();
-Vector<double> R_plus = problem.residual_vector;
+  // ---------------------------
+  // Compute R(u + eps*delta)
+  // ---------------------------
+  problem.solution = U0;
+  problem.solution.add(eps, delta);
+  problem.assemble_system();
+  Vector<double> R_plus = problem.residual_vector;
 
-// ---------------------------
-// Compute R(u - eps*delta)
-// ---------------------------
-problem.solution = U0;
-problem.solution.add(-eps, delta);
-problem.assemble_system();
-Vector<double> R_minus = problem.residual_vector;
+  // ---------------------------
+  // Compute R(u - eps*delta)
+  // ---------------------------
+  problem.solution = U0;
+  problem.solution.add(-eps, delta);
+  problem.assemble_system();
+  Vector<double> R_minus = problem.residual_vector;
 
-// ---------------------------
-// Central difference
-// ---------------------------
-Vector<double> FD = R_plus;
-FD -= R_minus;
-FD /= (2.0 * eps);
+  // ---------------------------
+  // Central difference
+  // ---------------------------
+  Vector<double> FD = R_plus;
+  FD -= R_minus;
+  FD /= (2.0 * eps);
 
-// Restore original solution
-problem.solution = U0;
-problem.assemble_system();
+  // Restore original solution
+  problem.solution = U0;
+  problem.assemble_system();
 
-// ---------------------------
-// Compare Jacobian action with finite difference approximation 
-// + sign because residual vector already contains -R
-// ---------------------------
-Vector<double> error = Jdelta;
-error += FD;
+  // ---------------------------
+  // Compare Jacobian action with finite difference approximation
+  // + sign because residual vector already contains -R
+  // ---------------------------
+  Vector<double> error = Jdelta;
+  error += FD;
 
-deallog << std::scientific << std::setprecision(6);
+  deallog << std::scientific << std::setprecision(6);
 
-deallog <<"delta : " << delta.l1_norm() << std::endl;
-deallog << "Jacobian FD check: "
-        << "||J*delta - FD||_2 = " << error.l2_norm()
-        << ", ||FD||_2 = " << FD.l2_norm()
-        << std::endl;
+  deallog << "delta : " << delta.l1_norm() << std::endl;
+  deallog << "Jacobian FD check: "
+          << "||J*delta - FD||_2 = " << error.l2_norm()
+          << ", ||FD||_2 = " << FD.l2_norm() << std::endl;
 
-deallog << "Relative error: "
-        << error.l2_norm() / FD.l2_norm()
-        << std::endl;
-
-  
+  deallog << "Relative error: " << error.l2_norm() / FD.l2_norm() << std::endl;
 }
 
 int
