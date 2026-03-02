@@ -182,6 +182,8 @@ public:
   run_convergence_study();
   void
   detect_bifurcation_junctions();
+  void
+  initialize_terminal_capacitors();
 
   // Junction physics (called by JunctionSolver) ---
   void
@@ -196,9 +198,14 @@ public:
                             FullMatrix<double>  &J) const;
 
 private:
+  // "RCR" or "Rt"
   ParsedTools::Constants    par;
   AffineConstraints<double> constraints;
-
+  // Key: Boundary ID, Value: Pressure at the previous time step
+  // One capacitor pressure per terminal boundary
+  std::map<types::boundary_id, double> terminal_Pc_storage;
+  // std::map<std::pair<CellId, unsigned int>, double> terminal_Pc_storage;
+  std::set<dealii::types::boundary_id> terminal_boundary_ids;
   using CellIterator = typename DoFHandler<dim, spacedim>::active_cell_iterator;
 
   struct JunctionCell
@@ -246,6 +253,14 @@ private:
     return std::sqrt(A_safe / par["rho"] * dpda);
   }
 
+  double
+  compute_wave_speed_derivative(const double area) const
+  {
+    const double eps    = 1e-10;
+    const double A_safe = std::max(area, eps);
+    return compute_wave_speed(A_safe) * par["m"] / (2.0 * A_safe);
+  }
+
   /**
    * Inverse function to compute area from wave speed (Newton method)
    */
@@ -257,15 +272,14 @@ private:
 
     for (unsigned int iter = 0; iter < 20; ++iter)
       {
-        double dpdA = compute_pressure_derivative(A);
-        double cA   = std::sqrt(A / par["rho"] * dpdA);
-
-        double f = cA - c_target;
+        double cA = compute_wave_speed(A);
+        double f  = cA - c_target;
         if (std::abs(f) < 1e-12)
           return A;
 
-        // approximate derivative: dc/dA ≈ dpdA / (2*cA*rho)
-        double df_dA = dpdA / (2.0 * cA * par["rho"]);
+        // approximate derivative: dc/dA
+        double df_dA = compute_wave_speed_derivative(
+          A); // c_target is constant, so only need dc/dA
 
         // Newton update
         A = A - f / df_dA;
@@ -565,7 +579,9 @@ private:
   Triangulation<dim, spacedim>                  triangulation;
   DoFHandler<dim, spacedim>                     dof_handler;
   std::unique_ptr<FiniteElement<dim, spacedim>> fe;
-
+  std::string                                   outlet_type;
+  bool
+  is_terminal_boundary(dealii::types::boundary_id bid) const;
   // Linear system
   SparsityPattern      sparsity_pattern;
   SparseMatrix<double> jacobian_matrix;
@@ -579,6 +595,8 @@ private:
   Vector<double> residual_vector;
   Vector<double> newton_update;
   // Parameters
+
+
   unsigned int fe_degree              = 1;
   std::string  constants              = "1.0";
   std::string  output_filename        = "solution";
@@ -589,7 +607,7 @@ private:
   unsigned int n_global_refinements   = 5;
 
   // Time stepping parameters
-  double       time_step    = 0.01;
+  double       time_step    = 5e-6;
   double       final_time   = 1.0;
   double       time         = 0.0;
   unsigned int n_time_steps = 0;
@@ -614,6 +632,7 @@ private:
   ParsedTools::Function<spacedim> initial_condition;
   ParsedTools::Function<spacedim> rhs_function;
   ParsedTools::Function<spacedim> exact_solution;
+  ParsedTools::Function<1> inflow_function; // inflow depends on time only
 };
 
 #endif // blood_flow_system_H

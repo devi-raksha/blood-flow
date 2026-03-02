@@ -1,4 +1,8 @@
 /* --------------------------------------------------------------------------
+ *
+ * This is the implementation file for the BloodFlowSystem class,
+ *  which models blood flow in a 1D vessel network embedded in 3D
+ * using the discontinuous finite element method.
  */
 #include "blood_flow_system.h"
 
@@ -29,18 +33,46 @@
 template <int dim, int spacedim>
 BloodFlowSystem<dim, spacedim>::BloodFlowSystem()
   : par("Blood Flow Parameters",
-        {"rho", "a0", "mu", "p0", "eta_c", "r0", "m"},
-        {1.06, 3.141592653589793e-4, 1.0e6, 0.0, 1.0, 9.99e-3, 0.5},
+        {"rho",
+         "a0",
+         "mu",
+         "p0",
+         "eta_c",
+         "r0",
+         "m",
+         "Rt",
+         "R1",
+         "R2",
+         "C",
+         "P_out"},
+        {1.06,
+         3.141592653589793e-4,
+         1.0e6,
+         0.0,
+         1.0,
+         9.99e-3,
+         0.5,
+         0.0,
+         0.0,
+         0.0,
+         0.0,
+         0.0},
         {"Density",
          "Reference cross-sectional area",
          "Elastic modulus of the vessel wall",
          "Reference pressure",
          "Viscosity coefficient",
          "Reference radius",
-         "Tube law exponent"})
+         "Tube law exponent",
+         "Reflection coefficient at outflow boundary",
+         "Resistance of proximal capacitor",
+         "Resistance of distal capacitor",
+         "Capacitance of terminal capacitor",
+         "Pressure at terminal boundary"})
   , triangulation()
   , dof_handler(triangulation)
   , fe(nullptr)
+  , outlet_type("RCR")
   , initial_condition(
       "Functions",
       "1e-4; 0.0",
@@ -59,6 +91,8 @@ BloodFlowSystem<dim, spacedim>::BloodFlowSystem()
                    par,
                    dealii::FunctionParser<spacedim>::default_variable_names() +
                      ",t")
+
+  , inflow_function("Functions", "0.0", "Inflow function", par, "t")
 {
   add_parameter("Finite element degree", fe_degree);
   add_parameter("Problem constants", constants);
@@ -71,11 +105,13 @@ BloodFlowSystem<dim, spacedim>::BloodFlowSystem()
   add_parameter("Theta (penalty parameter)", theta);
   add_parameter("Theta Boundary (stability parameter)", theta_bd);
   add_parameter("Omega (relaxation parameter)", omega);
-  // add_parameter("Picard iterations", max_picard_iterations);
+  // add_parameter("Picard iteroutlet_typeations", max_picard_iterations);
   add_parameter("Newton iterations", max_newton_iterations);
   add_parameter("Newton tolerance", newton_tolerance);
   add_parameter("Use Riemann Invariants", use_riemann_invariants);
   add_parameter("Use junction mesh", use_junction_mesh);
+  // Use Patterns::Selection to strictly enforce "RCR" or "Rt"
+  add_parameter("Outlet boundary condition type", outlet_type);
 }
 
 // ========================================================================
@@ -97,6 +133,15 @@ BloodFlowSystem<dim, spacedim>::initialize_params(const std::string &filename)
   rhs_function.update_constants(par);
 }
 
+// For terminal boundary conditions, we need to initialize the storage for the
+// capacitor pressures
+template <int dim, int spacedim>
+bool
+BloodFlowSystem<dim, spacedim>::is_terminal_boundary(
+  const dealii::types::boundary_id bid) const
+{
+  return terminal_boundary_ids.count(bid) > 0;
+}
 // ========================================================================
 // For junction detection
 // ========================================================================
@@ -219,11 +264,6 @@ BloodFlowSystem<dim, spacedim>::compute_junction_jacobian(
   const double Ud1 = X.Ud1;
   const double Ud2 = X.Ud2;
 
-
-  const double cp  = compute_wave_speed(Ap);
-  const double cd1 = compute_wave_speed(Ad1);
-  const double cd2 = compute_wave_speed(Ad2);
-
   // Mass
   J(0, 0) = Up;
   J(0, 1) = Ap;
@@ -244,16 +284,13 @@ BloodFlowSystem<dim, spacedim>::compute_junction_jacobian(
   J(2, 5) = -Ud2;
 
   // Characteristics
-  J(3, 0) =
-    4.0 * 0.5 * par["m"] / (par["rho"] * cp) * compute_pressure_derivative(Ap);
+  J(3, 0) = 4.0 * compute_wave_speed_derivative(Ap);
   J(3, 1) = 1.0;
 
-  J(4, 2) = -4.0 * 0.5 * par["m"] / (par["rho"] * cd1) *
-            compute_pressure_derivative(Ad1);
+  J(4, 2) = -4.0 * compute_wave_speed_derivative(Ad1);
   J(4, 3) = 1.0;
 
-  J(5, 4) = -4.0 * 0.5 * par["m"] / (par["rho"] * cd2) *
-            compute_pressure_derivative(Ad2);
+  J(5, 4) = -4.0 * compute_wave_speed_derivative(Ad2);
   J(5, 5) = 1.0;
 }
 
@@ -327,7 +364,8 @@ BloodFlowSystem<dim, spacedim>::assemble_junction_terms()
 
       compute_junction_residual(X, Wp_plus, Wd1_minus, Wd2_minus, R);
       mass_residual_at_junction.push_back(R[0]);
-      std::cout << "Mass residual at junction: " << std::abs(R[0]) << std::endl;
+      // std::cout << "Mass residual at junction: " << std::abs(R[0]) <<
+      // std::endl;
 
       X.Ap  = std::max(X.Ap, A_min);
       X.Ad1 = std::max(X.Ad1, A_min);
@@ -482,10 +520,8 @@ BloodFlowSystem<dim, spacedim>::assemble_junction_terms()
                 Vector<double> dRJ_duh(6);
                 dRJ_duh = 0.0;
 
-                const double c_h   = compute_wave_speed(Ah_safe);
-                const double dc_dA = par["m"] * 0.5 *
-                                     compute_pressure_derivative(Ah_safe) /
-                                     (par["rho"] * c_h);
+
+                const double dc_dA = compute_wave_speed_derivative(Ah_safe);
 
                 dRJ_duh[3] += -trial_U + 4.0 * dc_dA * trial_A;
                 dRJ_duh[4] += -trial_U - 4.0 * dc_dA * trial_A;
@@ -573,7 +609,9 @@ BloodFlowSystem<dim, spacedim>::setup_system()
 
   dof_handler.distribute_dofs(*fe);
 
-  // detect_bifurcation_junctions();
+  junctions.clear();
+  all_junction_faces.clear();
+  detect_bifurcation_junctions();
 
   DynamicSparsityPattern dsp(dof_handler.n_dofs());
   DoFTools::make_flux_sparsity_pattern(dof_handler, dsp);
@@ -1021,10 +1059,7 @@ BloodFlowSystem<dim, spacedim>::assemble_system()
         }
     };
 
-  //========== BOUNDARY WORKER – FULLY IMPLICIT RI
-  //==========
-  exact_solution.set_time(time);
-
+  //========== BOUNDARY WORKER – CONSISTENT A/U RIEMANN BOUNDARY ==========
   auto boundary_worker_riemann_invariant = [&](
                                              const Iterator    &cell,
                                              const unsigned int face_no,
@@ -1033,7 +1068,6 @@ BloodFlowSystem<dim, spacedim>::assemble_system()
                                              BloodFlowCopyData &copy) {
     if (all_junction_faces.count({cell->id(), face_no}) > 0)
       return;
-
     scratch.fe_interface_values.reinit(cell, face_no);
     const auto &fe_face = scratch.fe_interface_values.get_fe_face_values(0);
 
@@ -1041,197 +1075,246 @@ BloodFlowSystem<dim, spacedim>::assemble_system()
     const auto        &normals = fe_face.get_normal_vectors();
     const unsigned int n_q     = fe_face.n_quadrature_points;
 
-    const double A_min = 1e-10;
-    const double m_val = 0.5;
+    const double       A_min       = 1e-12;
+    const double       dt          = time_step;
+    const unsigned int boundary_id = cell->face(face_no)->boundary_id();
 
     std::vector<double> Ah(n_q), Uh(n_q);
     fe_face[area_extractor].get_function_values(solution, Ah);
     fe_face[velocity_extractor].get_function_values(solution, Uh);
 
-
-    std::vector<types::global_dof_index> dofs(fe->n_dofs_per_cell());
-    cell->get_dof_indices(dofs);
-
-    const unsigned int boundary_id = cell->face(face_no)->boundary_id();
-
-    // Boundary values
-    exact_solution.set_time(time);
-    std::vector<Vector<double>> bc(n_q, Vector<double>(2));
-    exact_solution.vector_value_list(fe_face.get_quadrature_points(), bc);
-
-    // reflection coefficient for terminal vessels
-    const double Rt = 1; // par["Rt"];  // 0 <= Rt <=1
-
     for (unsigned int q = 0; q < n_q; ++q)
       {
-        // ---------------- interior state ----------------
-        const double A_h = std::max(Ah[q], A_min);
-        const double U_h = Uh[q];
+        const double A_L     = std::max(Ah[q], A_min);
+        const double U_L     = Uh[q];
+        const double c_L     = compute_wave_speed(A_L);
+        const double dc_dA_L = compute_wave_speed_derivative(A_L);
+        const double A0      = par["a0"];
+        const double c0      = compute_wave_speed(A0);
 
-        const double c_h = compute_wave_speed(A_h);
-        const double dc_dA_h =
-          (m_val / (2.0 * par["rho"] * c_h)) * compute_pressure_derivative(A_h);
+        const double W1_L =
+          U_L + 4.0 * (c_L - c0); // OUTGOING FOR TERMINAL BOUNDARY
+        const double W2_L = U_L - 4.0 * (c_L - c0); // INCOMING FOR INLET
 
-        const double W1_h = U_h + 4.0 * c_h;
-        const double W2_h = U_h - 4.0 * c_h;
+        double             A_star = A_L;
+        double             U_star = U_L;
+        FullMatrix<double> J_boundary_local(2, 2);
 
-        // ---------------- Newton solve for boundary state ----------------
-        double A_b = A_h;
-        double U_b = U_h;
-        for (unsigned int it = 0; it < 10; ++it)
+        if (boundary_id == 0) // INFLOW: Prescribed Q_in(t)
           {
-            const double A_b_safe = std::max(A_b, A_min);
-            const double c_b      = compute_wave_speed(A_b_safe);
-            const double dc_dA_b  = (m_val / (2.0 * par["rho"] * c_b)) *
-                                   compute_pressure_derivative(A_b_safe);
-
-            Vector<double>     Rb(2);
-            FullMatrix<double> Jb_newton(2, 2);
-
-            if (boundary_id == 0) // ================= INLET =================
+            const double Qin = inflow_function.value(Point<1>(0.0));
+            for (unsigned int it = 0; it < 20; ++it)
               {
-                const double U_bc  = bc[q](1);
-                const double W1_bc = 2.0 * U_bc - W2_h;
+                const double A     = std::max(A_star, A_min);
+                const double cA    = compute_wave_speed(A);
+                const double dc_dA = compute_wave_speed_derivative(A);
 
-                Rb[0] = U_b + 4.0 * c_b - W1_bc;
-                Rb[1] = U_b - 4.0 * c_b - W2_h;
+                // R[0]: Prescribed Flow: A*U - Qin = 0
+                // R[1]: Backward Invariant: U - 4c - W2_L = 0
+                Vector<double> R(2);
+                R[0] = A * U_star - Qin;
+                R[1] =
+                  U_star - 4.0 * (cA - compute_wave_speed(par["a0"])) - W2_L;
+
+                FullMatrix<double> J(2, 2);
+                J(0, 0) = U_star;
+                J(0, 1) = A;
+                J(1, 0) = -4.0 * dc_dA;
+                J(1, 1) = 1.0;
+
+                J_boundary_local = J; // Store for sensitivity
+                J.gauss_jordan();
+                Vector<double> delta(2);
+                J.vmult(delta, R);
+
+                A_star -= delta[0];
+                U_star -= delta[1];
+                if (delta.l2_norm() < 1e-12)
+                  break;
               }
-            else // ================= OUTLET
-                 // ================= assuming  U_0 = 0 and A= A0 at equilibrium
+          }
+        else // ================= OUTLET BOUNDARY =================
+          {
+            // 1. Retrieve the choice from your ParameterHandler
+            // std::string outlet_type;
+            // this->prm.enter_subsection("Blood Flow Parameters");
+            // outlet_type = this->prm.get("Outlet boundary condition type");
+            // this->prm.leave_subsection();
+
+            if (this->outlet_type == "RCR")
               {
-                const double c0   = compute_wave_speed(par["a0"]);
-                const double W1_0 = 4.0 * c0;
-                const double W2_0 = -4.0 * c0;
+                // ================= CHOICE: RCR =================
+                const double R1     = par["R1"];
+                const double R2     = par["R2"];
+                const double C      = par["C"];
+                double       Pc_old = 0.0;
+                try
+                  {
+                    Pc_old = terminal_Pc_storage.at(boundary_id);
+                  }
+                catch (const std::out_of_range &e)
+                  {
+                    AssertThrow(
+                      false,
+                      ExcMessage(
+                        "Boundary ID not found in Pc storage. Initialize it in setup_system."));
+                  }
 
-                const double W2_ref = W2_0 - Rt * (W1_h - W1_0);
+                for (unsigned int it = 0; it < 20; ++it)
+                  {
+                    const double A      = std::max(A_star, A_min);
+                    const double cA     = compute_wave_speed(A);
+                    const double dc_dA  = compute_wave_speed_derivative(A);
+                    const double Pe     = compute_pressure_value(A);
+                    const double dPe_dA = compute_pressure_derivative(A);
 
-                Rb[0] = U_b + 4.0 * c_b - W1_h;
-                Rb[1] = U_b - 4.0 * c_b - W2_ref;
+                    // Link U to A via the outgoing Riemann Invariant (W1)
+                    U_star                 = W1_L - 4.0 * (cA - c0);
+                    const double dUstar_dA = -4.0 * dc_dA;
+                    const double dQ_dA     = U_star + A * dUstar_dA;
+
+                    // Implicit Capacitor Pressure update
+                    const double Pc_star =
+                      (Pc_old + (dt / C) * (A * U_star + par["P_out"] / R2)) /
+                      (1.0 + dt / (C * R2));
+                    const double dPc_star_dA =
+                      (dt / C * dQ_dA) / (1.0 + dt / (C * R2));
+
+                    // Residual: Balance at proximal resistance R1
+                    const double F     = R1 * (A * U_star) - (Pe - Pc_star);
+                    const double dF_dA = R1 * dQ_dA - dPe_dA + dPc_star_dA;
+
+                    A_star -= F / dF_dA;
+                    if (std::abs(F / A_L) < 1e-12)
+                      break;
+                  }
+
+
+                // Final state sync and Jacobian for sensitivity (Step 4)
+                U_star = W1_L - 4.0 * (compute_wave_speed(A_star) - c0);
+                J_boundary_local(0, 0) =
+                  compute_pressure_derivative(A_star) / R1 - U_star;
+                J_boundary_local(0, 1) = -A_star;
+                J_boundary_local(1, 0) =
+                  4.0 * compute_wave_speed_derivative(A_star);
+                J_boundary_local(1, 1) = 1.0;
               }
+            else // (outlet_type == "Rt")
+              {
+                // ================= CHOICE: Rt (Reflection) =================
+                const double Rt = par["Rt"];
+                const double W2_target =
+                  -Rt * W1_L; // Simplified reflection target
 
-            // Jacobian wrt (A_b, U_b)
-            Jb_newton(0, 0) = 4.0 * dc_dA_b;
-            Jb_newton(0, 1) = 1.0;
-            Jb_newton(1, 0) = -4.0 * dc_dA_b;
-            Jb_newton(1, 1) = 1.0;
+                for (unsigned int it = 0; it < 20; ++it)
+                  {
+                    const double A     = std::max(A_star, A_min);
+                    const double cA    = compute_wave_speed(A);
+                    const double dc_dA = compute_wave_speed_derivative(A);
 
-            FullMatrix<double> Jb_inv = Jb_newton;
-            Jb_inv.gauss_jordan();
+                    // System: W1 invariant is fixed, W2 invariant is target
+                    // Eq1: U + 4(c-c0) - W1_L = 0
+                    // Eq2: U - 4(c-c0) - W2_target = 0
+                    Vector<double> R(2);
+                    R[0] = U_star + 4.0 * (cA - c0) - W1_L;
+                    R[1] = U_star - 4.0 * (cA - c0) - W2_target;
 
-            Vector<double> dX(2);
-            Jb_inv.vmult(dX, Rb);
+                    FullMatrix<double> J(2, 2);
+                    J(0, 0) = 4.0 * dc_dA;
+                    J(0, 1) = 1.0;
+                    J(1, 0) = -4.0 * dc_dA;
+                    J(1, 1) = 1.0;
 
-            A_b -= dX[0];
-            U_b -= dX[1];
-            A_b = std::max(A_b, A_min);
+                    J.gauss_jordan();
+                    Vector<double> delta(2);
+                    J.vmult(delta, R);
 
-            if (dX.l2_norm() < 1e-12)
-              break;
+                    A_star -= delta[0];
+                    U_star -= delta[1];
+                    if (delta.l2_norm() < 1e-12)
+                      break;
+                  }
+
+                // Local Jacobian for sensitivity (Step 4)
+                J_boundary_local(0, 0) =
+                  4.0 * compute_wave_speed_derivative(A_star);
+                J_boundary_local(0, 1) = 1.0;
+                J_boundary_local(1, 0) =
+                  -4.0 * compute_wave_speed_derivative(A_star);
+                J_boundary_local(1, 1) = 1.0;
+              }
+          }
+        // ---------- 3. Numerical Flux (Residual) ----------
+        auto [FA, FU] =
+          HLL_residual_flux(cell, cell, A_L, U_L, A_star, U_star, normals[q]);
+
+        for (unsigned int i = 0; i < fe->n_dofs_per_cell(); ++i)
+          {
+            const unsigned int comp = fe->system_to_component_index(i).first;
+            const double       phi  = fe_face.shape_value(i, q);
+            if (comp == 0)
+              copy.cell_rhs(i) -= FA * phi * JxW[q];
+            else
+              copy.cell_rhs(i) -= FU * phi * JxW[q];
           }
 
-        // ---------------- numerical flux ----------------
-        auto [FA, FU] =
-          HLL_residual_flux(cell, cell, A_h, U_h, A_b, U_b, normals[q]);
+        // ---------- 4. Newton-Consistent Jacobian (Sensitivity) ----------
+        J_boundary_local.gauss_jordan();
 
-        // ---------------- Newton-consistent Jacobian ----------------
         for (unsigned int j = 0; j < fe->n_dofs_per_cell(); ++j)
           {
-            const double trial_A = fe_face[area_extractor].value(j, q);
-            const double trial_U = fe_face[velocity_extractor].value(j, q);
+            const double dAL_trial = fe_face[area_extractor].value(j, q);
+            const double dUL_trial = fe_face[velocity_extractor].value(j, q);
 
-            auto [dFA_dUh, dFU_dUh] = HLL_jacobian_flux(cell,
+            Vector<double> dRb_dInterior(2);
+            if (boundary_id == 0) // Sensitivity to W2
+              dRb_dInterior[1] = -(dUL_trial - 4.0 * dc_dA_L * dAL_trial);
+            else // Sensitivity to W1
+              dRb_dInterior[1] = -(dUL_trial + 4.0 * dc_dA_L * dAL_trial);
+
+            Vector<double> dX_star(2);
+            J_boundary_local.vmult(dX_star, dRb_dInterior);
+            dX_star *= -1.0;
+
+            auto [dFA_dir, dFU_dir]     = HLL_jacobian_flux(cell,
                                                         cell,
-                                                        A_h,
-                                                        U_h,
-                                                        A_b,
-                                                        U_b,
-                                                        trial_A,
-                                                        trial_U,
+                                                        A_L,
+                                                        U_L,
+                                                        A_star,
+                                                        U_star,
+                                                        dAL_trial,
+                                                        dUL_trial,
                                                         0.0,
                                                         0.0,
                                                         normals[q]);
-
-            // ∂R_b / ∂(A_h, U_h)
-            Vector<double> dRb_duh(2);
-            if (boundary_id == 0)
-              {
-                dRb_duh[1] = -trial_U + 4.0 * dc_dA_h * trial_A;
-              }
-            else
-              {
-                dRb_duh[0] = -trial_U - 4.0 * dc_dA_h * trial_A;
-                dRb_duh[1] = Rt * (trial_U + 4.0 * dc_dA_h * trial_A);
-              }
-
-            // ∂(R_b) / ∂(A_h, U_h) = -J_b^{-1} ∂R_b / ∂(A_h, U_h)
-            const double c_b     = compute_wave_speed(A_b);
-            const double dc_dA_b = (m_val / (2.0 * par["rho"] * c_b)) *
-                                   compute_pressure_derivative(A_b);
-
-            FullMatrix<double> Jb(2, 2);
-            Jb(0, 0) = 4.0 * dc_dA_b;
-            Jb(0, 1) = 1.0;
-            Jb(1, 0) = -4.0 * dc_dA_b;
-            Jb(1, 1) = 1.0;
-            Jb.gauss_jordan();
-
-            Vector<double> dX_duh(2);
-            Jb.vmult(dX_duh, dRb_duh);
-            dX_duh *= -1.0;
-
-            // 2. Compute the HLL sensitivity to the boundary state variation.
-            // We pass 0.0 for trial_A/U (left variation) because we only want
-            // the part of the Jacobian that comes from the boundary state
-            // change.
-            auto [dFA_chain, dFU_chain] =
-              HLL_jacobian_flux(cell,
-                                cell,
-                                A_h,
-                                U_h,
-                                A_b,
-                                U_b,
-                                0.0,       // No change to left Area
-                                0.0,       // No change to left Velocity
-                                dX_duh[0], // Variation of boundary Area
-                                dX_duh[1], // Variation of boundary Velocity
-                                normals[q]);
-
-            // if (boundary_id != 0) // outlet just for stability
-            //   {
-            //     const double eps = 1e-10;
-            //     for (unsigned int i = 0; i < fe->n_dofs_per_cell(); ++i)
-            //       copy.cell_matrix(i, i) += eps;
-            //   }
-
+            auto [dFA_chain, dFU_chain] = HLL_jacobian_flux(cell,
+                                                            cell,
+                                                            A_L,
+                                                            U_L,
+                                                            A_star,
+                                                            U_star,
+                                                            0.0,
+                                                            0.0,
+                                                            dX_star[0],
+                                                            dX_star[1],
+                                                            normals[q]);
 
             for (unsigned int i = 0; i < fe->n_dofs_per_cell(); ++i)
               {
                 const unsigned int comp =
                   fe->system_to_component_index(i).first;
                 const double phi = fe_face.shape_value(i, q);
-
                 if (comp == 0)
                   copy.cell_matrix(i, j) +=
-                    (dFA_dUh + dFA_chain) * phi * JxW[q];
+                    (dFA_dir + dFA_chain) * phi * JxW[q];
                 else
                   copy.cell_matrix(i, j) +=
-                    (dFU_dUh + dFU_chain) * phi * JxW[q];
+                    (dFU_dir + dFU_chain) * phi * JxW[q];
               }
-          }
-
-        // ---------------- RHS ----------------
-        for (unsigned int i = 0; i < fe->n_dofs_per_cell(); ++i)
-          {
-            const unsigned int comp = fe->system_to_component_index(i).first;
-            const double       phi  = fe_face.shape_value(i, q);
-
-            if (comp == 0)
-              copy.cell_rhs(i) -= FA * phi * JxW[q];
-            else
-              copy.cell_rhs(i) -= FU * phi * JxW[q];
           }
       }
   };
+
 
   // Copier lambda
   const AffineConstraints<double> constraints;
@@ -1396,6 +1479,34 @@ BloodFlowSystem<dim, spacedim>::compute_pressure()
     }
 }
 
+// store the value of (terminal pressure)Pc​ from the previous time step. This
+// is necessary for the implicit update of the capacitor pressure in the RCR
+// boundary condition.
+//  By keeping track of (terminal pressure)Pc​ at each terminal boundary, we
+//  can ensure that the time integration of the capacitor pressure is consistent
+//  and stable across time steps.
+
+template <int dim, int spacedim>
+void
+BloodFlowSystem<dim, spacedim>::initialize_terminal_capacitors()
+{
+  terminal_Pc_storage.clear();
+
+  for (const auto &cell : dof_handler.active_cell_iterators())
+    for (unsigned int f = 0; f < GeometryInfo<dim>::faces_per_cell; ++f)
+      {
+        if (!cell->face(f)->at_boundary())
+          continue;
+
+        if (all_junction_faces.count({cell->id(), f}))
+          continue;
+
+        const auto bid = cell->face(f)->boundary_id();
+
+        if (this->is_terminal_boundary(bid))
+          terminal_Pc_storage.try_emplace(bid, par["p0"]);
+      }
+}
 // ========================================================================
 // COMPUTE ERRORS
 // ========================================================================
@@ -1566,9 +1677,25 @@ BloodFlowSystem<dim, spacedim>::run_convergence_study()
           if (!use_junction_mesh)
             {
               // ================= SINGLE VESSEL =================
-              GridGenerator::hyper_cube(triangulation, 0.0, 1.0);
+              GridGenerator::hyper_cube(triangulation, 0.0, 10.0);
+              // tagging logic for terminal boundaries
+              for (auto &cell : triangulation.active_cell_iterators())
+                for (unsigned int f = 0; f < GeometryInfo<dim>::faces_per_cell;
+                     ++f)
+                  if (cell->face(f)->at_boundary())
+                    {
+                      if (cell->face(f)->center()[0] < 1e-8)
+                        cell->face(f)->set_boundary_id(0);
+                      else
+                        {
+                          cell->face(f)->set_boundary_id(1);
+                          terminal_boundary_ids.insert(1);
+                        }
+                    }
               triangulation.refine_global(n_global_refinements);
+
             }
+
           else
             {
               // ================= JUNCTION NETWORK =================
@@ -1607,6 +1734,48 @@ BloodFlowSystem<dim, spacedim>::run_convergence_study()
                   triangulation.create_triangulation(vertices,
                                                      cells,
                                                      SubCellData());
+
+                  // ================= TAGGING LOGIC for terminal boundary
+                  // =================
+                  terminal_boundary_ids.clear();
+                  unsigned int outlet_count = 0;
+
+                  for (auto &cell : triangulation.active_cell_iterators())
+                    {
+                      for (unsigned int f = 0;
+                           f < GeometryInfo<dim>::faces_per_cell;
+                           ++f)
+                        {
+                          if (cell->face(f)->at_boundary())
+                            {
+                              Point<3> face_center = cell->face(f)->center();
+
+                              // 1. Identify Inlet (Root) at (0,0,0)
+                              if (face_center.distance(Point<3>(0, 0, 0)) <
+                                  1e-8)
+                                {
+                                  cell->face(f)->set_boundary_id(0);
+                                  std::cout
+                                    << "  [Mesh] Tagged INLET (ID 0) at "
+                                    << face_center << std::endl;
+                                }
+                              // 2. Identify Outlets at x = 1.5
+                              else if (std::abs(face_center[0] - 1.5) < 1e-8)
+                                {
+                                  cell->face(f)->set_boundary_id(1);
+                                  terminal_boundary_ids.insert(1);
+                                  outlet_count++;
+                                  std::cout
+                                    << "  [Mesh] Tagged OUTLET (ID 1) at "
+                                    << face_center << std::endl;
+                                }
+                            }
+                        }
+                    }
+                  std::cout << "  [Summary] Found " << outlet_count
+                            << " terminal faces on the coarse mesh."
+                            << std::endl;
+                  triangulation.refine_global(n_global_refinements);
                 }
             }
         }
@@ -1615,8 +1784,11 @@ BloodFlowSystem<dim, spacedim>::run_convergence_study()
           triangulation.refine_global(1);
         }
 
-
+      this->prm.enter_subsection("Blood Flow Parameters");
+      this->outlet_type = this->prm.get("Outlet boundary condition type");
+      this->prm.leave_subsection();
       setup_system();
+      initialize_terminal_capacitors();
 
       // Project initial conditions
       AffineConstraints<double> constraints;
@@ -1627,7 +1799,7 @@ BloodFlowSystem<dim, spacedim>::run_convergence_study()
                            initial_condition,
                            solution);
 
-      detect_bifurcation_junctions();
+      // detect_bifurcation_junctions();
       solution_old = solution;
       compute_pressure();
       output_results(0);
