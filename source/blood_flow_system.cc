@@ -1135,12 +1135,6 @@ BloodFlowSystem<dim, spacedim>::assemble_system()
           }
         else // ================= OUTLET BOUNDARY =================
           {
-            // 1. Retrieve the choice from your ParameterHandler
-            // std::string outlet_type;
-            // this->prm.enter_subsection("Blood Flow Parameters");
-            // outlet_type = this->prm.get("Outlet boundary condition type");
-            // this->prm.leave_subsection();
-
             if (this->outlet_type == "RCR")
               {
                 // ================= CHOICE: RCR =================
@@ -1693,7 +1687,6 @@ BloodFlowSystem<dim, spacedim>::run_convergence_study()
                         }
                     }
               triangulation.refine_global(n_global_refinements);
-
             }
 
           else
@@ -1784,9 +1777,6 @@ BloodFlowSystem<dim, spacedim>::run_convergence_study()
           triangulation.refine_global(1);
         }
 
-      this->prm.enter_subsection("Blood Flow Parameters");
-      this->outlet_type = this->prm.get("Outlet boundary condition type");
-      this->prm.leave_subsection();
       setup_system();
       initialize_terminal_capacitors();
 

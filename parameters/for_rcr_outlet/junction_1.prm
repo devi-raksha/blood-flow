@@ -21,8 +21,8 @@ subsection Blood Flow Parameters
   set Elastic modulus of the vessel wall (mu) = 4e5
   set Reflection coefficient at outflow boundary (Rt) = 1
   set Reference cross-sectional area (a0)     = 3.14e-4
-  set Resistance of proximal capacitor (R1)   = 1.2e4   
-  set Resistance of distal capacitor (R2)     = 1.1e5
+  set Resistance of proximal capacitor (R1)   = 1.2e8   
+  set Resistance of distal capacitor (R2)     = 1.1e9
   set Capacitance of terminal capacitor (C)   = 5.0e-8
   set Pressure at terminal boundary (P_out)   = 0.0   
   set Viscosity coefficient (eta_c)           = 0.0
