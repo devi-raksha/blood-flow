@@ -41,40 +41,6 @@
 
 using namespace dealii;
 
-
-// // ========================================================================
-// // HELPER FUNCTION: Detect Non-Manifold Faces (Y-Junctions)
-// // ========================================================================
-
-// template <typename CellContainer>
-// std::map<typename CellContainer::active_face_iterator,
-//          std::vector<typename CellContainer::active_cell_iterator>>
-// get_non_manifold_faces(const CellContainer &cell_container)
-// {
-//   // Map from face to list of cells touching that face
-//   std::map<typename CellContainer::active_face_iterator,
-//            std::vector<typename CellContainer::active_cell_iterator>>
-//     face_to_cells;
-
-//   // Loop over all cells and all faces
-//   for (const auto &cell : cell_container.active_cell_iterators())
-//     for (const auto f : cell->face_indices())
-//       face_to_cells[cell->face(f)].push_back(cell);
-
-//   // Remove all faces with only 2 neighbors (manifold faces)
-//   // Keep only faces with > 2 neighbors (non-manifold = junctions!)
-//   for (auto it = face_to_cells.begin(); it != face_to_cells.end();)
-//     {
-//       if (it->second.size() <= 2)
-//         it = face_to_cells.erase(it);
-//       else
-//         ++it;
-//     }
-
-//   return face_to_cells;
-// }
-
-
 //====================================================================
 // PHYSICAL CONSTANTS AND PARAMETERS
 //====================================================================
@@ -160,6 +126,8 @@ public:
   void
   initialize_params(const std::string &filename = "");
   void
+  create_vascular_network();
+  void
   setup_system();
   void
   assemble_system();
@@ -181,24 +149,27 @@ public:
   void
   run_convergence_study();
   void
-  detect_bifurcation_junctions();
+  detect_junctions();
+  void
+  detect_boundaries_and_junctions();
   void
   initialize_terminal_capacitors();
 
+
   // Junction physics (called by JunctionSolver) ---
   void
-  compute_junction_residual(const JunctionState &X,
-                            double               Wp_minus,
-                            double               Wd1_plus,
-                            double               Wd2_plus,
-                            Vector<double>      &R) const;
+  compute_junction_residual(const JunctionState               &X,
+                            const std::vector<double>         &W_in,
+                            const JunctionInfo<dim, spacedim> &junction,
+                            Vector<double>                    &R) const;
 
   void
-  compute_junction_jacobian(const JunctionState &X,
-                            FullMatrix<double>  &J) const;
+  compute_junction_jacobian(const JunctionState               &X,
+                            const JunctionInfo<dim, spacedim> &junction,
+                            const std::vector<double>         &W_in,
+                            FullMatrix<double>                &J) const;
 
 private:
-  // "RCR" or "Rt"
   ParsedTools::Constants    par;
   AffineConstraints<double> constraints;
   // Key: Boundary ID, Value: Pressure at the previous time step
@@ -208,21 +179,16 @@ private:
   std::set<dealii::types::boundary_id> terminal_boundary_ids;
   using CellIterator = typename DoFHandler<dim, spacedim>::active_cell_iterator;
 
-  struct JunctionCell
-  {
-    CellIterator cell;
-    unsigned int vertex;
-  };
-
-  std::vector<JunctionInfo>                      junctions;
+  std::vector<JunctionInfo<dim, spacedim>>       junctions;
   std::set<std::pair<CellId, unsigned int>>      all_junction_faces;
   JunctionSolver<BloodFlowSystem<dim, spacedim>> junction_solver;
 
-  // to know junction faces
+
   inline bool
   is_junction_face(const CellId &cell_id, const unsigned int face_no) const
   {
-    return all_junction_faces.count({cell_id, face_no}) > 0;
+    // Explicitly using std::make_pair resolves initializer_list ambiguity
+    return all_junction_faces.count(std::make_pair(cell_id, face_no)) > 0;
   }
 
 
@@ -265,31 +231,6 @@ private:
    * Inverse function to compute area from wave speed (Newton method)
    */
 
-  double
-  inverse_compute_area_from_c(double c_target) const
-  {
-    double A = par["a0"]; // initial guess
-
-    for (unsigned int iter = 0; iter < 20; ++iter)
-      {
-        double cA = compute_wave_speed(A);
-        double f  = cA - c_target;
-        if (std::abs(f) < 1e-12)
-          return A;
-
-        // approximate derivative: dc/dA
-        double df_dA = compute_wave_speed_derivative(
-          A); // c_target is constant, so only need dc/dA
-
-        // Newton update
-        A = A - f / df_dA;
-
-        if (A < 1e-12)
-          A = 1e-12;
-      }
-
-    return A;
-  }
 
   /**
    * compute area from pressure using tube law formula
@@ -573,6 +514,14 @@ private:
     return {{FHLL_A_jac, FHLL_U_jac}};
   }
 
+  // Get trace values at a junction face
+  void
+  get_trace(
+    const Vector<double>                                           &vec,
+    const typename DoFHandler<dim, spacedim>::active_cell_iterator &cell,
+    unsigned int                                                    face_no,
+    double                                                         &A,
+    double                                                         &U) const;
 
   //   private:
   // Mesh and finite elements

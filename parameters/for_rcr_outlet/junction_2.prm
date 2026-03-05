@@ -1,0 +1,38 @@
+subsection BloodFlowSystem<1, 3>
+  set Final time                           = 2
+  set Finite element degree                = 1
+  set Newton iterations                    = 20
+  set Newton tolerance                     = 1e-8
+  set Number of global refinement          = 5
+  set Number of refinement cycles          = 1
+  set Omega (relaxation parameter)         = 0.5
+  set Outlet boundary condition type       = RCR
+  set Output filename                      = solution
+  set Problem constants                    = 1.0
+  set Theta Boundary (stability parameter) = 0.5
+  set Theta (penalty parameter)            = 0.5
+  set Time step                            = 0.105e-3
+  set Use Riemann Invariants               = true
+  set Use direct solver                    = true
+  set Use junction mesh                    = true
+end
+subsection Blood Flow Parameters
+  set Density (rho)                           = 1050.0 
+  set Elastic modulus of the vessel wall (mu) = 4e5
+  set Reflection coefficient at outflow boundary (Rt) = 1
+  set Reference cross-sectional area (a0)     = 3.14e-4
+  set Resistance of proximal capacitor (R1)   = 1.2e4   
+  set Resistance of distal capacitor (R2)     = 1.1e5
+  set Capacitance of terminal capacitor (C)   = 5.0e-8
+  set Pressure at terminal boundary (P_out)   = 0.0   
+  set Viscosity coefficient (eta_c)           = 0.0
+  set Reference pressure (p0)                 = 0.01
+end
+
+subsection Functions
+set Inflow function = (t < 0.05) ? (1e-2 * exp(-10000*(t-0.05)^2) * (t/0.05)) : (1e-2 * exp(-10000*(t-0.05)^2))
+set Exact solution = a0; 0
+set Initial condition = a0; 0
+set RHS expression = 0; 0
+end
+

@@ -148,55 +148,60 @@ BloodFlowSystem<dim, spacedim>::is_terminal_boundary(
 
 template <int dim, int spacedim>
 void
-BloodFlowSystem<dim, spacedim>::detect_bifurcation_junctions()
+BloodFlowSystem<dim, spacedim>::detect_junctions()
 {
   junctions.clear();
   all_junction_faces.clear();
 
-  const auto &vertices = triangulation.get_vertices();
+  // 1. Count how many cells are attached to each vertex
+  // In 1D, a vertex with more than 2 cells attached is a junction.
+  // A vertex with 2 cells is just a standard connection.
+  std::map<unsigned int,
+           std::vector<
+             std::pair<typename DoFHandler<dim, spacedim>::active_cell_iterator,
+                       unsigned int>>>
+    vertex_to_faces;
 
-  for (unsigned int v = 0; v < triangulation.n_vertices(); ++v)
+  for (const auto &cell : dof_handler.active_cell_iterators())
     {
-      const Point<spacedim> &junction_point = vertices[v];
-
-      std::vector<JunctionInfo::FaceData> starts_here;
-      std::vector<JunctionInfo::FaceData> ends_here;
-
-      for (const auto &cell : dof_handler.active_cell_iterators())
+      for (unsigned int v = 0; v < GeometryInfo<dim>::vertices_per_cell; ++v)
         {
-          // upstream vertex
-          if (cell->vertex(0) == junction_point)
-            {
-              starts_here.push_back({cell, 0});
-            }
-
-          // downstream vertex
-          if (cell->vertex(1) == junction_point)
-            {
-              ends_here.push_back({cell, 1});
-            }
-        }
-
-      // Y-junction condition
-      if (starts_here.size() == 2 && ends_here.size() == 1)
-        {
-          JunctionInfo J;
-          J.point = junction_point;
-
-          J.parent    = ends_here[0];
-          J.daughters = starts_here;
-
-          junctions.push_back(J);
-
-          all_junction_faces.insert(
-            std::make_pair(J.parent.cell->id(), J.parent.face_no));
-
-          for (const auto &d : J.daughters)
-            all_junction_faces.insert(std::make_pair(d.cell->id(), d.face_no));
-
-          std::cout << "Detected Y-junction at " << J.point << std::endl;
+          unsigned int v_index = cell->vertex_index(v);
+          // In 1D, vertex index 0 is face 0, vertex index 1 is face 1
+          vertex_to_faces[v_index].push_back({cell, v});
         }
     }
+
+  // 2. Iterate through the map and find junctions
+  for (const auto &[v_idx, attached_faces] : vertex_to_faces)
+    {
+      // In a bifurcation, 3 cells meet at 1 vertex.
+      // If it's 2, it's just a continuous pipe (usually handled by deal.II
+      // automatically). If you want to solve the junction equations manually,
+      // use >= 2.
+      if (attached_faces.size() > 2)
+        {
+          JunctionInfo<dim, spacedim> J;
+          J.point = triangulation.get_vertices()[v_idx];
+
+          for (const auto &face_info : attached_faces)
+            {
+              JunctionFace<dim, spacedim> jf;
+              jf.cell        = face_info.first;
+              jf.face_no     = face_info.second; // In 1D, face_no == vertex_no
+              jf.orientation = (jf.face_no == 1) ? 1 : -1;
+
+              J.faces.push_back(jf);
+
+              // Mark for assembly
+              all_junction_faces.insert(
+                std::make_pair(jf.cell->id(), jf.face_no));
+            }
+          junctions.push_back(J);
+        }
+    }
+
+  std::cout << "Detected " << junctions.size() << " junctions." << std::endl;
 }
 
 
@@ -205,93 +210,113 @@ BloodFlowSystem<dim, spacedim>::detect_bifurcation_junctions()
 template <int dim, int spacedim>
 void
 BloodFlowSystem<dim, spacedim>::compute_junction_residual(
-  const JunctionState &X,
-  double               Wp_plus,
-  double               Wd1_minus,
-  double               Wd2_minus,
-  Vector<double>      &R) const
+  const JunctionState               &X,
+  const std::vector<double>         &W_in,
+  const JunctionInfo<dim, spacedim> &junction,
+  Vector<double>                    &R) const
 {
-  AssertDimension(R.size(), 6);
+  const unsigned int K    = junction.n_vessels();
+  const double       rho  = par["rho"];
+  const double       Amin = 1e-10;
 
-  const double Amin = 1e-8;
+  // 1. Mass Conservation: Sum(s_i * A_i * U_i) = 0
+  R[0] = 0.0;
+  for (unsigned int i = 0; i < K; ++i)
+    {
+      double s = static_cast<double>(junction.faces[i].orientation);
+      R[0] += s * X.A(i) * X.U(i);
+    }
 
-  const double Ap  = std::max(X.Ap, Amin);
-  const double Ad1 = std::max(X.Ad1, Amin);
-  const double Ad2 = std::max(X.Ad2, Amin);
+  // 2. Pressure Continuity: H_0 - H_i = 0
+  double H0 = 0.5 * std::pow(X.U(0), 2) + compute_pressure_value(X.A(0)) / rho;
+  for (unsigned int i = 1; i < K; ++i)
+    {
+      double Hi =
+        0.5 * std::pow(X.U(i), 2) + compute_pressure_value(X.A(i)) / rho;
+      R[i] = H0 - Hi;
+    }
 
-  const double Up  = X.Up;
-  const double Ud1 = X.Ud1;
-  const double Ud2 = X.Ud2;
-
-  const double cp  = compute_wave_speed(Ap);
-  const double cd1 = compute_wave_speed(Ad1);
-  const double cd2 = compute_wave_speed(Ad2);
-
-  // (1) Mass conservation
-  R[0] = Ap * Up - Ad1 * Ud1 - Ad2 * Ud2;
-
-  // (2–3) Energy /total pressure continuity
-  R[1] = 0.5 * Up * Up + compute_pressure_value(Ap) / par["rho"] -
-         0.5 * Ud1 * Ud1 - compute_pressure_value(Ad1) / par["rho"];
-
-  R[2] = 0.5 * Up * Up + compute_pressure_value(Ap) / par["rho"] -
-         0.5 * Ud2 * Ud2 - compute_pressure_value(Ad2) / par["rho"];
-
-  // (4–6) Characteristic compatibility
-  R[3] = Up + 4.0 * cp - Wp_plus;
-  R[4] = Ud1 - 4.0 * cd1 - Wd1_minus;
-  R[5] = Ud2 - 4.0 * cd2 - Wd2_minus;
+  // 3. Compatibility: U_i + s_i * 4c_i - W_in_i = 0
+  for (unsigned int i = 0; i < K; ++i)
+    {
+      double s = static_cast<double>(junction.faces[i].orientation);
+      double c = compute_wave_speed(std::max(X.A(i), Amin));
+      R[K + i] = (X.U(i) + s * 4.0 * c) - W_in[i];
+    }
 }
 
 template <int dim, int spacedim>
 void
 BloodFlowSystem<dim, spacedim>::compute_junction_jacobian(
-  const JunctionState &X,
-  FullMatrix<double>  &J) const
+  const JunctionState               &X,
+  const JunctionInfo<dim, spacedim> &junction,
+  const std::vector<double>         &W_in,
+  FullMatrix<double>                &J) const
 {
-  AssertDimension(J.m(), 6);
-  AssertDimension(J.n(), 6);
+  const unsigned int K    = junction.n_vessels();
+  const double       rho  = par["rho"];
+  const double       Amin = 1e-10;
+  J                       = 0.0;
 
-  J = 0.0;
+  for (unsigned int i = 0; i < K; ++i)
+    {
+      const double s    = static_cast<double>(junction.faces[i].orientation);
+      const double Ai   = std::max(X.A(i), Amin);
+      const double Ui   = X.U(i);
+      const double ci   = compute_wave_speed(Ai);
+      const double dPdA = compute_pressure_derivative(Ai);
+      const double dcdA = compute_wave_speed_derivative(Ai);
 
-  const double Amin = 1e-8;
+      // Row 0: Mass Conservation derivatives
+      J(0, 2 * i)     = s * Ui; // dR/dAi
+      J(0, 2 * i + 1) = s * Ai; // dR/dUi
 
-  const double Ap  = std::max(X.Ap, Amin);
-  const double Ad1 = std::max(X.Ad1, Amin);
-  const double Ad2 = std::max(X.Ad2, Amin);
+      // Rows 1 to K-1: Pressure Continuity
+      if (i == 0)
+        { // Derivatives of H0 relative to A0, U0
+          for (unsigned int row = 1; row < K; ++row)
+            {
+              J(row, 0) = dPdA / rho;
+              J(row, 1) = Ui;
+            }
+        }
+      else
+        { // Derivatives of -Hi relative to Ai, Ui
+          J(i, 2 * i)     = -dPdA / rho;
+          J(i, 2 * i + 1) = -Ui;
+        }
 
-  const double Up  = X.Up;
-  const double Ud1 = X.Ud1;
-  const double Ud2 = X.Ud2;
+      // Rows K to 2K-1: Compatibility
+      unsigned int row_c  = K + i;
+      J(row_c, 2 * i)     = s * 4.0 * dcdA;
+      J(row_c, 2 * i + 1) = 1.0;
+    }
+}
 
-  // Mass
-  J(0, 0) = Up;
-  J(0, 1) = Ap;
-  J(0, 2) = -Ud1;
-  J(0, 3) = -Ad1;
-  J(0, 4) = -Ud2;
-  J(0, 5) = -Ad2;
+template <int dim, int spacedim>
+void
+BloodFlowSystem<dim, spacedim>::get_trace(
+  const Vector<double>                                           &vec,
+  const typename DoFHandler<dim, spacedim>::active_cell_iterator &cell,
+  unsigned int                                                    face_no,
+  double                                                         &A,
+  double                                                         &U) const
+{
+  // Simple trace evaluator for DG (using midpoint of the 1D face/vertex)
+  const FEValuesExtractors::Scalar area_extractor(0);
+  const FEValuesExtractors::Scalar velocity_extractor(1);
 
-  // Pressure continuity
-  J(1, 0) = compute_pressure_derivative(Ap) / par["rho"];
-  J(1, 1) = Up;
-  J(1, 2) = -compute_pressure_derivative(Ad1) / par["rho"];
-  J(1, 3) = -Ud1;
+  // 1D face is a 0D point, QGauss<0>(1) is a single point
+  QGauss<dim - 1>             quad(1);
+  FEFaceValues<dim, spacedim> fe_face(*fe, quad, update_values);
+  fe_face.reinit(cell, face_no);
 
-  J(2, 0) = compute_pressure_derivative(Ap) / par["rho"];
-  J(2, 1) = Up;
-  J(2, 4) = -compute_pressure_derivative(Ad2) / par["rho"];
-  J(2, 5) = -Ud2;
+  std::vector<double> A_vals(1), U_vals(1);
+  fe_face[area_extractor].get_function_values(vec, A_vals);
+  fe_face[velocity_extractor].get_function_values(vec, U_vals);
 
-  // Characteristics
-  J(3, 0) = 4.0 * compute_wave_speed_derivative(Ap);
-  J(3, 1) = 1.0;
-
-  J(4, 2) = -4.0 * compute_wave_speed_derivative(Ad1);
-  J(4, 3) = 1.0;
-
-  J(5, 4) = -4.0 * compute_wave_speed_derivative(Ad2);
-  J(5, 5) = 1.0;
+  A = A_vals[0];
+  U = U_vals[0];
 }
 
 template <int dim, int spacedim>
@@ -304,8 +329,7 @@ BloodFlowSystem<dim, spacedim>::assemble_junction_terms()
   const FEValuesExtractors::Scalar area_extractor(0);
   const FEValuesExtractors::Scalar velocity_extractor(1);
 
-  QGauss<dim - 1> quad(1);
-
+  QGauss<dim - 1>             quad(1);
   FEFaceValues<dim, spacedim> fe_face(
     *fe, quad, update_values | update_JxW_values | update_normal_vectors);
 
@@ -313,150 +337,43 @@ BloodFlowSystem<dim, spacedim>::assemble_junction_terms()
 
   for (const auto &J : junctions)
     {
-      Assert(J.daughters.size() == 2, ExcInternalError());
+      const unsigned int  K = J.faces.size();
+      std::vector<double> A(K), U(K), W_in(K);
 
-      // ======================================================
-      // 1. Extract DG traces (solution & old solution)
-      // ======================================================
-      auto get_trace = [&](const Vector<double>         &vec,
-                           const JunctionInfo::FaceData &fd,
-                           double                       &A,
-                           double                       &U) {
-        fe_face.reinit(fd.cell, fd.face_no);
-        const unsigned int  n_q = fe_face.n_quadrature_points;
-        std::vector<double> A_vals(n_q), U_vals(n_q);
-        fe_face[area_extractor].get_function_values(vec, A_vals);
-        fe_face[velocity_extractor].get_function_values(vec, U_vals);
+      // 1. Get current traces and compute Invariants
+      for (unsigned int i = 0; i < K; ++i)
+        {
+          get_trace(solution, J.faces[i].cell, J.faces[i].face_no, A[i], U[i]);
 
-        A = A_vals[0];
-        U = U_vals[0];
-      };
+          double s = static_cast<double>(J.faces[i].orientation);
+          // std::cout << "sign " << s << ", Face " << i
+          //            << std::endl;
+          double c = compute_wave_speed(std::max(A[i], A_min));
 
-      double Ap, Up, Ad1, Ud1, Ad2, Ud2;
-      double Ap_old, Up_old, Ad1_old, Ud1_old, Ad2_old, Ud2_old;
+          // The characteristic entering the junction: W = U + s*4c
+          W_in[i] = U[i] + s * 4.0 * c;
+        }
 
-      get_trace(solution, J.parent, Ap, Up);
-      get_trace(solution, J.daughters[0], Ad1, Ud1);
-      get_trace(solution, J.daughters[1], Ad2, Ud2);
+      // 2. Solve junction system for Star State X*
+      JunctionState X0;
+      X0.X.reinit(2 * K);
+      for (unsigned int i = 0; i < K; ++i)
+        {
+          X0.A(i) = A[i];
+          X0.U(i) = U[i];
+        }
 
-      get_trace(solution_old, J.parent, Ap_old, Up_old);
-      get_trace(solution_old, J.daughters[0], Ad1_old, Ud1_old);
-      get_trace(solution_old, J.daughters[1], Ad2_old, Ud2_old);
+      JunctionState X = junction_solver.solve(X0, W_in, J, *this);
 
-      // ======================================================
-      // 2. characteristics AT JUNCTION
-      // 1) for parent vessles characteristic is outgoing, so we need to extract
-      // W_plus 2) for daughter vessels characteristic is incoming, so we need
-      // to extract W_minus
-      // ======================================================
-      const double Wp_plus   = Up_old + 4.0 * compute_wave_speed(Ap_old);
-      const double Wd1_minus = Ud1_old - 4.0 * compute_wave_speed(Ad1_old);
-      const double Wd2_minus = Ud2_old - 4.0 * compute_wave_speed(Ad2_old);
-
-      // ======================================================
-      // 3. Solve junction nonlinear system
-      // ======================================================
-      JunctionState X0{Ap, Up, Ad1, Ud1, Ad2, Ud2};
-      JunctionState X =
-        junction_solver.solve(X0, Wp_plus, Wd1_minus, Wd2_minus, *this);
-
-      Vector<double> R(6);
-
-      compute_junction_residual(X, Wp_plus, Wd1_minus, Wd2_minus, R);
-      mass_residual_at_junction.push_back(R[0]);
-      // std::cout << "Mass residual at junction: " << std::abs(R[0]) <<
-      // std::endl;
-
-      X.Ap  = std::max(X.Ap, A_min);
-      X.Ad1 = std::max(X.Ad1, A_min);
-      X.Ad2 = std::max(X.Ad2, A_min);
-
-
-      // ======================================================
-      // 4. Junction Jacobian inverse JX^{-1}
-      // ======================================================
-      FullMatrix<double> JX(6, 6);
-      compute_junction_jacobian(X, JX);
-
+      // 3. Local Junction Jacobian Inverse
+      FullMatrix<double> JX(2 * K, 2 * K);
+      compute_junction_jacobian(X, J, W_in, JX);
       FullMatrix<double> JX_inv = JX;
       JX_inv.gauss_jordan();
-      Assert(JX_inv.l1_norm() > 0, ExcInternalError());
 
-      // ======================================================
-      // 5. Assemble numerical flux and FULL Newton Jacobian
-      //    contribution on each junction face
-      //
-      // At a junction face, the DG residual is not a function
-      // of the interior trace (A_h, U_h) alone.
-      //
-      // Instead, the exterior state used in the numerical flux
-      // is the *junction state* X*, which is obtained by solving
-      // a nonlinear algebraic system:
-      //
-      //     R_J(X*, W_in) = 0
-      //
-      // where W_in contains the incoming characteristic data
-      // extracted from the DG solution.
-      //
-      // Therefore, the DG residual at the junction face has the
-      // functional dependence
-      //
-      //     R_DG = F( A_h, U_h, X*(A_h, U_h) )
-      //
-      // and its Newton linearization requires a CHAIN RULE:
-      //
-      //   ∂R_DG / ∂(A_h, U_h)
-      //     = ∂F / ∂(A_h, U_h)          [direct DG contribution]
-      //     + ∂F / ∂X* · ∂X* / ∂(A_h, U_h)
-      //
-      // The second term accounts for the *implicit dependence*
-      // of the junction state X* on the DG trace variables.
-      //
-      // ------------------------------------------------------
-      // Computation strategy implemented below:
-      //
-      // (a) ∂F / ∂(A_h, U_h)
-      //     - obtained directly from the linearized HLL flux
-      //       assuming the junction state X* is fixed.
-      //
-      // (b) ∂X* / ∂(A_h, U_h)
-      //     - obtained by differentiating the junction system
-      //       R_J(X*, W_in) = 0:
-      //
-      //         ∂R_J/∂X* · ∂X*/∂(A_h, U_h)
-      //       + ∂R_J/∂(A_h, U_h) = 0
-      //
-      //       -> ∂X*/∂(A_h, U_h)
-      //          = - (∂R_J/∂X*)^{-1} · ∂R_J/∂(A_h, U_h)
-      //
-      //     - ∂R_J/∂X* is the 6×6 junction Jacobian JX,
-      //       computed once per junction and inverted.
-      //
-      //     - ∂R_J/∂(A_h, U_h) is nonzero ONLY for the
-      //       characteristic compatibility equations,
-      //       since mass and pressure continuity equations
-      //       do not depend on DG traces.
-      //
-      // (c) ∂F / ∂X*
-      //     - analytic derivative of the physical flux with
-      //       respect to the junction state variables
-      //       (A*, U*) associated with the current vessel.
-      //
-      // (d) The final Jacobian contribution assembled is:
-      //
-      //     ∂F/∂(A_h, U_h)
-      //   + ∂F/∂X* · ( - JX^{-1} · ∂R_J/∂(A_h, U_h) )
-      //
-      // which guarantees a fully consistent Newton linearization
-      // of the coupled DG–junction system.
-      // ======================================================
-
-      auto assemble_face = [&](const JunctionInfo::FaceData &fd,
-
-                               double       A_star,
-                               double       U_star,
-                               unsigned int A_idx,
-                               unsigned int U_idx) {
+      // 4. Assemble each participating face
+      auto assemble_face = [&](unsigned int face_idx) {
+        const auto &fd = J.faces[face_idx];
         fe_face.reinit(fd.cell, fd.face_no);
 
         const auto        &normals = fe_face.get_normal_vectors();
@@ -472,125 +389,87 @@ BloodFlowSystem<dim, spacedim>::assemble_junction_terms()
 
         for (unsigned int q = 0; q < n_q; ++q)
           {
-            const double Ah_safe     = std::max(Ah[q], A_min);
-            const double A_star_safe = std::max(A_star, A_min);
+            const double Ah_safe = std::max(Ah[q], A_min);
+            const double A_star  = std::max(X.A(face_idx), A_min);
+            const double U_star  = X.U(face_idx);
 
-            // ---------------- Residual ----------------
-            auto [FA, FU] = HLL_residual_flux(fd.cell,
-                                              fd.cell,
-                                              Ah_safe,
-                                              Uh[q],
-                                              A_star_safe,
-                                              U_star,
-                                              normals[q]);
+            auto [FA, FU] = HLL_residual_flux(
+              fd.cell, fd.cell, Ah_safe, Uh[q], A_star, U_star, normals[q]);
 
+            // --- Residual Assembly ---
             for (unsigned int i = 0; i < fe->n_dofs_per_cell(); ++i)
               {
                 const unsigned int comp =
                   fe->system_to_component_index(i).first;
-                const double       phi = fe_face.shape_value(i, q);
-                const unsigned int row = dofs[i];
-
-                if (comp == 0)
-                  residual_vector(row) -= FA * phi * JxW[q];
-                else
-                  residual_vector(row) -= FU * phi * JxW[q];
+                const double phi_i = fe_face.shape_value(i, q);
+                residual_vector(dofs[i]) -=
+                  (comp == 0 ? FA : FU) * phi_i * JxW[q];
               }
 
-            // ---------------- Jacobian ----------------
+            // --- Jacobian Assembly ---
             for (unsigned int j = 0; j < fe->n_dofs_per_cell(); ++j)
               {
-                const double trial_A = fe_face[area_extractor].value(j, q);
-                const double trial_U = fe_face[velocity_extractor].value(j, q);
+                const double phi_A_j = fe_face[area_extractor].value(j, q);
+                const double phi_U_j = fe_face[velocity_extractor].value(j, q);
 
-                // (a) direct DG Jacobian  R_dg = ∂F/∂(A, U)
-                auto [dFA_dUh, dFU_dUh] = HLL_jacobian_flux(fd.cell,
+                // (a) Direct DG part (Star state held constant)
+                auto [dFA_dwh, dFU_dwh] = HLL_jacobian_flux(fd.cell,
                                                             fd.cell,
                                                             Ah_safe,
                                                             Uh[q],
-                                                            A_star_safe,
+                                                            A_star,
                                                             U_star,
-                                                            trial_A,
-                                                            trial_U,
+                                                            phi_A_j,
+                                                            phi_U_j,
                                                             0.0,
                                                             0.0,
                                                             normals[q]);
 
-                // (b) ∂R_J / ∂(A, U)
-                Vector<double> dRJ_duh(6);
-                dRJ_duh = 0.0;
+                // (b) Sensitivity of Star state to interior via Chain Rule
+                // dWin/dwh
+                const double s        = static_cast<double>(fd.orientation);
+                const double dc_dA    = compute_wave_speed_derivative(Ah_safe);
+                const double dWin_dwh = phi_U_j + s * 4.0 * dc_dA * phi_A_j;
 
+                // dX*/dWin = -inv(JX) * (dRj/dWin). Note: dRj/dWin = -1 for
+                // compatibility rows. Thus dX*/dWin = inv(JX)[col K+face_idx]
+                Vector<double> dX_dWin(2 * K);
+                for (unsigned int r = 0; r < 2 * K; ++r)
+                  dX_dWin[r] = JX_inv(r, K + face_idx);
 
-                const double dc_dA = compute_wave_speed_derivative(Ah_safe);
+                // (c) Chain-rule Jacobian via HLL (Sensitivity to Star State)
+                auto [dFA_chain, dFU_chain] =
+                  HLL_jacobian_flux(fd.cell,
+                                    fd.cell,
+                                    Ah_safe,
+                                    Uh[q],
+                                    A_star,
+                                    U_star,
+                                    0.0,
+                                    0.0,
+                                    dX_dWin[2 * face_idx] * dWin_dwh,
+                                    dX_dWin[2 * face_idx + 1] * dWin_dwh,
+                                    normals[q]);
 
-                dRJ_duh[3] += -trial_U + 4.0 * dc_dA * trial_A;
-                dRJ_duh[4] += -trial_U - 4.0 * dc_dA * trial_A;
-                dRJ_duh[5] += -trial_U - 4.0 * dc_dA * trial_A;
-
-                // (c) ∂X*/∂(A, U) = -JX^{-1} ∂R_J/∂(A, U)
-                Vector<double> dX_duh(6);
-                JX_inv.vmult(dX_duh, dRJ_duh);
-                dX_duh *= -1.0;
-
-                // (d) ∂F/∂X*
-                // const double dFA_dA = U_star;
-                // const double dFA_dU = A_star;
-
-                // const double dFU_dA =
-                //   compute_pressure_derivative(A_star_safe) / par["rho"];
-                // const double dFU_dU = U_star;
-
-                // const double dFA_chain =
-                //   dFA_dA * dX_duh[A_idx] + dFA_dU * dX_duh[U_idx];
-
-                // const double dFU_chain =
-                //   dFU_dA * dX_duh[A_idx] + dFU_dU * dX_duh[U_idx];
-
-                // (d) ∂F_HLL / ∂X* (The HLL-consistent Chain Rule)
-                // We vary the "Right" state (the junction state X*) by the
-                // sensitivity dX_duh
-                auto [dFA_chain, dFU_chain] = HLL_jacobian_flux(
-                  fd.cell,
-                  fd.cell,
-                  Ah_safe,
-                  Uh[q],
-                  A_star_safe,
-                  U_star,
-                  0.0,           // No variation in interior A
-                  0.0,           // No variation in interior U
-                  dX_duh[A_idx], // Variation of junction Area
-                  dX_duh[U_idx], // Variation of junction Velocity
-                  normals[q]);
-
-                // (e) Assemble total Jacobian
                 for (unsigned int i = 0; i < fe->n_dofs_per_cell(); ++i)
                   {
                     const unsigned int comp =
                       fe->system_to_component_index(i).first;
-                    const double       phi = fe_face.shape_value(i, q);
-                    const unsigned int row = dofs[i];
-                    const unsigned int col = dofs[j];
-
-                    if (comp == 0)
-                      jacobian_matrix.add(
-                        row, col, -(dFA_dUh + dFA_chain) * phi * JxW[q]);
-                    else
-                      jacobian_matrix.add(
-                        row, col, -(dFU_dUh + dFU_chain) * phi * JxW[q]);
+                    const double phi_i = fe_face.shape_value(i, q);
+                    jacobian_matrix.add(dofs[i],
+                                        dofs[j],
+                                        -((comp == 0 ? dFA_dwh + dFA_chain :
+                                                       dFU_dwh + dFU_chain)) *
+                                          phi_i * JxW[q]);
                   }
               }
           }
       };
 
-
-      // Parent
-      assemble_face(J.parent, X.Ap, X.Up, 0, 1);
-      // Daughters
-      assemble_face(J.daughters[0], X.Ad1, X.Ud1, 2, 3);
-      assemble_face(J.daughters[1], X.Ad2, X.Ud2, 4, 5);
+      for (unsigned int i = 0; i < K; ++i)
+        assemble_face(i);
     }
 }
-
 
 // ========================================================================
 // SETUP SYSTEM
@@ -611,7 +490,7 @@ BloodFlowSystem<dim, spacedim>::setup_system()
 
   junctions.clear();
   all_junction_faces.clear();
-  detect_bifurcation_junctions();
+  detect_junctions();
 
   DynamicSparsityPattern dsp(dof_handler.n_dofs());
   DoFTools::make_flux_sparsity_pattern(dof_handler, dsp);
@@ -1135,6 +1014,12 @@ BloodFlowSystem<dim, spacedim>::assemble_system()
           }
         else // ================= OUTLET BOUNDARY =================
           {
+            // 1. Retrieve the choice from your ParameterHandler
+            // std::string outlet_type;
+            // this->prm.enter_subsection("Blood Flow Parameters");
+            // outlet_type = this->prm.get("Outlet boundary condition type");
+            // this->prm.leave_subsection();
+
             if (this->outlet_type == "RCR")
               {
                 // ================= CHOICE: RCR =================
@@ -1518,6 +1403,7 @@ BloodFlowSystem<dim, spacedim>::compute_errors(unsigned int k)
   // // Create exact solution at current time
   // ExactSolutionBloodFlow<spacedim> exact_solution;
   exact_solution.set_time(time);
+  initial_condition.set_time(time);
   // Area L2 error
   VectorTools::integrate_difference(dof_handler,
                                     solution,
@@ -1620,33 +1506,112 @@ BloodFlowSystem<dim, spacedim>::compute_errors(unsigned int k)
   last_Velocity_H1_error = Velocity_H1_error;
 }
 
+
+// ========================================================================
+// Create vascular network
+// ========================================================================
 template <int dim, int spacedim>
 void
-BloodFlowSystem<dim, spacedim>::check_singular_rows() const
+BloodFlowSystem<dim, spacedim>::create_vascular_network()
 {
-  const double tol = 1e-14;
+  std::vector<Point<spacedim>> nodes = {{-0.5, 0.5, 0.0},
+                                        {0.0, 0.0, 0.0},
 
-  for (unsigned int i = 0; i < jacobian_matrix.m(); ++i)
+                                        {-0.5, -0.5, 0.0},
+
+                                        {0.5, 0.0, 0.0},
+
+                                        {1.0, 0.0, 0.0},
+
+                                        {1.5, 0.5, 0.0},
+                                        {1.5, -0.5, 0.0},
+
+                                        {2.0, 0.75, 0.0},
+                                        {2.0, 0.25, 0.0},
+                                        {2.0, -0.25, 0.0},
+                                        {2.0, -0.75, 0.0}};
+
+
+  std::vector<std::pair<int, int>> edges = {{0, 1},
+                                            {2, 1},
+                                            {1, 3},
+
+                                            {3, 4},
+
+                                            {4, 5},
+                                            {4, 6},
+
+                                            {5, 7},
+                                            {5, 8},
+
+                                            {6, 9},
+                                            {6, 10}};
+
+
+  std::vector<CellData<dim>> cells(edges.size());
+
+  for (unsigned int i = 0; i < edges.size(); ++i)
     {
-      double row_sum = 0.0;
+      cells[i].vertices[0] = edges[i].first;
+      cells[i].vertices[1] = edges[i].second;
+    }
 
-      for (auto it = jacobian_matrix.begin(i); it != jacobian_matrix.end(i);
-           ++it)
-        row_sum += std::abs(it->value());
+  SubCellData subcelldata;
 
-      if (row_sum < tol)
+  triangulation.create_triangulation(nodes, cells, subcelldata);
+}
+
+template <int dim, int spacedim>
+void
+BloodFlowSystem<dim, spacedim>::detect_boundaries_and_junctions()
+{
+  std::map<unsigned int, int> vertex_degree;
+
+  // count how many cells touch each vertex
+  for (const auto &cell : triangulation.active_cell_iterators())
+    {
+      for (unsigned int v = 0; v < GeometryInfo<dim>::vertices_per_cell; ++v)
         {
-          std::cout << ">>> ZERO (or near-zero) Jacobian row at global DoF "
-                    << i << std::endl;
-
-          // const unsigned int comp =
-          //   fe->system_to_component_index(i).first;
-
-          // std::cout << "    component = "
-          //           << (comp == 0 ? "Area (A)" : "Velocity (U)")
-          //           << std::endl;
+          unsigned int id = cell->vertex_index(v);
+          vertex_degree[id]++;
         }
     }
+
+  terminal_boundary_ids.clear();
+  junctions.clear();
+
+  unsigned int inlet_vertex = numbers::invalid_unsigned_int;
+  unsigned int outlet_count = 0;
+
+  for (const auto &[vertex_id, degree] : vertex_degree)
+    {
+      Point<spacedim> P = triangulation.get_vertices()[vertex_id];
+
+      if (degree == 1)
+        {
+          // terminal node
+
+          if (inlet_vertex == numbers::invalid_unsigned_int)
+            {
+              inlet_vertex = vertex_id;
+
+              std::cout << "INLET detected at " << P << std::endl;
+            }
+          else
+            {
+              std::cout << "OUTLET detected at " << P << std::endl;
+              outlet_count++;
+            }
+        }
+
+      if (degree >= 3)
+        {
+          std::cout << "JUNCTION detected at " << P << " degree = " << degree
+                    << std::endl;
+        }
+    }
+
+  std::cout << "Total outlets: " << outlet_count << std::endl;
 }
 
 // ========================================================================
@@ -1696,40 +1661,10 @@ BloodFlowSystem<dim, spacedim>::run_convergence_study()
 
               if constexpr (dim == 1 && spacedim == 3)
                 {
-                  std::vector<Point<3>> vertices;
-
-                  vertices.emplace_back(0, 0, 0);
-                  vertices.emplace_back(0.5, 0, 0);
-                  vertices.emplace_back(1.0, 0.5, 0);
-                  vertices.emplace_back(1.0, -0.5, 0);
-
-                  vertices.emplace_back(1.5, 0.25, 0);
-                  vertices.emplace_back(1.5, 0.75, 0);
-                  vertices.emplace_back(1.5, -0.25, 0);
-                  vertices.emplace_back(1.5, -0.75, 0);
-
-                  std::vector<CellData<1>> cells(7);
-                  cells[0].vertices[0] = 0;
-                  cells[0].vertices[1] = 1;
-                  cells[1].vertices[0] = 1;
-                  cells[1].vertices[1] = 2;
-                  cells[2].vertices[0] = 1;
-                  cells[2].vertices[1] = 3;
-                  cells[3].vertices[0] = 2;
-                  cells[3].vertices[1] = 4;
-                  cells[4].vertices[0] = 2;
-                  cells[4].vertices[1] = 5;
-                  cells[5].vertices[0] = 3;
-                  cells[5].vertices[1] = 6;
-                  cells[6].vertices[0] = 3;
-                  cells[6].vertices[1] = 7;
-
-                  triangulation.create_triangulation(vertices,
-                                                     cells,
-                                                     SubCellData());
+                  create_vascular_network();
 
                   // ================= TAGGING LOGIC for terminal boundary
-                  // =================
+
                   terminal_boundary_ids.clear();
                   unsigned int outlet_count = 0;
 
@@ -1744,7 +1679,7 @@ BloodFlowSystem<dim, spacedim>::run_convergence_study()
                               Point<3> face_center = cell->face(f)->center();
 
                               // 1. Identify Inlet (Root) at (0,0,0)
-                              if (face_center.distance(Point<3>(0, 0, 0)) <
+                              if (face_center.distance(Point<3>(-0.5, 0.5, 0)) <
                                   1e-8)
                                 {
                                   cell->face(f)->set_boundary_id(0);
@@ -1752,9 +1687,10 @@ BloodFlowSystem<dim, spacedim>::run_convergence_study()
                                     << "  [Mesh] Tagged INLET (ID 0) at "
                                     << face_center << std::endl;
                                 }
-                              // 2. Identify Outlets at x = 1.5
-                              else if (std::abs(face_center[0] - 1.5) < 1e-8)
+                              // 2. Identify ALL other boundaries as Outlets
+                              else
                                 {
+                                  // This will now catch x = -0.5 AND x = 2.0
                                   cell->face(f)->set_boundary_id(1);
                                   terminal_boundary_ids.insert(1);
                                   outlet_count++;
@@ -1765,9 +1701,6 @@ BloodFlowSystem<dim, spacedim>::run_convergence_study()
                             }
                         }
                     }
-                  std::cout << "  [Summary] Found " << outlet_count
-                            << " terminal faces on the coarse mesh."
-                            << std::endl;
                   triangulation.refine_global(n_global_refinements);
                 }
             }
@@ -1776,6 +1709,7 @@ BloodFlowSystem<dim, spacedim>::run_convergence_study()
         {
           triangulation.refine_global(1);
         }
+
 
       setup_system();
       initialize_terminal_capacitors();
@@ -1789,7 +1723,7 @@ BloodFlowSystem<dim, spacedim>::run_convergence_study()
                            initial_condition,
                            solution);
 
-      // detect_bifurcation_junctions();
+
       solution_old = solution;
       compute_pressure();
       output_results(0);
@@ -1801,75 +1735,48 @@ BloodFlowSystem<dim, spacedim>::run_convergence_study()
         static_cast<unsigned int>(std::round(final_time / time_step));
       tmp_vector.reinit(dof_handler.n_dofs());
 
+
+
       for (unsigned int step = 1; step <= n_time_steps; ++step)
         {
           time += time_step;
           std::cout << "Step " << step << "  t=" << time << std::endl;
 
-          // Newton iteration loop
-          solution                 = solution_old; // w^(0) := W^n
           unsigned int newton_iter = 0;
-          bool         converged   = false;
-
-          // Newton loop
-          do
+          while (newton_iter < max_newton_iterations)
             {
-              // Step 1: Assemble system
+              // A. Assemble the residual and Jacobian at the current guess
               assemble_system();
-              check_singular_rows();
 
+              // B. Check the residual norm BEFORE the solve
+              double current_residual = residual_vector.l2_norm();
 
-              // Step 2: Solve for Newton update
+              if (newton_iter == 0)
+                std::cout << "  Initial Residual: " << std::scientific
+                          << current_residual << std::endl;
+
+              // C. Check for convergence
+              if (current_residual < newton_tolerance)
+                {
+                  std::cout << "  Newton converged in " << newton_iter
+                            << " iterations." << std::endl;
+                  break;
+                }
+
+              // D. Solve for update and apply it
               solve();
-
-              // Step 3: Apply the update
               solution.add(omega, newton_update);
 
-              // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-              // Reassemble AFTER updating solution
-              // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-              assemble_system();
-
-              // Step 4: Get residual at NEW solution
-              double newton_residual_norm = residual_vector.l2_norm();
-
-              std::cout << " Newton iter " << newton_iter
-                        << "  residual = " << std::scientific
-                        << std::setprecision(6) << newton_residual_norm
-                        << std::endl;
-
-
-              // Step 5: Check for divergence
-              if (!std::isfinite(newton_residual_norm) ||
-                  newton_residual_norm > 1e12)
+              // E. Divergence check
+              if (!std::isfinite(current_residual) || current_residual > 1e12)
                 {
-                  std::cout << "⚠️  Residual too large, halving Δt\n";
+                  std::cout << "⚠️ Residual exploded. Halving dt.\n";
                   time_step *= 0.5;
-                  break;
+                  return; // Or exit loop
                 }
 
-              // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-              // Check convergence AFTER update
-              // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-              if (newton_residual_norm < newton_tolerance)
-                {
-                  converged = true;
-                  std::cout << "  Newton converged in " << newton_iter
-                            << " iterations.\n";
-                  break;
-                }
-
-              // Step 6: Increment counter
-              ++newton_iter;
-
-              if (newton_iter >= max_newton_iterations)
-                {
-                  std::cout << "  WARNING: Newton did not converge after "
-                            << max_newton_iterations << " iterations.\n";
-                  converged = true;
-                }
+              newton_iter++;
             }
-          while (!converged);
 
           solution_old = solution;
           compute_pressure();
