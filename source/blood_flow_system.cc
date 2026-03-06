@@ -263,7 +263,6 @@ BloodFlowSystem<dim, spacedim>::compute_junction_jacobian(
       const double s    = static_cast<double>(junction.faces[i].orientation);
       const double Ai   = std::max(X.A(i), Amin);
       const double Ui   = X.U(i);
-      const double ci   = compute_wave_speed(Ai);
       const double dPdA = compute_pressure_derivative(Ai);
       const double dcdA = compute_wave_speed_derivative(Ai);
 
@@ -1559,59 +1558,6 @@ BloodFlowSystem<dim, spacedim>::create_vascular_network()
   SubCellData subcelldata;
 
   triangulation.create_triangulation(nodes, cells, subcelldata);
-}
-
-template <int dim, int spacedim>
-void
-BloodFlowSystem<dim, spacedim>::detect_boundaries_and_junctions()
-{
-  std::map<unsigned int, int> vertex_degree;
-
-  // count how many cells touch each vertex
-  for (const auto &cell : triangulation.active_cell_iterators())
-    {
-      for (unsigned int v = 0; v < GeometryInfo<dim>::vertices_per_cell; ++v)
-        {
-          unsigned int id = cell->vertex_index(v);
-          vertex_degree[id]++;
-        }
-    }
-
-  terminal_boundary_ids.clear();
-  junctions.clear();
-
-  unsigned int inlet_vertex = numbers::invalid_unsigned_int;
-  unsigned int outlet_count = 0;
-
-  for (const auto &[vertex_id, degree] : vertex_degree)
-    {
-      Point<spacedim> P = triangulation.get_vertices()[vertex_id];
-
-      if (degree == 1)
-        {
-          // terminal node
-
-          if (inlet_vertex == numbers::invalid_unsigned_int)
-            {
-              inlet_vertex = vertex_id;
-
-              std::cout << "INLET detected at " << P << std::endl;
-            }
-          else
-            {
-              std::cout << "OUTLET detected at " << P << std::endl;
-              outlet_count++;
-            }
-        }
-
-      if (degree >= 3)
-        {
-          std::cout << "JUNCTION detected at " << P << " degree = " << degree
-                    << std::endl;
-        }
-    }
-
-  std::cout << "Total outlets: " << outlet_count << std::endl;
 }
 
 // ========================================================================

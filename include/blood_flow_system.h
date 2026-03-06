@@ -151,8 +151,6 @@ public:
   void
   detect_junctions();
   void
-  detect_boundaries_and_junctions();
-  void
   initialize_terminal_capacitors();
 
 
