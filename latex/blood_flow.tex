@@ -1142,13 +1142,7 @@ Q_{in} = A^* \left[ W_{2,L} + 4(c^* - c_0) \right],
 \label{rb}
 \end{equation}
 which is solved iteratively using the Newton iteration method with the initial guess $A^* = A_L$. Once $A^*$ is obtained, the velocity $U^*$ is computed from Eq.~\eqref{rb2}.
-
-Finally, the exterior velocity $U_L$ used in the Riemann solver is
-recovered from the characteristic relation
-\[
-U_L = 2U^* - U_R,
-\]
-assuming $A_L = A_R$.
+Once the boundary Riemann state $(A^*,U^*)$ has been computed, the numerical flux at the boundary is evaluated using the interior state $(A_L,U_L)$ and the boundary state $(A^*,U^*)$.
 
 \paragraph{RCR (Windkessel) Outlet Conditions}
 

@@ -501,6 +501,7 @@ BloodFlowSystem<dim, spacedim>::setup_system()
   residual_vector.reinit(dof_handler.n_dofs()); // for Newton residual
   newton_update.reinit(dof_handler.n_dofs());   // for Newton update
   pressure.reinit(dof_handler.n_dofs());
+  theoretical_peak.reinit(dof_handler.n_dofs());  // for comparison with benchmark paper 
 }
 
 // ========================================================================
@@ -977,9 +978,11 @@ BloodFlowSystem<dim, spacedim>::assemble_system()
         double             A_star = A_L;
         double             U_star = U_L;
         FullMatrix<double> J_boundary_local(2, 2);
+        FullMatrix<double> J_interior_local(2, 2);
 
         if (boundary_id == 0) // INFLOW: Prescribed Q_in(t)
           {
+            inflow_function.set_time(time);
             const double Qin = inflow_function.value(Point<1>(0.0));
             for (unsigned int it = 0; it < 20; ++it)
               {
@@ -1000,7 +1003,7 @@ BloodFlowSystem<dim, spacedim>::assemble_system()
                 J(1, 0) = -4.0 * dc_dA;
                 J(1, 1) = 1.0;
 
-                J_boundary_local = J; // Store for sensitivity
+                // J_boundary_local = J; // Store for sensitivity
                 J.gauss_jordan();
                 Vector<double> delta(2);
                 J.vmult(delta, R);
@@ -1010,6 +1013,14 @@ BloodFlowSystem<dim, spacedim>::assemble_system()
                 if (delta.l2_norm() < 1e-12)
                   break;
               }
+            J_boundary_local(0, 0) = U_star;
+            J_boundary_local(0, 1) = A_star;
+            J_boundary_local(1, 0) =
+              -4.0 * compute_wave_speed_derivative(A_star);
+            J_boundary_local(1, 1) = 1.0;
+
+            J_interior_local(1, 0) = 4.0 * dc_dA_L; // - d(W2_L)/dAL
+            J_interior_local(1, 1) = -1.0;          // - d(W2_L)/dUL
           }
         else // ================= OUTLET BOUNDARY =================
           {
@@ -1067,7 +1078,6 @@ BloodFlowSystem<dim, spacedim>::assemble_system()
                       break;
                   }
 
-
                 // Final state sync and Jacobian for sensitivity (Step 4)
                 U_star = W1_L - 4.0 * (compute_wave_speed(A_star) - c0);
                 J_boundary_local(0, 0) =
@@ -1076,11 +1086,18 @@ BloodFlowSystem<dim, spacedim>::assemble_system()
                 J_boundary_local(1, 0) =
                   4.0 * compute_wave_speed_derivative(A_star);
                 J_boundary_local(1, 1) = 1.0;
+
+                // Interior sensitivity: Only R0 depends on W1_L
+                J_interior_local(0, 0) = -4.0 * dc_dA_L;
+                J_interior_local(0, 1) = -1.0;
+                J_interior_local(1, 0) = 0.0;
+                J_interior_local(1, 1) = 0.0;
               }
             else // (outlet_type == "Rt")
               {
                 // ================= CHOICE: Rt (Reflection) =================
-                const double Rt = par["Rt"];
+                const double Rt   = par["Rt"];
+                const double W1_L = U_L + 4.0 * (c_L - c0);
                 const double W2_target =
                   -Rt * W1_L; // Simplified reflection target
 
@@ -1120,6 +1137,13 @@ BloodFlowSystem<dim, spacedim>::assemble_system()
                 J_boundary_local(1, 0) =
                   -4.0 * compute_wave_speed_derivative(A_star);
                 J_boundary_local(1, 1) = 1.0;
+
+                J_interior_local(0, 0) = -4.0 * dc_dA_L;
+                J_interior_local(0, 1) = -1.0;
+                // R1 = U* - 4c* - (-Rt * (UL + 4cL)) -> dR1/dAL = Rt*4*dcdAL,
+                // dR1/dUL = Rt
+                J_interior_local(1, 0) = par["Rt"] * 4.0 * dc_dA_L;
+                J_interior_local(1, 1) = par["Rt"];
               }
           }
         // ---------- 3. Numerical Flux (Residual) ----------
@@ -1144,14 +1168,15 @@ BloodFlowSystem<dim, spacedim>::assemble_system()
             const double dAL_trial = fe_face[area_extractor].value(j, q);
             const double dUL_trial = fe_face[velocity_extractor].value(j, q);
 
-            Vector<double> dRb_dInterior(2);
-            if (boundary_id == 0) // Sensitivity to W2
-              dRb_dInterior[1] = -(dUL_trial - 4.0 * dc_dA_L * dAL_trial);
-            else // Sensitivity to W1
-              dRb_dInterior[1] = -(dUL_trial + 4.0 * dc_dA_L * dAL_trial);
+            Vector<double> dRb_dInt(2);
+            dRb_dInt[0] = J_interior_local(0, 0) * dAL_trial +
+                          J_interior_local(0, 1) * dUL_trial;
+            dRb_dInt[1] = J_interior_local(1, 0) * dAL_trial +
+                          J_interior_local(1, 1) * dUL_trial;
 
+            // dX_star = - (dRb/dX_star)^-1 * (dRb/dX_L) * dX_L
             Vector<double> dX_star(2);
-            J_boundary_local.vmult(dX_star, dRb_dInterior);
+            J_boundary_local.vmult(dX_star, dRb_dInt);
             dX_star *= -1.0;
 
             auto [dFA_dir, dFU_dir]     = HLL_jacobian_flux(cell,
@@ -1190,7 +1215,7 @@ BloodFlowSystem<dim, spacedim>::assemble_system()
                     (dFU_dir + dFU_chain) * phi * JxW[q];
               }
           }
-      }
+      }c
   };
 
 
@@ -1319,6 +1344,12 @@ BloodFlowSystem<dim, spacedim>::output_results(const unsigned int cycle) const
                            solution_names,
                            DataOut<dim, spacedim>::type_dof_data,
                            data_component_interpretation);
+  solution_names[0] = "theoretical_peak";
+  solution_names[1] = "unused1";
+  data_out.add_data_vector(theoretical_peak,
+                           solution_names,
+                           DataOut<dim, spacedim>::type_dof_data,
+                           data_component_interpretation);
 
   data_out.build_patches();
   data_out.write_vtu(output);
@@ -1338,13 +1369,21 @@ template <int dim, int spacedim>
 void
 BloodFlowSystem<dim, spacedim>::compute_pressure()
 {
-  pressure = 0;
+  pressure         = 0;
+  theoretical_peak = 0;
+
+  const double gamma = 9.0;          // friction parameter
+  const double mu    = par["eta_c"]; // viscosity
+  const double A0    = par["a0"];
+  const double c0    = compute_wave_speed(A0); // wave speed
+
+
 
   for (const auto &cell : dof_handler.active_cell_iterators())
     {
       std::vector<types::global_dof_index> dof_indices(fe->n_dofs_per_cell());
       cell->get_dof_indices(dof_indices);
-
+      const double x = cell->center()[0];
       for (unsigned int i = 0; i < fe->n_dofs_per_cell(); ++i)
         {
           const unsigned int component = fe->system_to_component_index(i).first;
@@ -1352,6 +1391,9 @@ BloodFlowSystem<dim, spacedim>::compute_pressure()
             {
               const double area        = solution[dof_indices[i]];
               pressure[dof_indices[i]] = compute_pressure_value(area);
+              theoretical_peak[dof_indices[i]] =
+                pressure[dof_indices[i]] *
+                std::exp(-(gamma + 2.0) * numbers::PI * mu * x / (c0 * A0));
             }
         }
     }
@@ -1583,20 +1625,41 @@ BloodFlowSystem<dim, spacedim>::run_convergence_study()
             {
               // ================= SINGLE VESSEL =================
               GridGenerator::hyper_cube(triangulation, 0.0, 10.0);
-              // tagging logic for terminal boundaries
+              //tagging logic for terminal boundaries
+              terminal_boundary_ids.clear();
+              unsigned int outlet_count = 0;
+
               for (auto &cell : triangulation.active_cell_iterators())
-                for (unsigned int f = 0; f < GeometryInfo<dim>::faces_per_cell;
-                     ++f)
-                  if (cell->face(f)->at_boundary())
+                {
+                  for (unsigned int f = 0;
+                       f < GeometryInfo<dim>::faces_per_cell;
+                       ++f)
                     {
-                      if (cell->face(f)->center()[0] < 1e-8)
-                        cell->face(f)->set_boundary_id(0);
-                      else
+                      if (cell->face(f)->at_boundary())
                         {
-                          cell->face(f)->set_boundary_id(1);
-                          terminal_boundary_ids.insert(1);
+                          Point<3> face_center = cell->face(f)->center();
+
+                          // 1. Identify Inlet (Root) at (0,0,0)
+                          if (face_center.distance(Point<3>(0.0, 0.0, 0.0)) <
+                              1e-8)
+                            {
+                              cell->face(f)->set_boundary_id(0);
+                              std::cout << "  [Mesh] Tagged INLET (ID 0) at "
+                                        << face_center << std::endl;
+                            }
+                          // 2. Identify ALL other boundaries as Outlets
+                          else
+                            {
+                              // This will now catch x = -0.5 AND x = 2.0
+                              cell->face(f)->set_boundary_id(1);
+                              terminal_boundary_ids.insert(1);
+                              outlet_count++;
+                              std::cout << "  [Mesh] Tagged OUTLET (ID 1) at "
+                                        << face_center << std::endl;
+                            }
                         }
                     }
+                }
               triangulation.refine_global(n_global_refinements);
             }
 
