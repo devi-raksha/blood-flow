@@ -166,7 +166,6 @@ public:
   void
   compute_junction_jacobian(const JunctionState               &X,
                             const JunctionInfo<dim, spacedim> &junction,
-                            const std::vector<double>         &W_in,
                             FullMatrix<double>                &J) const;
 
 private:

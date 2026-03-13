@@ -119,7 +119,7 @@ public:
         // --------------------------------------------------
         // Jacobian: ∂R_J / ∂X
         // --------------------------------------------------
-        phys.compute_junction_jacobian(X, junction, W_in, J);
+        phys.compute_junction_jacobian(X, junction, J);
 
         // --------------------------------------------------
         // Solve linear system J * dX = -R

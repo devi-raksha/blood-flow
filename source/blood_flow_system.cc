@@ -94,14 +94,14 @@ BloodFlowSystem<dim, spacedim>::BloodFlowSystem()
                  par,
                  dealii::FunctionParser<spacedim>::default_variable_names() +
                    ",t")
-  ,exact_solution("Functions",
+  , exact_solution("Functions",
                    "1e-4; 0.0",
                    "Exact solution",
                    par,
                    dealii::FunctionParser<spacedim>::default_variable_names() +
                      ",t")
 
-  ,inflow_function("Functions", "0.0", "Inflow function", par, "x,t")
+  , inflow_function("Functions", "0.0", "Inflow function", par, "x,t")
 {
   add_parameter("Finite element degree", fe_degree);
   add_parameter("Problem constants", constants);
@@ -259,7 +259,6 @@ void
 BloodFlowSystem<dim, spacedim>::compute_junction_jacobian(
   const JunctionState               &X,
   const JunctionInfo<dim, spacedim> &junction,
-  const std::vector<double>         &W_in,
   FullMatrix<double>                &J) const
 {
   const unsigned int K    = junction.n_vessels();
@@ -375,7 +374,7 @@ BloodFlowSystem<dim, spacedim>::assemble_junction_terms()
 
       // 3. Local Junction Jacobian Inverse
       FullMatrix<double> JX(2 * K, 2 * K);
-      compute_junction_jacobian(X, J, W_in, JX);
+      compute_junction_jacobian(X, J, JX);
       FullMatrix<double> JX_inv = JX;
       JX_inv.gauss_jordan();
 
@@ -1654,7 +1653,7 @@ BloodFlowSystem<dim, spacedim>::run_convergence_study()
               GridGenerator::hyper_cube(triangulation, 0.0, L);
               // tagging logic for terminal boundaries
               terminal_boundary_ids.clear();
-              unsigned int outlet_count = 0;
+              // unsigned int outlet_count = 0;
 
               for (auto &cell : triangulation.active_cell_iterators())
                 {
@@ -1680,7 +1679,7 @@ BloodFlowSystem<dim, spacedim>::run_convergence_study()
                               // This will now catch x = -0.5 AND x = 2.0
                               cell->face(f)->set_boundary_id(1);
                               terminal_boundary_ids.insert(1);
-                              outlet_count++;
+                              // outlet_count++;
                               std::cout << "  [Mesh] Tagged OUTLET (ID 1) at "
                                         << face_center << std::endl;
                             }
@@ -1702,7 +1701,7 @@ BloodFlowSystem<dim, spacedim>::run_convergence_study()
                   // ================= TAGGING LOGIC for terminal boundary
 
                   terminal_boundary_ids.clear();
-                  unsigned int outlet_count = 0;
+                  // unsigned int outlet_count = 0;
 
                   for (auto &cell : triangulation.active_cell_iterators())
                     {
@@ -1729,7 +1728,7 @@ BloodFlowSystem<dim, spacedim>::run_convergence_study()
                                   // This will now catch x = -0.5 AND x = 2.0
                                   cell->face(f)->set_boundary_id(1);
                                   terminal_boundary_ids.insert(1);
-                                  outlet_count++;
+                                  // outlet_count++;
                                   std::cout
                                     << "  [Mesh] Tagged OUTLET (ID 1) at "
                                     << face_center << std::endl;
