@@ -35,19 +35,24 @@ BloodFlowSystem<dim, spacedim>::BloodFlowSystem()
   : par("Blood Flow Parameters",
         {"rho",
          "a0",
-         "mu",
+         "E",
+         "h_wall",
          "p0",
-         "eta_c",
+         "p_d",
+         "mu",
          "r0",
          "m",
          "Rt",
          "R1",
          "R2",
          "C",
-         "P_out"},
+         "P_out",
+         "L"},
         {1.06,
          3.141592653589793e-4,
          1.0e6,
+         1e-3,
+         0.0,
          0.0,
          1.0,
          9.99e-3,
@@ -56,11 +61,14 @@ BloodFlowSystem<dim, spacedim>::BloodFlowSystem()
          0.0,
          0.0,
          0.0,
-         0.0},
+         0.0,
+         10.0},
         {"Density",
          "Reference cross-sectional area",
          "Elastic modulus of the vessel wall",
+         "Wall thickness",
          "Reference pressure",
+         "Diastolic pressure",
          "Viscosity coefficient",
          "Reference radius",
          "Tube law exponent",
@@ -68,7 +76,8 @@ BloodFlowSystem<dim, spacedim>::BloodFlowSystem()
          "Resistance of proximal capacitor",
          "Resistance of distal capacitor",
          "Capacitance of terminal capacitor",
-         "Pressure at terminal boundary"})
+         "Pressure at terminal boundary",
+         "Length of the vessel"})
   , triangulation()
   , dof_handler(triangulation)
   , fe(nullptr)
@@ -85,14 +94,14 @@ BloodFlowSystem<dim, spacedim>::BloodFlowSystem()
                  par,
                  dealii::FunctionParser<spacedim>::default_variable_names() +
                    ",t")
-  , exact_solution("Functions",
+  ,exact_solution("Functions",
                    "1e-4; 0.0",
                    "Exact solution",
                    par,
                    dealii::FunctionParser<spacedim>::default_variable_names() +
                      ",t")
 
-  , inflow_function("Functions", "0.0", "Inflow function", par, "t")
+  ,inflow_function("Functions", "0.0", "Inflow function", par, "x,t")
 {
   add_parameter("Finite element degree", fe_degree);
   add_parameter("Problem constants", constants);
@@ -501,7 +510,8 @@ BloodFlowSystem<dim, spacedim>::setup_system()
   residual_vector.reinit(dof_handler.n_dofs()); // for Newton residual
   newton_update.reinit(dof_handler.n_dofs());   // for Newton update
   pressure.reinit(dof_handler.n_dofs());
-  theoretical_peak.reinit(dof_handler.n_dofs());  // for comparison with benchmark paper 
+  theoretical_peak.reinit(
+    dof_handler.n_dofs()); // for comparison with benchmark paper
 }
 
 // ========================================================================
@@ -631,7 +641,7 @@ BloodFlowSystem<dim, spacedim>::assemble_system()
 
                 // Reaction (viscosity): ∫ c U phi_U dx
                 copy_data.cell_matrix(i, j) +=
-                  par["eta_c"] * test_velocity * trial_velocity * JxW[point];
+                  par["mu"] * test_velocity * trial_velocity * JxW[point];
               }
 
             // RHS: source terms
@@ -648,7 +658,7 @@ BloodFlowSystem<dim, spacedim>::assemble_system()
                   (current_velocity[point] - old_velocity[point]) *
                   test_velocity -
                 current_flux_U * test_velocity_grad +
-                par["eta_c"] * current_velocity[point] * test_velocity) *
+                par["mu"] * current_velocity[point] * test_velocity) *
               JxW[point];
           }
       }
@@ -1215,7 +1225,7 @@ BloodFlowSystem<dim, spacedim>::assemble_system()
                     (dFU_dir + dFU_chain) * phi * JxW[q];
               }
           }
-      }c
+      }
   };
 
 
@@ -1361,6 +1371,22 @@ BloodFlowSystem<dim, spacedim>::output_results(const unsigned int cycle) const
   DataOutBase::write_pvd_record(pvd_output, pvd_output_records);
 }
 
+template <int dim, int spacedim>
+void
+BloodFlowSystem<dim, spacedim>::update_peak_pressure()
+{
+  const double A0  = par["a0"];
+  const double rho = par["rho"];
+  const double c0  = compute_wave_speed(A0);
+
+  const double Q_peak = 1e-6;
+
+  const double Zc = (rho * c0) / A0;
+
+  P_peak = Q_peak * Zc;
+}
+
+
 // ========================================================================
 // COMPUTE PRESSURE
 // ========================================================================
@@ -1372,12 +1398,10 @@ BloodFlowSystem<dim, spacedim>::compute_pressure()
   pressure         = 0;
   theoretical_peak = 0;
 
-  const double gamma = 9.0;          // friction parameter
-  const double mu    = par["eta_c"]; // viscosity
+  const double gamma = 9.0;       // friction parameter
+  const double mu    = par["mu"]; // viscosity
   const double A0    = par["a0"];
   const double c0    = compute_wave_speed(A0); // wave speed
-
-
 
   for (const auto &cell : dof_handler.active_cell_iterators())
     {
@@ -1389,11 +1413,13 @@ BloodFlowSystem<dim, spacedim>::compute_pressure()
           const unsigned int component = fe->system_to_component_index(i).first;
           if (component == 0) // Area component
             {
-              const double area        = solution[dof_indices[i]];
-              pressure[dof_indices[i]] = compute_pressure_value(area);
-              theoretical_peak[dof_indices[i]] =
-                pressure[dof_indices[i]] *
-                std::exp(-(gamma + 2.0) * numbers::PI * mu * x / (c0 * A0));
+              const double area = solution[dof_indices[i]];
+              // if (P_peak < 1e-12)
+              //    return;
+              pressure[dof_indices[i]] =
+                compute_pressure_value(area) / P_peak; // (30095.541);
+              theoretical_peak[dof_indices[i]] = std::exp(
+                -(gamma + 2.0) * numbers::PI * mu * x / (c0 * A0 * par["rho"]));
             }
         }
     }
@@ -1624,8 +1650,9 @@ BloodFlowSystem<dim, spacedim>::run_convergence_study()
           if (!use_junction_mesh)
             {
               // ================= SINGLE VESSEL =================
-              GridGenerator::hyper_cube(triangulation, 0.0, 10.0);
-              //tagging logic for terminal boundaries
+              const double L = par["L"];
+              GridGenerator::hyper_cube(triangulation, 0.0, L);
+              // tagging logic for terminal boundaries
               terminal_boundary_ids.clear();
               unsigned int outlet_count = 0;
 
@@ -1719,7 +1746,6 @@ BloodFlowSystem<dim, spacedim>::run_convergence_study()
           triangulation.refine_global(1);
         }
 
-
       setup_system();
       initialize_terminal_capacitors();
 
@@ -1734,6 +1760,7 @@ BloodFlowSystem<dim, spacedim>::run_convergence_study()
 
 
       solution_old = solution;
+      update_peak_pressure();
       compute_pressure();
       output_results(0);
 
@@ -1751,41 +1778,106 @@ BloodFlowSystem<dim, spacedim>::run_convergence_study()
           time += time_step;
           std::cout << "Step " << step << "  t=" << time << std::endl;
 
+          // unsigned int newton_iter = 0;
+          // while (newton_iter < max_newton_iterations)
+          //   {
+          //     // A. Assemble the residual and Jacobian at the current guess
+          //     assemble_system();
+
+          //     // B. Check the residual norm BEFORE the solve
+          //     double current_residual = residual_vector.l2_norm();
+
+          //     if (newton_iter == 0)
+          //       std::cout << "  Initial Residual: " << std::scientific
+          //                 << current_residual << std::endl;
+
+          //     // C. Check for convergence
+          //     if (current_residual < newton_tolerance)
+          //       {
+          //         std::cout << "  Newton converged in " << newton_iter
+          //                   << " iterations." << std::endl;
+          //         break;
+          //       }
+
+          //     // D. Solve for update and apply it
+          //     solve();
+          //     solution.add(omega, newton_update);
+
+          //     // E. Divergence check
+          //     if (!std::isfinite(current_residual) || current_residual >
+          //     1e12)
+          //       {
+          //         std::cout << "⚠️ Residual exploded. Halving dt.\n";
+          //         time_step *= 0.5;
+          //         return; // Or exit loop
+          //       }
+
+          //     newton_iter++;
+          //   }
+
+          // Newton iteration loop
+          solution                 = solution_old; // w^(0) := W^n
           unsigned int newton_iter = 0;
-          while (newton_iter < max_newton_iterations)
+          bool         converged   = false;
+
+          // Newton loop
+          do
             {
-              // A. Assemble the residual and Jacobian at the current guess
+              // Step 1: Assemble system
               assemble_system();
 
-              // B. Check the residual norm BEFORE the solve
-              double current_residual = residual_vector.l2_norm();
+              // Step 2: Solve for Newton update
+              solve();
 
-              if (newton_iter == 0)
-                std::cout << "  Initial Residual: " << std::scientific
-                          << current_residual << std::endl;
+              // Step 3: Apply the update
+              solution.add(omega, newton_update);
 
-              // C. Check for convergence
-              if (current_residual < newton_tolerance)
+              // // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+              // // Reassemble AFTER updating solution
+              // // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+              // assemble_system();
+
+              // Step 4: Get residual at NEW solution
+              double newton_residual_norm = residual_vector.l2_norm();
+
+              std::cout << " Newton iter " << newton_iter
+                        << "  residual = " << std::scientific
+                        << std::setprecision(6) << newton_residual_norm
+                        << std::endl;
+
+
+              // Step 5: Check for divergence
+              if (!std::isfinite(newton_residual_norm) ||
+                  newton_residual_norm > 1e12)
                 {
-                  std::cout << "  Newton converged in " << newton_iter
-                            << " iterations." << std::endl;
+                  std::cout << "⚠️  Residual too large, halving Δt\n";
+                  time_step *= 0.5;
                   break;
                 }
 
-              // D. Solve for update and apply it
-              solve();
-              solution.add(omega, newton_update);
-
-              // E. Divergence check
-              if (!std::isfinite(current_residual) || current_residual > 1e12)
+              // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+              // Check convergence AFTER update
+              // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+              if (newton_residual_norm < newton_tolerance)
                 {
-                  std::cout << "⚠️ Residual exploded. Halving dt.\n";
-                  time_step *= 0.5;
-                  return; // Or exit loop
+                  converged = true;
+                  std::cout << "  Newton converged in " << newton_iter
+                            << " iterations.\n";
+                  break;
                 }
 
-              newton_iter++;
+              // Step 6: Increment counter
+              ++newton_iter;
+
+              if (newton_iter >= max_newton_iterations)
+                {
+                  std::cout << "  WARNING: Newton did not converge after "
+                            << max_newton_iterations << " iterations.\n";
+                  converged = true;
+                }
             }
+          while (!converged);
+
 
           solution_old = solution;
           compute_pressure();

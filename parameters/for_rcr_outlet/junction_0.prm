@@ -24,12 +24,12 @@ end
 
 subsection Blood Flow Parameters
   set Density (rho)                           = 1050
-  set Elastic modulus of the vessel wall (mu) = 80
+  set Elastic modulus of the vessel wall (E) = 80
   set Reference cross-sectional area (a0)     = 3.14e-4
   set Reference pressure (p0)                 = 0
   set Reference radius (r0)                   = 1e-2
   set Tube law exponent (m)                   = 0.5
-  set Viscosity coefficient (eta_c)           = 1
+  set Viscosity coefficient (mu)           = 1
 end
 subsection Functions
 set Exact solution = t*sin(2*PI*x) + 4; cos(2*PI*x)/(2*PI*(t*sin(2*PI*x) + 4))

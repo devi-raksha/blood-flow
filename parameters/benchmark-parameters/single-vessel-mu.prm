@@ -26,7 +26,7 @@ subsection Blood Flow Parameters
   set Resistance of distal capacitor (R2)     = 1.1e5
   set Capacitance of terminal capacitor (C)   = 5.0e-8
   set Pressure at terminal boundary (P_out)   = 0.0   
-  set Viscosity coefficient (mu)              = 0.0
+  set Viscosity coefficient (mu)              = 0.004
   set Reference pressure (p0)                 = 0.0
   set Wall thickness (h_wall)                 = 0.0015
 end

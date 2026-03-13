@@ -141,6 +141,8 @@ public:
   void
   output_results(const unsigned int cycle) const;
   void
+  update_peak_pressure();
+  void
   compute_pressure();
   void
   compute_errors(unsigned int k);
@@ -211,10 +213,10 @@ private:
   double
   compute_wave_speed(const double area) const
   {
-    const double eps    = 0;
+    const double eps    = 1e-12;
     const double A_safe = std::max(area, eps);
     const double dpda   = compute_pressure_derivative(area);
-    return std::sqrt(A_safe / par["rho"] * dpda);
+    return std::sqrt(A_safe * dpda / par["rho"]);
   }
 
   double
@@ -238,26 +240,45 @@ private:
   compute_area_from_pressure(const double P) const
   {
     const double m  = par["m"];
-    const double mu = par["mu"];
+    const double E  = par["E"];
     const double p0 = par["p0"];
     const double A0 = par["a0"];
 
-    const double ratio = std::max((P - p0) / mu + 1.0, 1e-12);
+    const double ratio = std::max((P - p0) / E + 1.0, 1e-12);
     return A0 * std::pow(ratio, 1.0 / m);
   }
 
   /**
-   * Compute pressure using the shifted tube law
+   * Compute beta_p which reflects the material properties for shifted tube law
    */
   double
-  compute_pressure_value(const double area) const
+  compute_beta_p(const double E, const double h_wall) const
   {
-    // const double A_safe = std::max(area,  1e-2);
-    const double eps   = 0; // to avoid zero pressure at zero area
-    const double ratio = area / par["a0"] + eps;
-    const double m     = par["m"];
+    return (4.0 * std::sqrt(3.14159) / 3.0) * E * h_wall;
+  }
 
-    return par["mu"] * (std::pow(ratio + eps, m) - 1.0) + par["p0"];
+  /**
+   * Compute pressure using tube law and formulation from benchmark paper
+   */
+  // double
+  // compute_pressure_value(const double area) const
+  // {
+  //   // const double A_safe = std::max(area,  1e-2);
+  //   const double eps   = 1e-10; // to avoid zero pressure at zero area
+  //   const double ratio = area / par["a0"] + eps;
+  //   const double m     = par["m"];
+  //   const double beta_p = compute_beta_p(par["E"], par["h_wall"]); // Example
+  //   wall thickness return beta_p / std::sqrt(par["a0"]) * (std::pow(ratio, m)
+  //   - 1.0) + par["p0"]  + par["p_d"];
+  // }
+
+  double
+  compute_pressure_value(double A) const
+  {
+    const double A0   = par["a0"];
+    const double beta = compute_beta_p(par["E"], par["h_wall"]);
+
+    return par["p0"] + beta / A0 * (std::sqrt(A) - std::sqrt(A0)) + par["p_d"];
   }
 
   /**
@@ -266,10 +287,9 @@ private:
   double
   compute_pressure_derivative(const double area) const
   {
-    const double eps   = 0; // to avoid zero division
-    const double ratio = std::max(area / par["a0"], eps);
-    const double m     = par["m"];
-    return par["mu"] * m * std::pow(ratio, m - 1.0) / par["a0"];
+    const double beta_p =
+      compute_beta_p(par["E"], par["h_wall"]); // Example wall thickness
+    return beta_p / (2.0 * std::sqrt(area) * par["a0"]);
   }
 
   double
@@ -537,6 +557,7 @@ private:
   Vector<double>       solution_old;
   Vector<double>       pressure;
   Vector<double>       theoretical_peak;
+  double               P_peak = 0.0;
   Vector<double>       tmp_vector;
   std::vector<double>  mass_residual_at_junction;
 
