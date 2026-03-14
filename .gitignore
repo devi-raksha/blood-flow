@@ -36,3 +36,16 @@ source/*.bak
 
 doc/deal.tag
 doc/html
+
+# Additional build directories
+build-*/
+
+# Testing folder
+Testing/
+
+# Video outputs
+*.avi
+
+# LaTeX additional outputs
+latex/*.bbl
+latex/*.blg
