@@ -1,5 +1,5 @@
-#ifndef BLOOD_FLOW_SYSTEM_UPDATED_1D3D_H
-#define BLOOD_FLOW_SYSTEM_UPDATED_1D3D_H
+#ifndef BLOOD_FLOW_SYSTEM_H
+#define BLOOD_FLOW_SYSTEM_H
 
 #include <deal.II/base/function.h>
 #include <deal.II/base/function_parser.h>
@@ -40,6 +40,7 @@
 
 #include "constants.h"
 #include "function.h"
+#include "junction_solver.h"
 
 using namespace dealii;
 
@@ -128,27 +129,37 @@ public:
   void
   initialize_params(const std::string &filename = "");
   void
+  detect_junctions();
+  void
+  initialize_terminal_capacitors();
+
+  void
+  create_vascular_network();
+  void
   setup_system();
   void
   assemble_jacobian(const double          t,
                     const Vector<double> &y,
                     const Vector<double> &Mydot);
   void
+  assemble_junction_jacobian_blocks(const Vector<double> &y);
+  void
   assemble_implicit_function(const double          t,
                              const Vector<double> &y,
                              Vector<double>       &Mydot);
+  void
+  assemble_junction_residual(const Vector<double> &y, Vector<double> &Mydot);
   void
   assemble_mass_matrix();
   void
   compute_initial_solution(Vector<double> &dst, const double t);
 
-  double
-  compute_max_wave_speed(const Vector<double> &solution) const;
-
   void
   output_results(const Vector<double> &y,
                  const Vector<double> &pressure_vec,
                  const unsigned int    cycle) const;
+
+
   void
   compute_pressure(const Vector<double> &y, Vector<double> &pressure_vec) const;
   void
@@ -174,9 +185,54 @@ public:
     return numerical_flux_type;
   }
 
+  void
+  compute_junction_residual(const JunctionState               &X,
+                            const std::vector<double>         &W_in,
+                            const JunctionInfo<dim, spacedim> &junction,
+                            Vector<double>                    &R) const;
+
+  void
+  compute_junction_jacobian(const JunctionState               &X,
+                            const JunctionInfo<dim, spacedim> &junction,
+                            FullMatrix<double>                &J) const;
+
+
 private:
-  ParsedTools::Constants                           par;
-  AffineConstraints<double>                        constraints;
+  ParsedTools::Constants    par;
+  AffineConstraints<double> constraints;
+
+  // Key: Boundary ID, Value: Pressure at the previous time step
+  // One capacitor pressure per terminal boundary
+  std::map<types::boundary_id, double> terminal_Pc_storage;
+  // std::map<std::pair<CellId, unsigned int>, double> terminal_Pc_storage;
+  std::set<dealii::types::boundary_id> terminal_boundary_ids;
+  using CellIterator = typename DoFHandler<dim, spacedim>::active_cell_iterator;
+
+  std::vector<JunctionInfo<dim, spacedim>>       junctions;
+  std::set<std::pair<CellId, unsigned int>>      all_junction_faces;
+  JunctionSolver<BloodFlowSystem<dim, spacedim>> junction_solver;
+
+
+  inline bool
+  is_junction_face(const CellId &cell_id, const unsigned int face_no) const
+  {
+    // Explicitly using std::make_pair resolves initializer_list ambiguity
+    return all_junction_faces.count(std::make_pair(cell_id, face_no)) > 0;
+  }
+
+
+  // Embedded 1D-3D network coupling
+  struct EmbeddedVessel
+  {
+    std::vector<Point<3>> centerline;      // 1D vessel path
+    std::vector<double>   radius;          // Vessel radius at each point
+    unsigned int          material_id = 0; // Vessel properties
+  };
+
+  std::vector<EmbeddedVessel> embedded_vessels;
+  std::vector<Point<3>>       hypersingular_points; // Key coupling points
+
+
   SUNDIALS::ARKode<Vector<double>>::AdditionalData arkode_parameters;
   NumericalFluxType numerical_flux_type     = NumericalFluxType::HLL;
   std::string       numerical_flux_type_str = "HLL";
@@ -266,30 +322,74 @@ private:
   }
 
   /**
-   * Compute pressure using the shifted tube law
+   * Compute wave speed derivative using the tube law
    */
   double
-  compute_pressure_value(const double area) const
+  compute_wave_speed_derivative(const double area) const
   {
-    // const double A_safe = std::max(area,  1e-2);
-    const double eps   = 0; // to avoid zero pressure at zero area
-    const double ratio = area / par["a0"] + eps;
-    const double m     = par["m"];
-
-    return par["mu"] * (std::pow(ratio + eps, m) - 1.0) + par["p0"];
+    const double eps    = 1e-10;
+    const double A_safe = std::max(area, eps);
+    return compute_wave_speed(A_safe) * par["m"] / (2.0 * A_safe);
   }
 
   /**
-   * Compute pressure derivative dP/dA for shiftyed tube law
+   * Compute pressure using the shifted tube law
    */
+  // double
+  // compute_pressure_value(const double area) const
+  // {
+  //   // const double A_safe = std::max(area,  1e-2);
+  //   const double eps   = 0; // to avoid zero pressure at zero area
+  //   const double ratio = area / par["a0"] + eps;
+  //   const double m     = par["m"];
+
+  //   return par["mu"] * (std::pow(ratio + eps, m) - 1.0) + par["p0"];
+  // }
+
+
+  /**
+   * Compute beta_p which reflects the material properties for shifted tube law
+   */
+  double
+  compute_beta_p(const double E, const double h_wall) const
+  {
+    return (4.0 * std::sqrt(3.14159) / 3.0) * E * h_wall;
+  }
+
+  double
+  compute_pressure_value(double A) const
+  {
+    const double A0   = par["a0"];
+    const double beta = compute_beta_p(par["E"], par["h_wall"]);
+
+    return par["p0"] + beta / A0 * (std::sqrt(A) - std::sqrt(A0)) + par["p_d"];
+  }
+
+  /**
+   * Compute pressure derivative dP/dA for shifted tube law
+   */
+
   double
   compute_pressure_derivative(const double area) const
   {
-    const double eps   = 0; // to avoid zero division
-    const double ratio = std::max(area / par["a0"], eps);
-    const double m     = par["m"];
-    return par["mu"] * m * std::pow(ratio, m - 1.0) / par["a0"];
+    const double beta_p =
+      compute_beta_p(par["E"], par["h_wall"]); // Example wall thickness
+    return beta_p / (2.0 * std::sqrt(area) * par["a0"]);
   }
+
+
+
+  // /**
+  //  * Compute pressure derivative dP/dA for shiftyed tube law
+  //  */
+  // double
+  // compute_pressure_derivative(const double area) const
+  // {
+  //   const double eps   = 0; // to avoid zero division
+  //   const double ratio = std::max(area / par["a0"], eps);
+  //   const double m     = par["m"];
+  //   return par["E"] * m * std::pow(ratio, m - 1.0) / par["a0"];
+  // }
 
   double
   compute_LF_penalty(const double area_L,
@@ -831,11 +931,25 @@ private:
   }
 
 
+  void
+  get_trace(
+    const Vector<double>                                           &vec,
+    const typename DoFHandler<dim, spacedim>::active_cell_iterator &cell,
+    unsigned int                                                    face_no,
+    double                                                         &A,
+    double                                                         &U) const;
+
+
+
   //   private:
   // Mesh and finite elements
   Triangulation<dim, spacedim>                  triangulation;
   DoFHandler<dim, spacedim>                     dof_handler;
   std::unique_ptr<FiniteElement<dim, spacedim>> fe;
+
+  std::string outlet_type;
+  bool
+  is_terminal_boundary(dealii::types::boundary_id bid) const;
 
   // Linear system
   SparsityPattern      sparsity_pattern;
@@ -848,15 +962,19 @@ private:
   std::string          output_directory = "";
   Vector<double>       solution;
   Vector<double>       pressure;
+  Vector<double>       theoretical_peak;
+
 
   // Parameters
-  unsigned int fe_degree            = 1;
-  std::string  constants            = "1.0";
-  std::string  output_filename      = "solution";
-  bool         use_direct_solver    = true;
-  unsigned int n_refinement_cycles  = 1;
-  unsigned int n_global_refinements = 5;
-  double       time                 = 0.0;
+  unsigned int fe_degree              = 1;
+  std::string  constants              = "1.0";
+  std::string  output_filename        = "solution";
+  bool         use_direct_solver      = true;
+  bool         use_riemann_invariants = false;
+  bool         use_junction_mesh      = false;
+  unsigned int n_refinement_cycles    = 1;
+  unsigned int n_global_refinements   = 5;
+  double       time                   = 0.0;
 
   // Numerical parameters
   double theta    = 0.5;
@@ -872,8 +990,9 @@ private:
   ParsedTools::Function<spacedim> initial_condition;
   ParsedTools::Function<spacedim> rhs_function;
   ParsedTools::Function<spacedim> exact_solution;
+  ParsedTools::Function<1> inflow_function; // inflow depends on time only
 
   mutable TimerOutput computing_timer;
 };
 
-#endif // BLOOD_FLOW_SYSTEM_UPDATED_1D3D_H
+#endif // BLOOD_FLOW_SYSTEM_H
