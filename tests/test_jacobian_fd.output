@@ -1,5 +1,5 @@
 
 DEAL::Selected numerical flux: HLL_SYMPY
 DEAL::Max FD: 1.39790
-DEAL::Max Jacobian: 1.12063
+DEAL::Max Jacobian: 1.28525
 DEAL::Error : 1.53854

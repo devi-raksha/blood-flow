@@ -2,7 +2,7 @@
 //
 // Jacobian applied to constant perturbation for a trivial exact solution.
 // Exact state: A = 1, U = 0, RHS = 0. For dW = (1,1), J*dW should be (0,
-// -eta_c).
+// -mu).
 //
 // ---------------------------------------------------------------------
 
@@ -37,13 +37,13 @@ test()
   Vector<double> Jdw(problem.solution.size());
   problem.jacobian_matrix.vmult(Jdw, ones);
 
-  // Sum over all dofs; expected momentum component contributes -eta_c times
+  // Sum over all dofs; expected momentum component contributes -mu times
   // measure
-  const double sum_Jdw = Jdw * ones; // (J dw, ones)_L2 = int J&dW dx = -eta_c
+  const double sum_Jdw = Jdw * ones; // (J dw, ones)_L2 = int J&dW dx = -mu
                                      // * measure
-  deallog << "J*ones = " << sum_Jdw << " (it should be: -integral(eta_c, 0,1))"
+  deallog << "J*ones = " << sum_Jdw << " (it should be: -integral(mu, 0,1))"
           << std::endl;
-  deallog << "eta_c = " << problem.par["eta_c"] << std::endl;
+  deallog << "mu = " << problem.par["mu"] << std::endl;
 }
 
 int

@@ -1,17 +1,17 @@
 subsection Blood Flow Parameters
   set Density (rho)                           = 1
-  set Elastic modulus of the vessel wall (mu) = 1
+  set Elastic modulus of the vessel wall (E) = 1
   set Reference cross-sectional area (a0)     = 1
   set Reference pressure (p0)                 = 1
   set Reference radius (r0)                   = 1
   set Tube law exponent (m)                   = .5
-  set Viscosity coefficient (eta_c)           = 1
+  set Viscosity coefficient (mu)           = 1
 end
 
 subsection Functions
    set Exact solution = 1; 1
    set Initial condition = 1; 1
-   set RHS expression = 0; eta_c
+   set RHS expression = 0; mu
 end
 
 subsection BloodFlowSystem<1, 3>

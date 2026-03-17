@@ -129,12 +129,11 @@ public:
   void
   initialize_params(const std::string &filename = "");
   void
+  create_vascular_network();
+  void
   detect_junctions();
   void
   initialize_terminal_capacitors();
-
-  void
-  create_vascular_network();
   void
   setup_system();
   void
@@ -142,7 +141,7 @@ public:
                     const Vector<double> &y,
                     const Vector<double> &Mydot);
   void
-  assemble_junction_jacobian_blocks(const Vector<double> &y);
+  assemble_junction_jacobian(const Vector<double> &y);
   void
   assemble_implicit_function(const double          t,
                              const Vector<double> &y,

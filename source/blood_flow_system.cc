@@ -9,6 +9,12 @@
 #include <deal.II/base/function_parser.h>
 #include <deal.II/base/types.h>
 
+#include <deal.II/grid/cell_data.h>
+#include <deal.II/grid/grid_generator.h>
+#include <deal.II/grid/tria.h>
+#include <deal.II/grid/tria_accessor.h>
+#include <deal.II/grid/tria_iterator.h>
+
 #include <deal.II/lac/dynamic_sparsity_pattern.h>
 #include <deal.II/lac/sparse_direct.h>
 
@@ -46,6 +52,7 @@ BloodFlowSystem<dim, spacedim>::BloodFlowSystem()
         {1.06,
          3.141592653589793e-4,
          1.0e6,
+         1.0e-3,
          0.0,
          0.0,
          1.0,
@@ -353,72 +360,101 @@ template <int dim, int spacedim>
 void
 BloodFlowSystem<dim, spacedim>::assemble_junction_residual(
   const Vector<double> &y,
-  Vector<double>       &Mydot)
+  Vector<double>       &rhs)
 {
+  if (junctions.empty())
+    return;
+
   const FEValuesExtractors::Scalar area_extractor(0);
   const FEValuesExtractors::Scalar velocity_extractor(1);
 
-  // Use the same quadrature as the face workers
-  const QGauss<dim - 1>       quadrature_face(fe->tensor_degree() + 1);
-  FEFaceValues<dim, spacedim> fe_face(*fe,
-                                      quadrature_face,
-                                      update_values | update_JxW_values |
-                                        update_normal_vectors);
+  QGauss<dim - 1> quad(1);
+
+  FEFaceValues<dim, spacedim> fe_face(
+    *fe, quad, update_values | update_JxW_values | update_normal_vectors);
 
   const double A_min = 1e-10;
 
-  for (const auto &junction : junctions)
+  for (const auto &J : junctions)
     {
-      const unsigned int K = junction.faces.size();
-      if (K < 2)
-        continue;
+      const unsigned int K = J.faces.size();
 
-      // 1. Solve for the Star State X* at the junction
-      // This helper should be the same one used in assemble_jacobian
-      auto [X_star, Win_current] = solve_junction_state(junction, y);
+      std::vector<double> A(K), U(K), W_in(K);
 
-      // 2. Assemble the contribution to each branch's residual
+      // =====================================================
+      // 1. Extract interior traces
+      // =====================================================
       for (unsigned int i = 0; i < K; ++i)
         {
-          const auto &fd = junction.faces[i];
+          get_trace(y, J.faces[i].cell, J.faces[i].face_no, A[i], U[i]);
+
+          const double s = static_cast<double>(J.faces[i].orientation);
+
+          const double c = compute_wave_speed(std::max(A[i], A_min));
+
+          // incoming invariant
+          W_in[i] = U[i] + s * 4.0 * c;
+        }
+
+      // =====================================================
+      // 2. Solve junction nonlinear system
+      // =====================================================
+      JunctionState X0;
+      X0.X.reinit(2 * K);
+
+      for (unsigned int i = 0; i < K; ++i)
+        {
+          X0.A(i) = A[i];
+          X0.U(i) = U[i];
+        }
+
+      JunctionState X = junction_solver.solve(X0, W_in, J, *this);
+
+      // =====================================================
+      // 3. Assemble DG flux using star state
+      // =====================================================
+      for (unsigned int face_idx = 0; face_idx < K; ++face_idx)
+        {
+          const auto &fd = J.faces[face_idx];
+
           fe_face.reinit(fd.cell, fd.face_no);
 
-          const auto        &normals = fe_face.get_normal_vectors();
-          const auto        &JxW     = fe_face.get_JxW_values();
-          const unsigned int n_q     = fe_face.n_quadrature_points;
+          const auto &normals = fe_face.get_normal_vectors();
+          const auto &JxW     = fe_face.get_JxW_values();
 
-          // Interior traces (from the current state y)
+          const unsigned int n_q = fe_face.n_quadrature_points;
+
           std::vector<double> Ah(n_q), Uh(n_q);
+
           fe_face[area_extractor].get_function_values(y, Ah);
           fe_face[velocity_extractor].get_function_values(y, Uh);
 
-          // Get Global DOF indices for branch i
           std::vector<types::global_dof_index> dofs(fe->n_dofs_per_cell());
           fd.cell->get_dof_indices(dofs);
-
-          // Star State for this specific branch
-          const double A_star = std::max(X_star.A(i), A_min);
-          const double U_star = X_star.U(i);
 
           for (unsigned int q = 0; q < n_q; ++q)
             {
               const double Ah_safe = std::max(Ah[q], A_min);
 
-              // 3. Compute the Numerical Flux using the Star State as the
-              // exterior trace
-              auto [FA, FU] = HLL_residual_flux(
-                fd.cell, fd.cell, Ah_safe, Uh[q], A_star, U_star, normals[q]);
+              const double A_star = std::max(X.A(face_idx), A_min);
+              const double U_star = X.U(face_idx);
 
-              // 4. Distribute to the global residual vector
-              for (unsigned int i_dof = 0; i_dof < fe->n_dofs_per_cell();
-                   ++i_dof)
+              auto [FA, FU] = numerical_flux(
+                compute_tangent_normal_product(fd.cell, normals[q]),
+                compute_tangent_normal_product(fd.cell, normals[q]),
+                Ah_safe,
+                Uh[q],
+                A_star,
+                U_star);
+
+              for (unsigned int i = 0; i < fe->n_dofs_per_cell(); ++i)
                 {
                   const unsigned int comp =
-                    fe->system_to_component_index(i_dof).first;
-                  const double phi_i = fe_face.shape_value(i_dof, q);
+                    fe->system_to_component_index(i).first;
 
-                  // Subtract flux contribution (Boundary Integral part of DG)
-                  Mydot(dofs[i_dof]) -= (comp == 0 ? FA : FU) * phi_i * JxW[q];
+                  const double phi_i = fe_face.shape_value(i, q);
+
+                  rhs(dofs[i]) -= (comp == 0 ? FA : FU) * phi_i * JxW[q];
                 }
             }
         }
@@ -436,92 +472,160 @@ BloodFlowSystem<dim, spacedim>::assemble_junction_residual(
 
 template <int dim, int spacedim>
 void
-BloodFlowSystem<dim, spacedim>::assemble_junction_jacobian_blocks(
+BloodFlowSystem<dim, spacedim>::assemble_junction_jacobian(
   const Vector<double> &y)
 {
-  for (const auto &junction : junctions)
+  if (fe->dofs_per_vertex > 0 || junctions.empty())
+    return;
+  TimerOutput::Scope timer(computing_timer, "assemble_junction_jacobian");
+  const FEValuesExtractors::Scalar area_extractor(0);
+  const FEValuesExtractors::Scalar velocity_extractor(1);
+
+  QGauss<dim - 1> quad(1);
+
+  FEFaceValues<dim, spacedim> fe_face(
+    *fe, quad, update_values | update_JxW_values | update_normal_vectors);
+
+  const double A_min = 1e-10;
+
+  for (const auto &J : junctions)
     {
-      const unsigned int K = junction.faces.size();
-      if (K < 2)
-        continue;
+      const unsigned int K = J.faces.size();
 
-      // 1. Get Star State and Junction Jacobian
-      // Solve junction system: R(X, Win(y)) = 0 -> returns X*
-      JunctionState X_star = junction_solver.solve(X0, W_in, junction, *this);
-      ;
+      std::vector<double> A(K), U(K), W_in(K);
 
-      // Compute local 2Kx2K junction Jacobian: J_loc = dR/dX
-      FullMatrix<double> J_loc_inv;
-      compute_junction_jacobian(junction, X_star, Win_current, J_loc_inv);
-      J_loc_inv.gauss_jordan(); // We need (dR/dX)^{-1}
-
-      // 2. For each branch 'i' at the junction
+      // ----------------------------------------------------
+      // 1. Extract traces from ARKode state y
+      // ----------------------------------------------------
       for (unsigned int i = 0; i < K; ++i)
         {
-          const auto                 &face_i = junction.faces[i];
-          QGauss<dim - 1>             quadrature_face(fe->tensor_degree() + 1);
-          FEFaceValues<dim, spacedim> fe_i(*fe,
-                                           quadrature_face,
-                                           update_values | update_JxW_values);
-          fe_i.reinit(face_i.cell, face_i.face_no);
+          get_trace(y, J.faces[i].cell, J.faces[i].face_no, A[i], U[i]);
 
-          // Indices for branch 'i'
-          std::vector<types::global_dof_index> dofs_i(fe->n_dofs_per_cell());
-          face_i.cell->get_dof_indices(dofs_i);
+          const double s = static_cast<double>(J.faces[i].orientation);
+          const double c = compute_wave_speed(std::max(A[i], A_min));
 
-          // 3. For each branch 'j' that influences branch 'i' (including i ==
-          // j)
-          for (unsigned int j = 0; j < K; ++j)
+          W_in[i] = U[i] + s * 4.0 * c;
+        }
+
+      // ----------------------------------------------------
+      // 2. Solve junction nonlinear system
+      // ----------------------------------------------------
+      JunctionState X0;
+      X0.X.reinit(2 * K);
+
+      for (unsigned int i = 0; i < K; ++i)
+        {
+          X0.A(i) = A[i];
+          X0.U(i) = U[i];
+        }
+
+      JunctionState X = junction_solver.solve(X0, W_in, J, *this);
+
+      // ----------------------------------------------------
+      // 3. Junction Jacobian inverse
+      // ----------------------------------------------------
+      FullMatrix<double> JX(2 * K, 2 * K);
+      compute_junction_jacobian(X, J, JX);
+
+      FullMatrix<double> JX_inv = JX;
+      JX_inv.gauss_jordan();
+
+      // ----------------------------------------------------
+      // 4. Assemble each junction face
+      // ----------------------------------------------------
+      for (unsigned int face_idx = 0; face_idx < K; ++face_idx)
+        {
+          const auto &fd = J.faces[face_idx];
+
+          fe_face.reinit(fd.cell, fd.face_no);
+
+          const auto &normals = fe_face.get_normal_vectors();
+          const auto &JxW     = fe_face.get_JxW_values();
+
+          const unsigned int n_q = fe_face.n_quadrature_points;
+
+          std::vector<double> Ah(n_q), Uh(n_q);
+
+          fe_face[area_extractor].get_function_values(y, Ah);
+          fe_face[velocity_extractor].get_function_values(y, Uh);
+
+          std::vector<types::global_dof_index> dofs(fe->n_dofs_per_cell());
+          fd.cell->get_dof_indices(dofs);
+
+          for (unsigned int q = 0; q < n_q; ++q)
             {
-              const auto                 &face_j = junction.faces[j];
-              FEFaceValues<dim, spacedim> fe_j(*fe,
-                                               quadrature_face,
-                                               update_values);
-              fe_j.reinit(face_j.cell, face_j.face_no);
+              const double Ah_safe = std::max(Ah[q], A_min);
 
-              std::vector<types::global_dof_index> dofs_j(
-                fe->n_dofs_per_cell());
-              face_j.cell->get_dof_indices(dofs_j);
+              const double A_star = std::max(X.A(face_idx), A_min);
+              const double U_star = X.U(face_idx);
 
-              // QUADRATURE LOOP
-              for (unsigned int q = 0; q < fe_i.n_quadrature_points; ++q)
+              for (unsigned int j = 0; j < fe->n_dofs_per_cell(); ++j)
                 {
-                  // Sensitivity of StarState_i w.r.t InteriorState_j
-                  // dX_i / dW_j = -(dR/dX)^-1 * (dR/dW_j)
-                  // Since R only depends on W_j via the k-th invariant:
-                  // dX_star/dW_j is a 2K x 2 matrix
-                  FullMatrix<double> dX_dWj(2 * K, 2);
-                  for (int row = 0; row < 2 * K; ++row)
+                  const double phi_A_j = fe_face[area_extractor].value(j, q);
+
+                  const double phi_U_j =
+                    fe_face[velocity_extractor].value(j, q);
+
+                  const double bn_L =
+                    compute_tangent_normal_product(fd.cell, normals[q]);
+                  const double bn_R = bn_L;
+                  ;
+                  // --------------------------------------------------
+                  // (a) Direct DG derivative
+                  // --------------------------------------------------
+                  auto [dFA_dwh, dFU_dwh] = numerical_flux_jacobian(bn_L,
+                                                                    bn_R,
+                                                                    Ah_safe,
+                                                                    Uh[q],
+                                                                    A_star,
+                                                                    U_star,
+                                                                    phi_A_j,
+                                                                    phi_U_j,
+                                                                    0.0,
+                                                                    0.0);
+
+
+                  // --------------------------------------------------
+                  // (b) Star state sensitivity
+                  // --------------------------------------------------
+                  const double s     = static_cast<double>(fd.orientation);
+                  const double dc_dA = compute_wave_speed_derivative(Ah_safe);
+
+                  const double dWin_dwh = phi_U_j + s * 4.0 * dc_dA * phi_A_j;
+
+                  Vector<double> dX_dWin(2 * K);
+
+                  for (unsigned int r = 0; r < 2 * K; ++r)
+                    dX_dWin[r] = JX_inv(r, K + face_idx);
+
+                  // --------------------------------------------------
+                  // (c) Chain rule via star state
+                  // --------------------------------------------------
+                  auto [dFA_chain, dFU_chain] =
+                    numerical_flux_jacobian(bn_L,
+                                            bn_R,
+                                            Ah_safe,
+                                            Uh[q],
+                                            A_star,
+                                            U_star,
+                                            0.0,
+                                            0.0,
+                                            dX_dWin[2 * face_idx] * dWin_dwh,
+                                            dX_dWin[2 * face_idx + 1] *
+                                              dWin_dwh);
+
+                  for (unsigned int i = 0; i < fe->n_dofs_per_cell(); ++i)
                     {
-                      dX_dWj(row, 0) = -J_loc_inv(row, K + j) *
-                                       (face_j.orientation * 4.0 * dc_dA_j);
-                      dX_dWj(row, 1) = -J_loc_inv(row, K + j) * 1.0;
-                    }
+                      const unsigned int comp =
+                        fe->system_to_component_index(i).first;
 
-                  for (unsigned int dof_idx_j = 0;
-                       dof_idx_j < fe->n_dofs_per_cell();
-                       ++dof_idx_j)
-                    {
-                      // Variation of star state i due to trial function in
-                      // branch j
-                      double dAs_i =
-                        dX_dWj(2 * i, 0) * phi_A_j + dX_dWj(2 * i, 1) * phi_U_j;
-                      double dUs_i = dX_dWj(2 * i + 1, 0) * phi_A_j +
-                                     dX_dWj(2 * i + 1, 1) * phi_U_j;
+                      const double phi_i = fe_face.shape_value(i, q);
 
-                      // Now apply Numerical Flux Jacobian using (dAs_i, dUs_i)
-                      // as the variation of the "Right" side
-                      auto [dF_A, dF_U] = numerical_flux_jacobian(...);
-
-                      for (unsigned int dof_idx_i = 0;
-                           dof_idx_i < fe->n_dofs_per_cell();
-                           ++dof_idx_i)
-                        {
-                          jacobian_matrix.add(dofs_i[dof_idx_i],
-                                              dofs_j[dof_idx_j],
-                                              -(comp == 0 ? dF_A : dF_U) *
-                                                phi_i * JxW);
-                        }
+                      jacobian_matrix.add(dofs[i],
+                                          dofs[j],
+                                          -((comp == 0 ? dFA_dwh + dFA_chain :
+                                                         dFU_dwh + dFU_chain)) *
+                                            phi_i * JxW[q]);
                     }
                 }
             }
@@ -884,14 +988,22 @@ BloodFlowSystem<dim, spacedim>::assemble_jacobian(const double          t,
     };
 
   //========== BOUNDARY WORKER – CONSISTENT A/U RIEMANN BOUNDARY ==========
-  auto boundary_worker_riemann_invariant = [&](
+  const double current_dt = std::max(t - this->time, 1e-10);
+  auto         boundary_worker_riemann_invariant = [&](
                                              const Iterator    &cell,
                                              const unsigned int face_no,
                                              BloodFlowScratchData<dim, spacedim>
                                                                &scratch,
                                              BloodFlowCopyData &copy) {
+    // if (all_junction_faces.count({cell->id(), face_no}) > 0)
+    //   return;
+    std::cout << "Boundary worker entered" << std::endl;
     if (all_junction_faces.count({cell->id(), face_no}) > 0)
-      return;
+      {
+        std::cout << "Skipping junction face: cell " << cell->id() << " face "
+                  << face_no << std::endl;
+        return;
+      }
     scratch.fe_interface_values.reinit(cell, face_no);
     const auto &fe_face = scratch.fe_interface_values.get_fe_face_values(0);
 
@@ -899,8 +1011,9 @@ BloodFlowSystem<dim, spacedim>::assemble_jacobian(const double          t,
     const auto        &normals = fe_face.get_normal_vectors();
     const unsigned int n_q     = fe_face.n_quadrature_points;
 
-    const double       A_min       = 1e-12;
-    const double       dt          = this->time_step;
+    const double A_min = 1e-12;
+    // const double dt_p = 1e-4;
+
     const unsigned int boundary_id = cell->face(face_no)->boundary_id();
 
     std::vector<double> Ah(n_q), Uh(n_q);
@@ -915,14 +1028,14 @@ BloodFlowSystem<dim, spacedim>::assemble_jacobian(const double          t,
         const double dc_dA_L = compute_wave_speed_derivative(A_L);
         const double A0      = par["a0"];
         const double c0      = compute_wave_speed(A0);
-
+        std::cout << "Wave speed: c0 = " << c0 << std::endl;
         const double W1_L =
           U_L + 4.0 * (c_L - c0); // OUTGOING FOR TERMINAL BOUNDARY
         const double W2_L = U_L - 4.0 * (c_L - c0); // INCOMING FOR INLET
 
         double A_star = A_L;
         double U_star = U_L;
-        double bn_L   = compute_tangent_normal_product(cell, normals[q]);
+
         FullMatrix<double> J_boundary_local(2, 2);
 
         if (boundary_id == 0) // INFLOW: Prescribed Q_in(t)
@@ -987,30 +1100,27 @@ BloodFlowSystem<dim, spacedim>::assemble_jacobian(const double          t,
 
                 for (unsigned int it = 0; it < 20; ++it)
                   {
-                    const double A      = std::max(A_star, A_min);
-                    const double cA     = compute_wave_speed(A);
-                    const double dc_dA  = compute_wave_speed_derivative(A);
-                    const double Pe     = compute_pressure_value(A);
-                    const double dPe_dA = compute_pressure_derivative(A);
+                    const double A  = std::max(A_star, 1e-12);
+                    const double cA = compute_wave_speed(A);
+                    const double Pe = compute_pressure_value(A);
+                    const double U  = W1_L - 4.0 * (cA - c0);
 
-                    // Link U to A via the outgoing Riemann Invariant (W1)
-                    U_star                 = W1_L - 4.0 * (cA - c0);
-                    const double dUstar_dA = -4.0 * dc_dA;
-                    const double dQ_dA     = U_star + A * dUstar_dA;
-
-                    // Implicit Capacitor Pressure update
+                    // DISCRETIZATION: Use current_dt from ARKode
                     const double Pc_star =
-                      (Pc_old + (dt / C) * (A * U_star + par["P_out"] / R2)) /
-                      (1.0 + dt / (C * R2));
-                    const double dPc_star_dA =
-                      (dt / C * dQ_dA) / (1.0 + dt / (C * R2));
+                      (Pc_old +
+                       (current_dt / C) * (A * U + par["P_out"] / R2)) /
+                      (1.0 + current_dt / (C * R2));
 
-                    // Residual: Balance at proximal resistance R1
-                    const double F     = R1 * (A * U_star) - (Pe - Pc_star);
-                    const double dF_dA = R1 * dQ_dA - dPe_dA + dPc_star_dA;
+                    const double F = R1 * (A * U) - (Pe - Pc_star);
+                    const double dF_dA =
+                      R1 * (U + A * (-4.0 * compute_wave_speed_derivative(A))) -
+                      compute_pressure_derivative(A) +
+                      (current_dt / C *
+                       (U + A * (-4.0 * compute_wave_speed_derivative(A)))) /
+                        (1.0 + current_dt / (C * R2));
 
                     A_star -= F / dF_dA;
-                    if (std::abs(F / A_L) < 1e-12)
+                    if (std::abs(F / A_L) < 1e-13)
                       break;
                   }
 
@@ -1101,8 +1211,8 @@ BloodFlowSystem<dim, spacedim>::assemble_jacobian(const double          t,
                                                               dUL_trial,
                                                               0.0,
                                                               0.0);
-            auto [dFA_chain, dFU_chain] = numerical_flux_jacobian(cell,
-                                                                  cell,
+            auto [dFA_chain, dFU_chain] = numerical_flux_jacobian(bn_L,
+                                                                  bn_R,
                                                                   A_L,
                                                                   U_L,
                                                                   A_star,
@@ -1110,8 +1220,7 @@ BloodFlowSystem<dim, spacedim>::assemble_jacobian(const double          t,
                                                                   0.0,
                                                                   0.0,
                                                                   dX_star[0],
-                                                                  dX_star[1],
-                                                                  normals[q]);
+                                                                  dX_star[1]);
 
             for (unsigned int i = 0; i < fe->n_dofs_per_cell(); ++i)
               {
@@ -1153,6 +1262,9 @@ BloodFlowSystem<dim, spacedim>::assemble_jacobian(const double          t,
                                                    quadrature_face);
   BloodFlowCopyData                   copy_data;
 
+  std::cout << "use_riemann_invariants = " << use_riemann_invariants
+            << std::endl;
+
   if (use_riemann_invariants)
     {
       MeshWorker::mesh_loop(dof_handler.begin_active(),
@@ -1182,7 +1294,7 @@ BloodFlowSystem<dim, spacedim>::assemble_jacobian(const double          t,
                             face_worker);
     }
 
-  assemble_junction_jacobian_blocks(y);
+  assemble_junction_jacobian(y);
   deallog.pop();
 }
 
@@ -1433,6 +1545,234 @@ BloodFlowSystem<dim, spacedim>::assemble_implicit_function(
         }
     };
 
+  //========== BOUNDARY WORKER – CONSISTENT A/U RIEMANN BOUNDARY ==========
+  const double current_dt = std::max(t - this->time, 1e-10);
+  auto         boundary_worker_riemann_invariant = [&](
+                                             const Iterator    &cell,
+                                             const unsigned int face_no,
+                                             BloodFlowScratchData<dim, spacedim>
+                                                               &scratch,
+                                             BloodFlowCopyData &copy) {
+    if (all_junction_faces.count({cell->id(), face_no}) > 0)
+      return;
+    scratch.fe_interface_values.reinit(cell, face_no);
+    const auto &fe_face = scratch.fe_interface_values.get_fe_face_values(0);
+
+    const auto        &JxW     = fe_face.get_JxW_values();
+    const auto        &normals = fe_face.get_normal_vectors();
+    const unsigned int n_q     = fe_face.n_quadrature_points;
+
+    const double A_min = 1e-12;
+
+    const unsigned int boundary_id = cell->face(face_no)->boundary_id();
+
+    std::vector<double> Ah(n_q), Uh(n_q);
+    fe_face[area_extractor].get_function_values(y, Ah);
+    fe_face[velocity_extractor].get_function_values(y, Uh);
+
+    for (unsigned int q = 0; q < n_q; ++q)
+      {
+        const double A_L     = std::max(Ah[q], A_min);
+        const double U_L     = Uh[q];
+        const double c_L     = compute_wave_speed(A_L);
+        const double dc_dA_L = compute_wave_speed_derivative(A_L);
+        const double A0      = par["a0"];
+        const double c0      = compute_wave_speed(A0);
+
+        const double W1_L =
+          U_L + 4.0 * (c_L - c0); // OUTGOING FOR TERMINAL BOUNDARY
+        const double W2_L = U_L - 4.0 * (c_L - c0); // INCOMING FOR INLET
+
+        double A_star = A_L;
+        double U_star = U_L;
+
+        FullMatrix<double> J_boundary_local(2, 2);
+        FullMatrix<double> J_interior_local(2, 2);
+
+        if (boundary_id == 0) // INFLOW: Prescribed Q_in(t)
+          {
+            inflow_function.set_time(time);
+            const double Qin = inflow_function.value(Point<1>(0.0));
+            for (unsigned int it = 0; it < 20; ++it)
+              {
+                const double A     = std::max(A_star, A_min);
+                const double cA    = compute_wave_speed(A);
+                const double dc_dA = compute_wave_speed_derivative(A);
+
+                // R[0]: Prescribed Flow: A*U - Qin = 0
+                // R[1]: Backward Invariant: U - 4c - W2_L = 0
+                Vector<double> R(2);
+                R[0] = A * U_star - Qin;
+                R[1] =
+                  U_star - 4.0 * (cA - compute_wave_speed(par["a0"])) - W2_L;
+
+                FullMatrix<double> J(2, 2);
+                J(0, 0) = U_star;
+                J(0, 1) = A;
+                J(1, 0) = -4.0 * dc_dA;
+                J(1, 1) = 1.0;
+
+                J_boundary_local = J; // Store for sensitivity
+                J.gauss_jordan();
+                Vector<double> delta(2);
+                J.vmult(delta, R);
+
+                A_star -= delta[0];
+                U_star -= delta[1];
+                if (delta.l2_norm() < 1e-12)
+                  break;
+              }
+            J_boundary_local(0, 0) = U_star;
+            J_boundary_local(0, 1) = A_star;
+            J_boundary_local(1, 0) =
+              -4.0 * compute_wave_speed_derivative(A_star);
+            J_boundary_local(1, 1) = 1.0;
+
+            J_interior_local(1, 0) = 4.0 * dc_dA_L; // - d(W2_L)/dAL
+            J_interior_local(1, 1) = -1.0;          // - d(W2_L)/dUL
+          }
+        else // ================= OUTLET BOUNDARY =================
+          {
+            // 1. Retrieve the choice from your ParameterHandler
+            // std::string outlet_type;
+            // this->prm.enter_subsection("Blood Flow Parameters");
+            // outlet_type = this->prm.get("Outlet boundary condition type");
+            // this->prm.leave_subsection();
+
+            if (this->outlet_type == "RCR")
+              {
+                // ================= CHOICE: RCR =================
+                const double R1     = par["R1"];
+                const double R2     = par["R2"];
+                const double C      = par["C"];
+                double       Pc_old = 0.0;
+                try
+                  {
+                    Pc_old = terminal_Pc_storage.at(boundary_id);
+                  }
+                catch (const std::out_of_range &e)
+                  {
+                    AssertThrow(
+                      false,
+                      ExcMessage(
+                        "Boundary ID not found in Pc storage. Initialize it in setup_system."));
+                  }
+
+                for (unsigned int it = 0; it < 20; ++it)
+                  {
+                    const double A  = std::max(A_star, 1e-12);
+                    const double cA = compute_wave_speed(A);
+                    const double Pe = compute_pressure_value(A);
+                    const double U  = W1_L - 4.0 * (cA - c0);
+
+                    // DISCRETIZATION: Use current_dt from ARKode
+                    const double Pc_star =
+                      (Pc_old +
+                       (current_dt / C) * (A * U + par["P_out"] / R2)) /
+                      (1.0 + current_dt / (C * R2));
+
+                    const double F = R1 * (A * U) - (Pe - Pc_star);
+                    const double dF_dA =
+                      R1 * (U + A * (-4.0 * compute_wave_speed_derivative(A))) -
+                      compute_pressure_derivative(A) +
+                      (current_dt / C *
+                       (U + A * (-4.0 * compute_wave_speed_derivative(A)))) /
+                        (1.0 + current_dt / (C * R2));
+
+                    A_star -= F / dF_dA;
+                    if (std::abs(F / A_L) < 1e-13)
+                      break;
+                  }
+
+
+
+                // Final state sync and Jacobian for sensitivity (Step 4)
+                U_star = W1_L - 4.0 * (compute_wave_speed(A_star) - c0);
+                J_boundary_local(0, 0) =
+                  compute_pressure_derivative(A_star) / R1 - U_star;
+                J_boundary_local(0, 1) = -A_star;
+                J_boundary_local(1, 0) =
+                  4.0 * compute_wave_speed_derivative(A_star);
+                J_boundary_local(1, 1) = 1.0;
+
+                // Interior sensitivity: Only R0 depends on W1_L
+                J_interior_local(0, 0) = -4.0 * dc_dA_L;
+                J_interior_local(0, 1) = -1.0;
+                J_interior_local(1, 0) = 0.0;
+                J_interior_local(1, 1) = 0.0;
+              }
+            else // (outlet_type == "Rt")
+              {
+                // ================= CHOICE: Rt (Reflection) =================
+                const double Rt = par["Rt"];
+                const double W2_target =
+                  -Rt * W1_L; // Simplified reflection target
+
+                for (unsigned int it = 0; it < 20; ++it)
+                  {
+                    const double A     = std::max(A_star, A_min);
+                    const double cA    = compute_wave_speed(A);
+                    const double dc_dA = compute_wave_speed_derivative(A);
+
+                    // System: W1 invariant is fixed, W2 invariant is target
+                    // Eq1: U + 4(c-c0) - W1_L = 0
+                    // Eq2: U - 4(c-c0) - W2_target = 0
+                    Vector<double> R(2);
+                    R[0] = U_star + 4.0 * (cA - c0) - W1_L;
+                    R[1] = U_star - 4.0 * (cA - c0) - W2_target;
+
+                    FullMatrix<double> J(2, 2);
+                    J(0, 0) = 4.0 * dc_dA;
+                    J(0, 1) = 1.0;
+                    J(1, 0) = -4.0 * dc_dA;
+                    J(1, 1) = 1.0;
+
+                    J.gauss_jordan();
+                    Vector<double> delta(2);
+                    J.vmult(delta, R);
+
+                    A_star -= delta[0];
+                    U_star -= delta[1];
+                    if (delta.l2_norm() < 1e-12)
+                      break;
+                  }
+
+                // Local Jacobian for sensitivity (Step 4)
+                J_boundary_local(0, 0) =
+                  4.0 * compute_wave_speed_derivative(A_star);
+                J_boundary_local(0, 1) = 1.0;
+                J_boundary_local(1, 0) =
+                  -4.0 * compute_wave_speed_derivative(A_star);
+                J_boundary_local(1, 1) = 1.0;
+
+
+                J_interior_local(0, 0) = -4.0 * dc_dA_L;
+                J_interior_local(0, 1) = -1.0;
+                // R1 = U* - 4c* - (-Rt * (UL + 4cL)) -> dR1/dAL = Rt*4*dcdAL,
+                // dR1/dUL = Rt
+                J_interior_local(1, 0) = par["Rt"] * 4.0 * dc_dA_L;
+                J_interior_local(1, 1) = par["Rt"];
+              }
+          }
+
+        double bn_L = compute_tangent_normal_product(cell, normals[q]);
+        double bn_R = bn_L;
+
+        auto [flux_A, flux_U] =
+          numerical_flux(bn_L, bn_R, A_L, U_L, A_star, U_star);
+
+        for (unsigned int i = 0; i < fe_face.get_fe().dofs_per_cell; ++i)
+          {
+            const double phi_A = fe_face[area_extractor].value(i, q);
+            const double phi_U = fe_face[velocity_extractor].value(i, q);
+
+            copy.cell_rhs(i) -= flux_A * phi_A * JxW[q];
+            copy.cell_rhs(i) -= flux_U * phi_U * JxW[q];
+          }
+      }
+  };
+
+
   const AffineConstraints<double> constraints;
   auto                            copier = [&](const BloodFlowCopyData &c) {
     constraints.distribute_local_to_global(c.cell_rhs,
@@ -1574,6 +1914,36 @@ BloodFlowSystem<dim, spacedim>::compute_pressure(
     }
 }
 
+// store the value of (terminal pressure)Pc​ from the previous time step. This
+// is necessary for the implicit update of the capacitor pressure in the RCR
+// boundary condition.
+//  By keeping track of (terminal pressure)Pc​ at each terminal boundary, we
+//  can ensure that the time integration of the capacitor pressure is consistent
+//  and stable across time steps.
+
+template <int dim, int spacedim>
+void
+BloodFlowSystem<dim, spacedim>::initialize_terminal_capacitors()
+{
+  terminal_Pc_storage.clear();
+
+  for (const auto &cell : dof_handler.active_cell_iterators())
+    for (unsigned int f = 0; f < GeometryInfo<dim>::faces_per_cell; ++f)
+      {
+        if (!cell->face(f)->at_boundary())
+          continue;
+
+        if (all_junction_faces.count({cell->id(), f}))
+          continue;
+
+        const auto bid = cell->face(f)->boundary_id();
+
+        if (this->is_terminal_boundary(bid))
+          terminal_Pc_storage.try_emplace(bid, par["p0"]);
+      }
+}
+
+
 // ========================================================================
 // COMPUTE ERRORS
 // ========================================================================
@@ -1695,6 +2065,60 @@ BloodFlowSystem<dim, spacedim>::compute_errors(unsigned int k)
 }
 
 // ========================================================================
+// Create vascular network
+// ========================================================================
+template <int dim, int spacedim>
+void
+BloodFlowSystem<dim, spacedim>::create_vascular_network()
+{
+  std::vector<Point<spacedim>> nodes = {{-0.5, 0.5, 0.0},
+                                        {0.0, 0.0, 0.0},
+
+                                        {-0.5, -0.5, 0.0},
+
+                                        {0.5, 0.0, 0.0},
+
+                                        {1.0, 0.0, 0.0},
+
+                                        {1.5, 0.5, 0.0},
+                                        {1.5, -0.5, 0.0},
+
+                                        {2.0, 0.75, 0.0},
+                                        {2.0, 0.25, 0.0},
+                                        {2.0, -0.25, 0.0},
+                                        {2.0, -0.75, 0.0}};
+
+
+  std::vector<std::pair<int, int>> edges = {{0, 1},
+                                            {2, 1},
+                                            {1, 3},
+
+                                            {3, 4},
+
+                                            {4, 5},
+                                            {4, 6},
+
+                                            {5, 7},
+                                            {5, 8},
+
+                                            {6, 9},
+                                            {6, 10}};
+
+
+  std::vector<CellData<dim>> cells(edges.size());
+
+  for (unsigned int i = 0; i < edges.size(); ++i)
+    {
+      cells[i].vertices[0] = edges[i].first;
+      cells[i].vertices[1] = edges[i].second;
+    }
+
+  SubCellData subcelldata;
+
+  triangulation.create_triangulation(nodes, cells, subcelldata);
+}
+
+// ========================================================================
 // RUN CONVERGENCE STUDY WITH NEWTON ITERATION
 // ========================================================================
 
@@ -1711,8 +2135,101 @@ BloodFlowSystem<dim, spacedim>::run()
 
       if (cycle == 0)
         {
-          GridGenerator::hyper_cube(triangulation, 0.0, 1); // 1 cm
-          triangulation.refine_global(n_global_refinements);
+          triangulation.clear();
+
+          if (!use_junction_mesh)
+            {
+              // ================= SINGLE VESSEL =================
+              const double L = par["L"];
+              GridGenerator::hyper_cube(triangulation, 0.0, L);
+              // tagging logic for terminal boundaries
+              terminal_boundary_ids.clear();
+              // unsigned int outlet_count = 0;
+
+              for (auto &cell : triangulation.active_cell_iterators())
+                {
+                  for (unsigned int f = 0;
+                       f < GeometryInfo<dim>::faces_per_cell;
+                       ++f)
+                    {
+                      if (cell->face(f)->at_boundary())
+                        {
+                          Point<3> face_center = cell->face(f)->center();
+
+                          // 1. Identify Inlet (Root) at (0,0,0)
+                          if (face_center.distance(Point<3>(0.0, 0.0, 0.0)) <
+                              1e-8)
+                            {
+                              cell->face(f)->set_boundary_id(0);
+                              std::cout << "  [Mesh] Tagged INLET (ID 0) at "
+                                        << face_center << std::endl;
+                            }
+                          // 2. Identify ALL other boundaries as Outlets
+                          else
+                            {
+                              // This will now catch x = -0.5 AND x = 2.0
+                              cell->face(f)->set_boundary_id(1);
+                              terminal_boundary_ids.insert(1);
+                              // outlet_count++;
+                              std::cout << "  [Mesh] Tagged OUTLET (ID 1) at "
+                                        << face_center << std::endl;
+                            }
+                        }
+                    }
+                }
+              triangulation.refine_global(n_global_refinements);
+            }
+
+          else
+            {
+              // ================= JUNCTION NETWORK =================
+
+
+              if constexpr (dim == 1 && spacedim == 3)
+                {
+                  create_vascular_network();
+
+                  // ================= TAGGING LOGIC for terminal boundary
+
+                  terminal_boundary_ids.clear();
+                  // unsigned int outlet_count = 0;
+
+                  for (auto &cell : triangulation.active_cell_iterators())
+                    {
+                      for (unsigned int f = 0;
+                           f < GeometryInfo<dim>::faces_per_cell;
+                           ++f)
+                        {
+                          if (cell->face(f)->at_boundary())
+                            {
+                              Point<3> face_center = cell->face(f)->center();
+
+                              // 1. Identify Inlet (Root) at (0,0,0)
+                              if (face_center.distance(Point<3>(-0.5, 0.5, 0)) <
+                                  1e-8)
+                                {
+                                  cell->face(f)->set_boundary_id(0);
+                                  std::cout
+                                    << "  [Mesh] Tagged INLET (ID 0) at "
+                                    << face_center << std::endl;
+                                }
+                              // 2. Identify ALL other boundaries as Outlets
+                              else
+                                {
+                                  // This will now catch x = -0.5 AND x = 2.0
+                                  cell->face(f)->set_boundary_id(1);
+                                  terminal_boundary_ids.insert(1);
+                                  // outlet_count++;
+                                  std::cout
+                                    << "  [Mesh] Tagged OUTLET (ID 1) at "
+                                    << face_center << std::endl;
+                                }
+                            }
+                        }
+                    }
+                  triangulation.refine_global(n_global_refinements);
+                }
+            }
         }
       else
         {
@@ -1720,8 +2237,8 @@ BloodFlowSystem<dim, spacedim>::run()
         }
 
       setup_system();
+      initialize_terminal_capacitors();
 
-      // Project initial conditions at ARKode initial time
       compute_initial_solution(solution, arkode_parameters.initial_time);
 
       time = arkode_parameters.initial_time;
@@ -1837,6 +2354,10 @@ BloodFlowSystem<dim, spacedim>::run()
         output_results(sol, pressure, step_number);
         deallog.pop();
       };
+
+      // std::cout << "MANUAL TEST: Calling assemble_jacobian..." << std::endl;
+      // assemble_jacobian(time, solution, solution);
+      // std::cout << "MANUAL TEST: Success." << std::endl;
 
       const unsigned int n_timesteps = ode.solve_ode(solution);
       std::cout << "  ARKode steps: " << n_timesteps << std::endl;
