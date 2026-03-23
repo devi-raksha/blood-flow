@@ -135,6 +135,9 @@ public:
   void
   initialize_terminal_capacitors();
   void
+  update_terminal_pressures(const double          dt,
+                            const Vector<double> &evaluation_point);
+  void
   setup_system();
   void
   assemble_jacobian(const double          t,
@@ -156,11 +159,17 @@ public:
   void
   output_results(const Vector<double> &y,
                  const Vector<double> &pressure_vec,
+                 const Vector<double> &theoretical_peak,
                  const unsigned int    cycle) const;
+  void
+  update_peak_pressure();
 
+  void
+  compute_theoretical_peak(Vector<double> &theoretical_peak) const;
 
   void
   compute_pressure(const Vector<double> &y, Vector<double> &pressure_vec) const;
+
   void
   compute_errors(unsigned int k);
   void
@@ -199,7 +208,8 @@ public:
 private:
   ParsedTools::Constants    par;
   AffineConstraints<double> constraints;
-
+  double                    P_peak;
+  double                    current_dt;
   // Key: Boundary ID, Value: Pressure at the previous time step
   // One capacitor pressure per terminal boundary
   std::map<types::boundary_id, double> terminal_Pc_storage;
@@ -358,10 +368,10 @@ private:
   double
   compute_pressure_value(double A) const
   {
-    const double A0   = par["a0"];
+    const double Ad   = par["a_d"];
     const double beta = compute_beta_p(par["E"], par["h_wall"]);
 
-    return par["p0"] + beta / A0 * (std::sqrt(A) - std::sqrt(A0)) + par["p_d"];
+    return par["p0"] + beta / Ad * (std::sqrt(A) - std::sqrt(Ad)) + par["p_d"];
   }
 
   /**
@@ -373,7 +383,7 @@ private:
   {
     const double beta_p =
       compute_beta_p(par["E"], par["h_wall"]); // Example wall thickness
-    return beta_p / (2.0 * std::sqrt(area) * par["a0"]);
+    return beta_p / (2.0 * std::sqrt(area) * par["a_d"]);
   }
 
 
