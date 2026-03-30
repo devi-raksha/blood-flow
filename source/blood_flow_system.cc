@@ -1801,11 +1801,11 @@ BloodFlowSystem<dim, spacedim>::output_results(
   const Vector<double> &y,
   const Vector<double> &pressure_vec,
   const Vector<double> &theoretical_peak,
-  const unsigned int    cycle) const
+  const unsigned int    time_step_number) const
 {
   TimerOutput::Scope timer(computing_timer, "output_results");
   const std::string  rel_filename =
-    output_filename + "-" + std::to_string(cycle) + ".vtu";
+    output_filename + "-" + std::to_string(time_step_number) + ".vtu";
   const std::string filename =
     output_directory + (output_directory.empty() ? "" : "/") + rel_filename;
   std::cout << "  Writing solution to <" << filename << ">" << std::endl;
@@ -2448,7 +2448,11 @@ BloodFlowSystem<dim, spacedim>::run()
       ode.output_step = [this](const double          t,
                                const Vector<double> &sol,
                                const unsigned int    step_number) {
-        this->current_dt = (step_number == 0) ? 0.0 : (t - this->time);
+        const unsigned int actual_step_number =
+          (t - arkode_parameters.initial_time) /
+          arkode_parameters.output_period;
+
+        this->current_dt = (actual_step_number == 0) ? 0.0 : (t - this->time);
         update_terminal_pressures(this->current_dt, sol);
         // 2. Update the RCR pressures using the converged solution 'sol'
         double P_inlet      = 0.0;
@@ -2502,8 +2506,8 @@ BloodFlowSystem<dim, spacedim>::run()
             const double deltaP = P_inlet - P_outlet;
 
             std::cout << "t = " << t << "  Pin = " << P_inlet
-                      << "  Pout = " << P_outlet << "  dP(Kpa) = " << deltaP /1000 
-                      << std::endl;
+                      << "  Pout = " << P_outlet
+                      << "  dP(Kpa) = " << deltaP / 1000 << std::endl;
           }
 
 
@@ -2536,17 +2540,26 @@ BloodFlowSystem<dim, spacedim>::run()
           }
         deallog.push("output_step");
         deallog << "Called output_step t=" << t
-                << " step_number=" << step_number << std::endl;
+                << " step_number=" << actual_step_number << std::endl;
         time = t;
         compute_pressure(sol, pressure);
         compute_theoretical_peak(theoretical_peak);
-        output_results(sol, pressure, theoretical_peak, step_number);
+        output_results(sol, pressure, theoretical_peak, actual_step_number);
         deallog.pop();
       };
 
-      const unsigned int n_timesteps = ode.solve_ode(solution);
-      std::cout << "  ARKode steps: " << n_timesteps << std::endl;
-      time = arkode_parameters.final_time;
+
+      time = arkode_parameters.initial_time;
+      while (time < arkode_parameters.final_time)
+        {
+          const unsigned int n_timesteps =
+            ode.solve_ode_incrementally(solution,
+                                        time + arkode_parameters.output_period,
+                                        true);
+          std::cout << "  ARKode intermediate steps: " << n_timesteps
+                    << std::endl;
+          time += arkode_parameters.output_period;
+        }
       compute_pressure(solution, pressure);
       compute_errors(cycle);
     }
