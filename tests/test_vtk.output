@@ -1,0 +1,10 @@
+DEAL::Reading file: /home/rakshad/blood-flow/notebooks/bifurcation_physics.vtk
+DEAL::Cells:    3
+DEAL::Vertices: 4
+DEAL::Vertex classification:
+DEAL::  Vertex 0 @ (0.00000) is the INFLOW
+DEAL::  Vertex 1 is the JUNCTION
+DEAL::  Vertex 2 @ (2.00000) is an OUTLET
+DEAL::  Vertex 3 @ (2.00000) is an OUTLET
+DEAL::Total terminals: 2
+DEAL::Total junctions: 1

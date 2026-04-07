@@ -11,6 +11,7 @@
 
 #include <deal.II/grid/cell_data.h>
 #include <deal.II/grid/grid_generator.h>
+#include <deal.II/grid/grid_in.h>
 #include <deal.II/grid/tria.h>
 #include <deal.II/grid/tria_accessor.h>
 #include <deal.II/grid/tria_iterator.h>
@@ -28,6 +29,7 @@
 #include <iomanip>
 
 #include "../include/junction_solver.h"
+#include "vtk_utils.h"
 
 // Main class implementation
 template <int dim, int spacedim>
@@ -650,6 +652,82 @@ void
 BloodFlowSystem<dim, spacedim>::setup_system()
 {
   TimerOutput::Scope timer(computing_timer, "setup_system");
+
+  VTKUtils::read_vtk(
+    "/home/rakshad/blood-flow/notebooks/bifurcation_physics.vtk",
+    dof_handler,
+    vtk_cell_data,
+    cell_data_names);
+
+  VTKUtils::read_data(
+    "/home/rakshad/blood-flow/notebooks/bifurcation_physics.vtk",
+    vtk_point_data);
+
+  // --- 2. EXTRACT VESSEL PHYSICS (CELL DATA) ---
+  vessel_map.clear();
+  for (const auto &cell : triangulation.active_cell_iterators())
+    {
+      unsigned int v_id = cell->user_index(); // The 'vessel_id' from VTK
+      if (vessel_map.find(v_id) == vessel_map.end())
+        {
+          VesselPhysicalProperties vp;
+          // Helper to find column index by name (e.g., "E", "a0")
+          vp.a0 = VTKUtils::get_cell_value(v_id,
+                                           "a0",
+                                           vtk_cell_data,
+                                           cell_data_names);
+          vp.E =
+            VTKUtils::get_cell_value(v_id, "E", vtk_cell_data, cell_data_names);
+          vp.h_wall        = VTKUtils::get_cell_value(v_id,
+                                               "h_wall",
+                                               vtk_cell_data,
+                                               cell_data_names);
+          vp.p_d           = VTKUtils::get_cell_value(v_id,
+                                            "p_d",
+                                            vtk_cell_data,
+                                            cell_data_names);
+          vessel_map[v_id] = vp;
+        }
+    }
+
+  // --- 3. EXTRACT RCR PHYSICS (POINT DATA) ---
+  rcr_map.clear();
+  terminal_boundary_ids.clear();
+  for (const auto &cell : triangulation.active_cell_iterators())
+    for (unsigned int f : cell->face_indices())
+      if (cell->face(f)->at_boundary())
+        {
+          unsigned int b_id  = cell->face(f)->boundary_id();
+          unsigned int v_idx = cell->face(f)->vertex_index(0);
+
+          RCRPhysics rcr;
+          rcr.R1    = VTKUtils::get_point_value(v_idx,
+                                             "R1",
+                                             vtk_point_data,
+                                             point_data_names);
+          rcr.R2    = VTKUtils::get_point_value(v_idx,
+                                             "R2",
+                                             vtk_point_data,
+                                             point_data_names);
+          rcr.C     = VTKUtils::get_point_value(v_idx,
+                                            "C",
+                                            vtk_point_data,
+                                            point_data_names);
+          rcr.P_out = VTKUtils::get_point_value(v_idx,
+                                                "P_out",
+                                                vtk_point_data,
+                                                point_data_names);
+
+          // If R1 > 0, it's a Windkessel outlet
+          if (rcr.R1 > 0)
+            {
+              rcr_map[b_id] = rcr;
+              terminal_boundary_ids.insert(b_id);
+              // Initialize Pc storage for this specific boundary
+              terminal_Pc_storage[b_id] = 0.0;
+            }
+        }
+
   if (!fe)
     {
       // Two-component system: A (area) and U (velocity)
@@ -1040,7 +1118,7 @@ BloodFlowSystem<dim, spacedim>::assemble_jacobian(const double          t,
           U_L + 4.0 * (c_L - c0); // OUTGOING FOR TERMINAL BOUNDARY
         const double W2_L = U_L - 4.0 * (c_L - c0); // INCOMING FOR INLET
 
-        double A_star = std::max(A_L, par["a_d"]);
+        double A_star = A_L;
         double U_star = U_L;
 
         FullMatrix<double> J_boundary_local(2, 2);
@@ -1085,9 +1163,11 @@ BloodFlowSystem<dim, spacedim>::assemble_jacobian(const double          t,
             if (this->outlet_type == "RCR")
               {
                 // ================= CHOICE: RCR =================
-                const double R1 = par["R1"];
-                const double R2 = par["R2"];
-                const double C  = par["C"];
+                const auto  &rcr = rcr_map.at(boundary_id);
+                const double R1  = rcr.R1;
+                const double R2  = rcr.R2;
+                const double C   = rcr.C;
+
 
                 double Pc_old = 0.0;
                 try
@@ -1639,9 +1719,10 @@ BloodFlowSystem<dim, spacedim>::assemble_implicit_function(
             if (this->outlet_type == "RCR")
               {
                 // ================= CHOICE: RCR =================
-                const double R1 = par["R1"];
-                const double R2 = par["R2"];
-                const double C  = par["C"];
+                const auto  &rcr = rcr_map.at(boundary_id);
+                const double R1  = rcr.R1;
+                const double R2  = rcr.R2;
+                const double C   = rcr.C;
 
                 double Pc_old = 0.0;
                 try
@@ -1943,25 +2024,35 @@ BloodFlowSystem<dim, spacedim>::initialize_terminal_capacitors()
   terminal_Pc_storage.clear();
 
   for (const auto &cell : dof_handler.active_cell_iterators())
-    for (unsigned int f = 0; f < GeometryInfo<dim>::faces_per_cell; ++f)
-      {
-        if (!cell->face(f)->at_boundary())
-          continue;
+    {
+      const unsigned int v_id    = cell->user_index();
+      const auto        &v_props = vessel_map.at(v_id);
+      const double       pd      = v_props.p_d;
+      for (unsigned int f = 0; f < GeometryInfo<dim>::faces_per_cell; ++f)
+        {
+          if (!cell->face(f)->at_boundary())
+            continue;
 
-        if (all_junction_faces.count({cell->id(), f}))
-          continue;
+          if (all_junction_faces.count({cell->id(), f}))
+            continue;
 
-        const auto bid = cell->face(f)->boundary_id();
+          const auto bid = cell->face(f)->boundary_id();
 
-        if (bid != 0 && this->is_terminal_boundary(bid))
-          terminal_Pc_storage.try_emplace(bid, par["p_d"]);
-        //           inflow_function.set_time(0.0);
-        // const double Q0 = inflow_function.value(Point<1>(0.0));
+          if (bid != 0 && this->is_terminal_boundary(bid))
+            {
+              terminal_Pc_storage[bid] = pd;
+              std::cout << "  [Init] Boundary " << bid << " (Vessel " << v_id
+                        << ") initial Pc set to " << pd << " Pa" << std::endl;
+              // terminal_Pc_storage.try_emplace(bid, par["p_d"]);
+              //           inflow_function.set_time(0.0);
+              // const double Q0 = inflow_function.value(Point<1>(0.0));
 
-        // const double Pc0 = par["P_out"] + par["R2"] * Q0;
+              // const double Pc0 = par["P_out"] + par["R2"] * Q0;
 
-        // terminal_Pc_storage[bid] = Pc0;
-      }
+              // terminal_Pc_storage[bid] = Pc0;
+            }
+        }
+    }
 }
 
 
@@ -2234,99 +2325,148 @@ BloodFlowSystem<dim, spacedim>::run()
         {
           triangulation.clear();
 
-          if (!use_junction_mesh)
+          // if (!use_junction_mesh)
+          //   {
+          //     // ================= SINGLE VESSEL =================
+          //     const double L = par["L"];
+          //     GridGenerator::hyper_cube(triangulation, 0.0, L);
+          //     // tagging logic for terminal boundaries
+          //     terminal_boundary_ids.clear();
+          //     // unsigned int outlet_count = 0;
+
+          //     for (auto &cell : triangulation.active_cell_iterators())
+          //       {
+          //         for (unsigned int f = 0;
+          //              f < GeometryInfo<dim>::faces_per_cell;
+          //              ++f)
+          //           {
+          //             if (cell->face(f)->at_boundary())
+          //               {
+          //                 Point<3> face_center = cell->face(f)->center();
+
+          //                 // 1. Identify Inlet (Root) at (0,0,0)
+          //                 if (face_center.distance(Point<3>(0.0, 0.0, 0.0)) <
+          //                     1e-8)
+          //                   {
+          //                     cell->face(f)->set_boundary_id(0);
+          //                     std::cout << "  [Mesh] Tagged INLET (ID 0) at "
+          //                               << face_center << std::endl;
+          //                   }
+          //                 // 2. Identify ALL other boundaries as Outlets
+          //                 else
+          //                   {
+          //                     // This will now catch x = -0.5 AND x = 2.0
+          //                     cell->face(f)->set_boundary_id(1);
+          //                     terminal_boundary_ids.insert(1);
+          //                     // outlet_count++;
+          //                     std::cout << "  [Mesh] Tagged OUTLET (ID 1) at
+          //                     "
+          //                               << face_center << std::endl;
+          //                   }
+          //               }
+          //           }
+          //       }
+          //     triangulation.refine_global(n_global_refinements);
+          //   }
+
+          // else
+          //   {
+          //     // ================= JUNCTION NETWORK =================
+
+
+          //     if constexpr (dim == 1 && spacedim == 3)
+          //       {
+          //         create_vascular_network();
+
+          //         // ================= TAGGING LOGIC for terminal boundary
+
+          //         terminal_boundary_ids.clear();
+          //         // unsigned int outlet_count = 0;
+
+          //         for (auto &cell : triangulation.active_cell_iterators())
+          //           {
+          //             for (unsigned int f = 0;
+          //                  f < GeometryInfo<dim>::faces_per_cell;
+          //                  ++f)
+          //               {
+          //                 if (cell->face(f)->at_boundary())
+          //                   {
+          //                     Point<3> face_center = cell->face(f)->center();
+
+          //                     // 1. Identify Inlet (Root) at (0,0,0)
+          //                     if (face_center.distance(Point<3>(-0.5, 0.5,
+          //                     0)) <
+          //                         1e-8)
+          //                       {
+          //                         cell->face(f)->set_boundary_id(0);
+          //                         std::cout
+          //                           << "  [Mesh] Tagged INLET (ID 0) at "
+          //                           << face_center << std::endl;
+          //                       }
+          //                     // 2. Identify ALL other boundaries as Outlets
+          //                     else
+          //                       {
+          //                         // This will now catch x = -0.5 AND x = 2.0
+          //                         cell->face(f)->set_boundary_id(1);
+          //                         terminal_boundary_ids.insert(1);
+          //                         // outlet_count++;
+          //                         std::cout
+          //                           << "  [Mesh] Tagged OUTLET (ID 1) at "
+          //                           << face_center << std::endl;
+          //                       }
+          //                   }
+          //               }
+          //           }
+          //         triangulation.refine_global(n_global_refinements);
+          //       }
+          //   }
+
+
+
+          GridIn<dim, spacedim> grid_in;
+          grid_in.attach_triangulation(triangulation);
+          std::ifstream input_file(
+            "/home/rakshad/blood-flow/notebooks/bifurcation_physics.vtk");
+
+          // AssertThrow(input_file.is_open(),
+          //             ExcMessage("Could not open VTK mesh file: " +
+          //             par["mesh_filename"]));
+
+          grid_in.read_vtk(input_file);
+          triangulation.refine_global(n_global_refinements);
+
+          // 2. Identify Boundary IDs (Inlet vs Outlets)
+          // This logic is now identical for both single vessel and junctions
+          terminal_boundary_ids.clear();
+
+          for (const auto &cell : triangulation.active_cell_iterators())
             {
-              // ================= SINGLE VESSEL =================
-              const double L = par["L"];
-              GridGenerator::hyper_cube(triangulation, 0.0, L);
-              // tagging logic for terminal boundaries
-              terminal_boundary_ids.clear();
-              // unsigned int outlet_count = 0;
-
-              for (auto &cell : triangulation.active_cell_iterators())
+              for (unsigned int f = 0; f < GeometryInfo<dim>::faces_per_cell;
+                   ++f)
                 {
-                  for (unsigned int f = 0;
-                       f < GeometryInfo<dim>::faces_per_cell;
-                       ++f)
+                  if (cell->face(f)->at_boundary())
                     {
-                      if (cell->face(f)->at_boundary())
-                        {
-                          Point<3> face_center = cell->face(f)->center();
+                      const types::boundary_id bid =
+                        cell->face(f)->boundary_id();
 
-                          // 1. Identify Inlet (Root) at (0,0,0)
-                          if (face_center.distance(Point<3>(0.0, 0.0, 0.0)) <
-                              1e-8)
-                            {
-                              cell->face(f)->set_boundary_id(0);
-                              std::cout << "  [Mesh] Tagged INLET (ID 0) at "
-                                        << face_center << std::endl;
-                            }
-                          // 2. Identify ALL other boundaries as Outlets
-                          else
-                            {
-                              // This will now catch x = -0.5 AND x = 2.0
-                              cell->face(f)->set_boundary_id(1);
-                              terminal_boundary_ids.insert(1);
-                              // outlet_count++;
-                              std::cout << "  [Mesh] Tagged OUTLET (ID 1) at "
-                                        << face_center << std::endl;
-                            }
+                      // INFLOW: In your VTK logic, Inlet is ID 0
+                      if (bid == 0)
+                        {
+                          std::cout << "  [Mesh] Recognized INLET (ID 0) at "
+                                    << cell->face(f)->center() << std::endl;
+                        }
+                      // OUTFLOW: IDs 1, 1 are treated as terminals
+                      else if (bid == 1)
+                        {
+                          terminal_boundary_ids.insert(bid);
+                          std::cout << "  [Mesh] Recognized OUTLET (ID " << bid
+                                    << ") at " << cell->face(f)->center()
+                                    << std::endl;
                         }
                     }
                 }
-              triangulation.refine_global(n_global_refinements);
             }
-
-          else
-            {
-              // ================= JUNCTION NETWORK =================
-
-
-              if constexpr (dim == 1 && spacedim == 3)
-                {
-                  create_vascular_network();
-
-                  // ================= TAGGING LOGIC for terminal boundary
-
-                  terminal_boundary_ids.clear();
-                  // unsigned int outlet_count = 0;
-
-                  for (auto &cell : triangulation.active_cell_iterators())
-                    {
-                      for (unsigned int f = 0;
-                           f < GeometryInfo<dim>::faces_per_cell;
-                           ++f)
-                        {
-                          if (cell->face(f)->at_boundary())
-                            {
-                              Point<3> face_center = cell->face(f)->center();
-
-                              // 1. Identify Inlet (Root) at (0,0,0)
-                              if (face_center.distance(Point<3>(-0.5, 0.5, 0)) <
-                                  1e-8)
-                                {
-                                  cell->face(f)->set_boundary_id(0);
-                                  std::cout
-                                    << "  [Mesh] Tagged INLET (ID 0) at "
-                                    << face_center << std::endl;
-                                }
-                              // 2. Identify ALL other boundaries as Outlets
-                              else
-                                {
-                                  // This will now catch x = -0.5 AND x = 2.0
-                                  cell->face(f)->set_boundary_id(1);
-                                  terminal_boundary_ids.insert(1);
-                                  // outlet_count++;
-                                  std::cout
-                                    << "  [Mesh] Tagged OUTLET (ID 1) at "
-                                    << face_center << std::endl;
-                                }
-                            }
-                        }
-                    }
-                  triangulation.refine_global(n_global_refinements);
-                }
-            }
+          // triangulation.refine_global(n_global_refinements);
         }
       else
         {

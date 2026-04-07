@@ -241,6 +241,24 @@ private:
   std::vector<EmbeddedVessel> embedded_vessels;
   std::vector<Point<3>>       hypersingular_points; // Key coupling points
 
+  // Structures to hold the "Physics" read from VTK
+  struct VesselPhysicalProperties
+  {
+    double a0, E, h_wall, p_d;
+  };
+  std::map<unsigned int, VesselPhysicalProperties> vessel_map;
+
+  struct RCRPhysics
+  {
+    double R1, R2, C, P_out;
+  };
+  std::map<unsigned int, RCRPhysics> rcr_map;
+
+  // Vectors to hold the "Physics" read from VTK data
+  Vector<double>           vtk_point_data;
+  Vector<double>           vtk_cell_data;
+  std::vector<std::string> point_data_names;
+  std::vector<std::string> cell_data_names;
 
   SUNDIALS::ARKode<Vector<double>>::AdditionalData arkode_parameters;
   NumericalFluxType numerical_flux_type     = NumericalFluxType::HLL;
@@ -368,6 +386,12 @@ private:
   double
   compute_pressure_value(double A) const
   {
+    // const auto &props = vessel_map.at(cell->user_index());
+    // const double current_E = props.E;
+    // const double current_ad = props.a_d;
+    // const double hwall = props.h_wall;
+    // const double current_p_d = props.p_d;
+    // const double beta = compute_beta_p(current_E, hwall);
     const double Ad   = par["a_d"];
     const double beta = compute_beta_p(par["E"], par["h_wall"]);
 
