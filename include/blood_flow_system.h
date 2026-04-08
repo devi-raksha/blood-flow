@@ -255,10 +255,8 @@ private:
   std::map<unsigned int, RCRPhysics> rcr_map;
 
   // Vectors to hold the "Physics" read from VTK data
-  Vector<double>           vtk_point_data;
-  Vector<double>           vtk_cell_data;
-  std::vector<std::string> point_data_names;
-  std::vector<std::string> cell_data_names;
+  Vector<double> cell_vessel_ids, cell_a0, cell_E, cell_h_wall, cell_p_d;
+  Vector<double> point_R1, point_R2, point_C, point_P_out;
 
   SUNDIALS::ARKode<Vector<double>>::AdditionalData arkode_parameters;
   NumericalFluxType numerical_flux_type     = NumericalFluxType::HLL;
@@ -267,35 +265,41 @@ private:
    * Wrapper for residual flux - selects HLL or Lax-Friedrichs
    */
   std::array<double, 2>
-  numerical_flux(double bn_L,
-                 double bn_R,
-                 double A_L,
-                 double U_L,
-                 double A_R,
-                 double U_R) const
+  numerical_flux(double       bn_L,
+                 double       bn_R,
+                 double       A_L,
+                 double       U_L,
+                 double       A_R,
+                 double       U_R,
+                 unsigned int vessel_id_L,
+                 unsigned int vessel_id_R) const
   {
     if (numerical_flux_type == NumericalFluxType::HLL)
-      return hll_numerical_flux(bn_L, bn_R, A_L, U_L, A_R, U_R);
-    else if (numerical_flux_type == NumericalFluxType::HLL_SYMPY)
-      return hll_sympy_numerical_flux(bn_L, bn_R, A_L, U_L, A_R, U_R);
+      return hll_numerical_flux(
+        bn_L, bn_R, A_L, U_L, A_R, U_R, vessel_id_L, vessel_id_R);
+    // else if (numerical_flux_type == NumericalFluxType::HLL_SYMPY)
+    //   return hll_sympy_numerical_flux(bn_L, bn_R, A_L, U_L, A_R, U_R);
     else
-      return lf_numerical_flux(bn_L, bn_R, A_L, U_L, A_R, U_R);
+      return lf_numerical_flux(
+        bn_L, bn_R, A_L, U_L, A_R, U_R, vessel_id_L, vessel_id_R);
   }
 
   /**
    * Wrapper for Jacobian flux - selects HLL or Lax-Friedrichs
    */
   std::array<double, 2>
-  numerical_flux_jacobian(double bn_L,
-                          double bn_R,
-                          double A_L,
-                          double U_L,
-                          double A_R,
-                          double U_R,
-                          double trial_A_L,
-                          double trial_U_L,
-                          double trial_A_R,
-                          double trial_U_R) const
+  numerical_flux_jacobian(double       bn_L,
+                          double       bn_R,
+                          double       A_L,
+                          double       U_L,
+                          double       A_R,
+                          double       U_R,
+                          double       trial_A_L,
+                          double       trial_U_L,
+                          double       trial_A_R,
+                          double       trial_U_R,
+                          unsigned int vessel_id_L,
+                          unsigned int vessel_id_R) const
   {
     if (numerical_flux_type == NumericalFluxType::HLL)
       return hll_numerical_flux_jacobian(bn_L,
@@ -307,18 +311,20 @@ private:
                                          trial_A_L,
                                          trial_U_L,
                                          trial_A_R,
-                                         trial_U_R);
-    else if (numerical_flux_type == NumericalFluxType::HLL_SYMPY)
-      return hll_sympy_numerical_flux_jacobian(bn_L,
-                                               bn_R,
-                                               A_L,
-                                               U_L,
-                                               A_R,
-                                               U_R,
-                                               trial_A_L,
-                                               trial_U_L,
-                                               trial_A_R,
-                                               trial_U_R);
+                                         trial_U_R,
+                                         vessel_id_L,
+                                         vessel_id_R);
+    // else if (numerical_flux_type == NumericalFluxType::HLL_SYMPY)
+    //   return hll_sympy_numerical_flux_jacobian(bn_L,
+    //                                            bn_R,
+    //                                            A_L,
+    //                                            U_L,
+    //                                            A_R,
+    //                                            U_R,
+    //                                            trial_A_L,
+    //                                            trial_U_L,
+    //                                            trial_A_R,
+    //                                            trial_U_R);
     else
       return lf_numerical_flux_jacobian(bn_L,
                                         bn_R,
@@ -329,7 +335,9 @@ private:
                                         trial_A_L,
                                         trial_U_L,
                                         trial_A_R,
-                                        trial_U_R);
+                                        trial_U_R,
+                                        vessel_id_L,
+                                        vessel_id_R);
   }
 
   // --------------------------------------------------
@@ -340,11 +348,11 @@ private:
    * Compute wave speed using the tube law
    */
   double
-  compute_wave_speed(const double area) const
+  compute_wave_speed(const double area, unsigned int vessel_id) const
   {
     const double eps    = 0;
     const double A_safe = std::max(area, eps);
-    const double dpda   = compute_pressure_derivative(area);
+    const double dpda   = compute_pressure_derivative(area, vessel_id);
     return std::sqrt(A_safe / par["rho"] * dpda);
   }
 
@@ -352,26 +360,12 @@ private:
    * Compute wave speed derivative using the tube law
    */
   double
-  compute_wave_speed_derivative(const double area) const
+  compute_wave_speed_derivative(const double area, unsigned int vessel_id) const
   {
     const double eps    = 1e-10;
     const double A_safe = std::max(area, eps);
-    return compute_wave_speed(A_safe) * par["m"] / (2.0 * A_safe);
+    return compute_wave_speed(A_safe, vessel_id) * par["m"] / (2.0 * A_safe);
   }
-
-  /**
-   * Compute pressure using the shifted tube law
-   */
-  // double
-  // compute_pressure_value(const double area) const
-  // {
-  //   // const double A_safe = std::max(area,  1e-2);
-  //   const double eps   = 0; // to avoid zero pressure at zero area
-  //   const double ratio = area / par["a0"] + eps;
-  //   const double m     = par["m"];
-
-  //   return par["mu"] * (std::pow(ratio + eps, m) - 1.0) + par["p0"];
-  // }
 
 
   /**
@@ -384,18 +378,17 @@ private:
   }
 
   double
-  compute_pressure_value(double A) const
+  compute_pressure_value(double A, unsigned int vessel_id) const
   {
-    // const auto &props = vessel_map.at(cell->user_index());
-    // const double current_E = props.E;
-    // const double current_ad = props.a_d;
-    // const double hwall = props.h_wall;
-    // const double current_p_d = props.p_d;
-    // const double beta = compute_beta_p(current_E, hwall);
-    const double Ad   = par["a_d"];
-    const double beta = compute_beta_p(par["E"], par["h_wall"]);
-
-    return par["p0"] + beta / Ad * (std::sqrt(A) - std::sqrt(Ad)) + par["p_d"];
+    const auto  &props      = vessel_map.at(vessel_id);
+    const double current_E  = props.E;
+    const double current_ad = props.a_d;
+    const double hwall      = props.h_wall;
+    const double current_pd = props.p_d;
+    const double beta       = compute_beta_p(current_E, hwall);
+    return props.p0 +
+           beta / current_ad * (std::sqrt(A) - std::sqrt(current_ad)) +
+           current_pd;
   }
 
   /**
@@ -403,11 +396,11 @@ private:
    */
 
   double
-  compute_pressure_derivative(const double area) const
+  compute_pressure_derivative(const double area, unsigned int vessel_id) const
   {
-    const double beta_p =
-      compute_beta_p(par["E"], par["h_wall"]); // Example wall thickness
-    return beta_p / (2.0 * std::sqrt(area) * par["a_d"]);
+    const auto  &props  = vessel_map.at(vessel_id);
+    const double beta_p = compute_beta_p(props.E, props.h_wall);
+    return beta_p / (2.0 * std::sqrt(area) * props.a_d);
   }
 
 
@@ -430,10 +423,12 @@ private:
                      const double U_L,
                      const double U_R,
                      const double bn_L,
-                     const double bn_R) const
+                     const double bn_R,
+                     unsigned int vessel_id_L,
+                     unsigned int vessel_id_R) const
   {
-    const double cL = compute_wave_speed(area_L);
-    const double cR = compute_wave_speed(area_R);
+    const double cL = compute_wave_speed(area_L, vessel_id_L);
+    const double cR = compute_wave_speed(area_R, vessel_id_R);
 
     // Multiply by bn (directional scaling)
     const double lambda1_L = (U_L - cL) * bn_L;
@@ -618,24 +613,27 @@ private:
    */
 
   std::array<double, 2>
-  lf_numerical_flux(double bn_L,
-                    double bn_R,
-                    double A_L,
-                    double U_L,
-                    double A_R,
-                    double U_R) const
+  lf_numerical_flux(double       bn_L,
+                    double       bn_R,
+                    double       A_L,
+                    double       U_L,
+                    double       A_R,
+                    double       U_R,
+                    unsigned int vessel_id_L,
+                    unsigned int vessel_id_R) const
   {
     // physical fluxes projected on normal
     double FAL = compute_scalar_physical_area_flux(bn_L, A_L, U_L);
     double FUL = compute_scalar_physical_momentum_flux(
-      bn_L, U_L, U_L, compute_pressure_value(A_L));
+      bn_L, U_L, U_L, compute_pressure_value(A_L, vessel_id_L));
 
 
     double FAR = compute_scalar_physical_area_flux(bn_R, A_R, U_R);
     double FUR = compute_scalar_physical_momentum_flux(
-      bn_R, U_R, U_R, compute_pressure_value(A_R));
+      bn_R, U_R, U_R, compute_pressure_value(A_R, vessel_id_R));
 
-    double beta  = compute_LF_penalty(A_L, A_R, U_L, U_R, bn_L, bn_R);
+    double beta = compute_LF_penalty(
+      A_L, A_R, U_L, U_R, bn_L, bn_R, vessel_id_L, vessel_id_R);
     double alpha = theta * beta;
     // LF flux
     double FLF_A = 0.5 * (FAL + FAR) - 0.5 * alpha * (A_R - A_L);
@@ -649,31 +647,34 @@ private:
    * For jacobian: linearized fluxes using current state
    */
   std::array<double, 2>
-  lf_numerical_flux_jacobian(double bn_L,
-                             double bn_R,
-                             double A_L,
-                             double U_L,
-                             double A_R,
-                             double U_R,
-                             double trial_A_L,
-                             double trial_U_L,
-                             double trial_A_R,
-                             double trial_U_R) const
+  lf_numerical_flux_jacobian(double       bn_L,
+                             double       bn_R,
+                             double       A_L,
+                             double       U_L,
+                             double       A_R,
+                             double       U_R,
+                             double       trial_A_L,
+                             double       trial_U_L,
+                             double       trial_A_R,
+                             double       trial_U_R,
+                             unsigned int vessel_id_L,
+                             unsigned int vessel_id_R) const
   {
     // Jacobian of physical fluxes projected on normal
     double FAL_jac = compute_scalar_physical_area_jacobian_flux(
       bn_L, A_L, trial_U_L, U_L, trial_A_L);
-    double c_L     = compute_wave_speed(A_L);
+    double c_L     = compute_wave_speed(A_L, vessel_id_L);
     double c_L_sq  = c_L * c_L;
     double FUL_jac = compute_scalar_physical_momentum_jacobian_flux(
       bn_L, c_L_sq, A_L, trial_A_L, U_L, trial_U_L);
     double FAr_jac = compute_scalar_physical_area_jacobian_flux(
       bn_R, A_R, trial_U_R, U_R, trial_A_R);
-    double c_R     = compute_wave_speed(A_R);
+    double c_R     = compute_wave_speed(A_R, vessel_id_R);
     double c_R_sq  = c_R * c_R;
     double FUR_jac = compute_scalar_physical_momentum_jacobian_flux(
       bn_R, c_R_sq, A_R, trial_A_R, U_R, trial_U_R);
-    double beta = compute_LF_penalty(A_L, A_R, U_L, U_R, bn_L, bn_R);
+    double beta = compute_LF_penalty(
+      A_L, A_R, U_L, U_R, bn_L, bn_R, vessel_id_L, vessel_id_R);
 
     double alpha = theta * beta;
     // LF flux jacobian
@@ -851,16 +852,18 @@ private:
    * Compute HLL flux at interface for residual computation
    */
   std::array<double, 2>
-  hll_numerical_flux(double bn_L,
-                     double bn_R,
-                     double A_L,
-                     double U_L,
-                     double A_R,
-                     double U_R) const
+  hll_numerical_flux(double       bn_L,
+                     double       bn_R,
+                     double       A_L,
+                     double       U_L,
+                     double       A_R,
+                     double       U_R,
+                     unsigned int vessel_id_L,
+                     unsigned int vessel_id_R) const
   {
     // wave speeds
-    double c_L = compute_wave_speed(A_L);
-    double c_R = compute_wave_speed(A_R);
+    double c_L = compute_wave_speed(A_L, vessel_id_L);
+    double c_R = compute_wave_speed(A_R, vessel_id_R);
 
     // For Roe averages, avg eigenvalues could be used instead of min/max
     // See sec 10.5 in "Riemann Solvers and Numerical Methods for Fluids
@@ -874,12 +877,12 @@ private:
     // physical fluxes projected on normal
     double FAL = compute_scalar_physical_area_flux(bn_L, A_L, U_L);
     double FUL = compute_scalar_physical_momentum_flux(
-      bn_L, U_L, U_L, compute_pressure_value(A_L));
+      bn_L, U_L, U_L, compute_pressure_value(A_L, vessel_id_L));
 
 
     double FAR = compute_scalar_physical_area_flux(bn_R, A_R, U_R);
     double FUR = compute_scalar_physical_momentum_flux(
-      bn_R, U_R, U_R, compute_pressure_value(A_R));
+      bn_R, U_R, U_R, compute_pressure_value(A_R, vessel_id_R));
 
 
     // Case 1: all waves go right
@@ -905,20 +908,22 @@ private:
    * For jacobian: linearized fluxes using current state
    */
   std::array<double, 2>
-  hll_numerical_flux_jacobian(double bn_L,
-                              double bn_R,
-                              double A_L,
-                              double U_L,
-                              double A_R,
-                              double U_R,
-                              double trial_A_L,
-                              double trial_U_L,
-                              double trial_A_R,
-                              double trial_U_R) const
+  hll_numerical_flux_jacobian(double       bn_L,
+                              double       bn_R,
+                              double       A_L,
+                              double       U_L,
+                              double       A_R,
+                              double       U_R,
+                              double       trial_A_L,
+                              double       trial_U_L,
+                              double       trial_A_R,
+                              double       trial_U_R,
+                              unsigned int vessel_id_L,
+                              unsigned int vessel_id_R) const
   {
     // wave speeds at current state
-    double c_L = compute_wave_speed(A_L);
-    double c_R = compute_wave_speed(A_R);
+    double c_L = compute_wave_speed(A_L, vessel_id_L);
+    double c_R = compute_wave_speed(A_R, vessel_id_R);
 
     double U_bar = 0.5 * (U_L + U_R);
     double c_bar = 0.5 * (c_L + c_R);
@@ -1006,8 +1011,10 @@ private:
   bool         use_riemann_invariants = false;
   bool         use_junction_mesh      = false;
   unsigned int n_refinement_cycles    = 1;
-  unsigned int n_global_refinements   = 5;
-  double       time                   = 0.0;
+  std::string  vtk_file_path =
+    "/home/rakshad/blood-flow/notebooks/bifurcation_physics.vtk";
+  unsigned int n_global_refinements = 5;
+  double       time                 = 0.0;
 
   // Numerical parameters
   double theta    = 0.5;
