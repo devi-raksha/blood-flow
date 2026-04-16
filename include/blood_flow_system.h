@@ -210,6 +210,7 @@ private:
   AffineConstraints<double> constraints;
   double                    P_peak;
   double                    current_dt;
+  double                    last_rcr_dt;
   // Key: Boundary ID, Value: Pressure at the previous time step
   // One capacitor pressure per terminal boundary
   std::map<types::boundary_id, double> terminal_Pc_storage;
@@ -244,7 +245,7 @@ private:
   // Structures to hold the "Physics" read from VTK
   struct VesselPhysicalProperties
   {
-    double a0, E, h_wall, p_d;
+    double a0, r_d, a_d, E, h_wall, p_d, p0, L;
   };
   std::map<unsigned int, VesselPhysicalProperties> vessel_map;
 
@@ -255,8 +256,9 @@ private:
   std::map<unsigned int, RCRPhysics> rcr_map;
 
   // Vectors to hold the "Physics" read from VTK data
-  Vector<double> cell_vessel_ids, cell_a0, cell_E, cell_h_wall, cell_p_d;
-  Vector<double> point_R1, point_R2, point_C, point_P_out;
+  Vector<double> cell_vessel_ids, cell_a0, cell_r_d, cell_a_d, cell_E,
+    cell_h_wall, cell_p_d, cell_p0, cell_L;
+  Vector<double> point_boundary_id, point_R1, point_R2, point_C, point_P_out;
 
   SUNDIALS::ARKode<Vector<double>>::AdditionalData arkode_parameters;
   NumericalFluxType numerical_flux_type     = NumericalFluxType::HLL;
@@ -350,7 +352,7 @@ private:
   double
   compute_wave_speed(const double area, unsigned int vessel_id) const
   {
-    const double eps    = 0;
+    const double eps    = 1e-10;
     const double A_safe = std::max(area, eps);
     const double dpda   = compute_pressure_derivative(area, vessel_id);
     return std::sqrt(A_safe / par["rho"] * dpda);
@@ -380,15 +382,11 @@ private:
   double
   compute_pressure_value(double A, unsigned int vessel_id) const
   {
-    const auto  &props      = vessel_map.at(vessel_id);
-    const double current_E  = props.E;
-    const double current_ad = props.a_d;
-    const double hwall      = props.h_wall;
-    const double current_pd = props.p_d;
-    const double beta       = compute_beta_p(current_E, hwall);
-    return props.p0 +
-           beta / current_ad * (std::sqrt(A) - std::sqrt(current_ad)) +
-           current_pd;
+    const auto &vpp =
+      vessel_map.at(vessel_id); // vessel_physical_properties(vpp)
+    const double beta = compute_beta_p(vpp.E, vpp.h_wall);
+    return vpp.p0 + beta / vpp.a_d * (std::sqrt(A) - std::sqrt(vpp.a_d)) +
+           vpp.p_d;
   }
 
   /**
@@ -398,24 +396,11 @@ private:
   double
   compute_pressure_derivative(const double area, unsigned int vessel_id) const
   {
-    const auto  &props  = vessel_map.at(vessel_id);
-    const double beta_p = compute_beta_p(props.E, props.h_wall);
-    return beta_p / (2.0 * std::sqrt(area) * props.a_d);
+    const auto  &vpp    = vessel_map.at(vessel_id);
+    const double beta_p = compute_beta_p(vpp.E, vpp.h_wall);
+    return beta_p / (2.0 * vpp.a_d * std::sqrt(area));
   }
 
-
-
-  // /**
-  //  * Compute pressure derivative dP/dA for shiftyed tube law
-  //  */
-  // double
-  // compute_pressure_derivative(const double area) const
-  // {
-  //   const double eps   = 0; // to avoid zero division
-  //   const double ratio = std::max(area / par["a0"], eps);
-  //   const double m     = par["m"];
-  //   return par["E"] * m * std::pow(ratio, m - 1.0) / par["a0"];
-  // }
 
   double
   compute_LF_penalty(const double area_L,
@@ -977,9 +962,7 @@ private:
     double                                                         &A,
     double                                                         &U) const;
 
-
-
-  //   private:
+  //  private:
   // Mesh and finite elements
   Triangulation<dim, spacedim>                  triangulation;
   DoFHandler<dim, spacedim>                     dof_handler;
@@ -1015,6 +998,8 @@ private:
     "/home/rakshad/blood-flow/notebooks/bifurcation_physics.vtk";
   unsigned int n_global_refinements = 5;
   double       time                 = 0.0;
+  double       last_accepted_time   = 0.0; // updated only at accepted steps
+  double       last_accepted_dt     = 0.0;
 
   // Numerical parameters
   double theta    = 0.5;
@@ -1026,8 +1011,6 @@ private:
   friend void
   test();
 
-
-  ParsedTools::Function<spacedim> initial_condition;
   ParsedTools::Function<spacedim> rhs_function;
   ParsedTools::Function<spacedim> exact_solution;
   ParsedTools::Function<1> inflow_function; // inflow depends on time only

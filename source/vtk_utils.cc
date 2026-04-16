@@ -40,14 +40,12 @@ namespace VTKUtils
            Triangulation<dim, spacedim> &tria,
            const bool                    cleanup)
   {
+    (void)cleanup;
     auto reader = vtkSmartPointer<vtkUnstructuredGridReader>::New();
     reader->SetFileName(vtk_filename.c_str());
     reader->Update();
     vtkUnstructuredGrid *grid = reader->GetOutput();
     AssertThrow(grid, ExcMessage("Failed to read VTK file: " + vtk_filename));
-
-   
-    
 
     // Read points
     vtkPoints                   *vtk_points = grid->GetPoints();
@@ -189,6 +187,9 @@ namespace VTKUtils
   {
     auto reader = vtkSmartPointer<vtkUnstructuredGridReader>::New();
     reader->SetFileName(vtk_filename.c_str());
+    reader->ReadAllScalarsOn();
+    reader->ReadAllVectorsOn();
+    reader->ReadAllFieldsOn();
     reader->Update();
     vtkUnstructuredGrid *grid = reader->GetOutput();
     AssertThrow(grid, ExcMessage("Failed to read VTK file: " + vtk_filename));
@@ -212,6 +213,9 @@ namespace VTKUtils
   {
     auto reader = vtkSmartPointer<vtkUnstructuredGridReader>::New();
     reader->SetFileName(vtk_filename.c_str());
+    reader->ReadAllScalarsOn();
+    reader->ReadAllVectorsOn();
+    reader->ReadAllFieldsOn();
     reader->Update();
     vtkUnstructuredGrid *grid = reader->GetOutput();
     AssertThrow(grid, ExcMessage("Failed to read VTK file: " + vtk_filename));
