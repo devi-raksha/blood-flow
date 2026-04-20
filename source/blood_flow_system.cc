@@ -1055,7 +1055,7 @@ BloodFlowSystem<dim, spacedim>::assemble_jacobian(const double          t,
 
         if (boundary_id == 0) // INFLOW: Prescribed Q_in(t)
           {
-            const double t_shifted = t + 0.055;
+            const double t_shifted = t; // +0.055
             inflow_function.set_time(t_shifted);
             const double Qin = inflow_function.value(Point<1>(t_shifted));
             for (unsigned int it = 0; it < 20; ++it)
@@ -1099,7 +1099,10 @@ BloodFlowSystem<dim, spacedim>::assemble_jacobian(const double          t,
                 const double C  = rcr.C;
                 // const double Pc = terminal_Pc_storage.at(boundary_id);
                 const double dt_local = current_dt;
-                double       Pc_old   = 0.0;
+                // std::cout << "Assembling RCR boundary Jacobian with dt=" <<
+                // dt_local
+                //           << std::endl;
+                double Pc_old = 0.0;
                 try
                   {
                     Pc_old = terminal_Pc_storage.at(boundary_id);
@@ -1148,11 +1151,10 @@ BloodFlowSystem<dim, spacedim>::assemble_jacobian(const double          t,
                   }
                 U_star =
                   W1_L - 4.0 * (compute_wave_speed(A_star, vessel_id) - c0);
-                // const double Q_star = A_star * U_star;
-                // const double Pc_star =
-                //   (Pc_old + (dt_local/ C) * (Q_star + rcr.P_out / R2)) /
-                //   denom;
-                // terminal_Pc_storage[boundary_id] = Pc_star;
+                const double Q_star = A_star * U_star;
+                const double Pc_star =
+                  (Pc_old + (dt_local / C) * (Q_star + rcr.P_out / R2)) / denom;
+                terminal_Pc_storage[boundary_id] = Pc_star;
                 const double dPc_dA_partial = (dt_local / C) * U_star / denom;
                 // // Final state sync and Jacobian for sensitivity (Step 4)
 
@@ -1252,17 +1254,17 @@ BloodFlowSystem<dim, spacedim>::assemble_jacobian(const double          t,
             double bn_R = bn_L;
 
             auto [dFA_dir, dFU_dir]     = numerical_flux_jacobian(bn_L,
-                                                              bn_R,
-                                                              A_L,
-                                                              U_L,
-                                                              A_star,
-                                                              U_star,
-                                                              dAL_trial,
-                                                              dUL_trial,
-                                                              0.0,
-                                                              0.0,
-                                                              vessel_id,
-                                                              vessel_id);
+                                                                  bn_R,
+                                                                  A_L,
+                                                                  U_L,
+                                                                  A_star,
+                                                                  U_star,
+                                                                  dAL_trial,
+                                                                  dUL_trial,
+                                                                  0.0,
+                                                                  0.0,
+                                                                  vessel_id,
+                                                                  vessel_id);
             auto [dFA_chain, dFU_chain] = numerical_flux_jacobian(bn_L,
                                                                   bn_R,
                                                                   A_L,
@@ -1647,7 +1649,7 @@ BloodFlowSystem<dim, spacedim>::assemble_implicit_function(
         FullMatrix<double> J_boundary_local(2, 2);
         if (boundary_id == 0) // INFLOW: Prescribed Q_in(t)
           {
-            const double t_shifted = t + 0.055;
+            const double t_shifted = t; // +0.055
             inflow_function.set_time(t_shifted);
             const double Qin = inflow_function.value(Point<1>(t_shifted));
             // std::cout << "t=" << t << " Qin=" << Qin << std::endl;
@@ -1707,6 +1709,7 @@ BloodFlowSystem<dim, spacedim>::assemble_implicit_function(
                   }
                 const double dt_local = current_dt;
 
+
                 // const double Pc = terminal_Pc_storage.at(boundary_id);
                 // double Pc_star =
                 //   Pc_old; // Initial guess for Pc at new time level
@@ -1744,8 +1747,7 @@ BloodFlowSystem<dim, spacedim>::assemble_implicit_function(
 
                 // const double Q_star = A_star * U_star;
                 // const double Pc_star =
-                //   (Pc_old + (dt_local/ C) * (Q_star + rcr.P_out / R2)) /
-                //   denom;
+                //   (Pc_old + (dt_local / C) * (Q_star + rcr.P_out / R2)) / denom;
                 // terminal_Pc_storage[boundary_id] = Pc_star;
               }
 
@@ -2085,9 +2087,10 @@ BloodFlowSystem<dim, spacedim>::update_terminal_pressures(
 
 
               //  Optional debug
-              if (q == 0)
-                std::cout << "DEBUG: A=" << A_values[q] << " U=" << U_values[q]
-                          << " Q=" << Q_local << std::endl;
+              // if (q == 0)
+              //   std::cout << "DEBUG: A=" << A_values[q] << " U=" <<
+              //   U_values[q]
+              //             << " Q=" << Q_local << std::endl;
             }
         }
     }
@@ -2114,9 +2117,9 @@ BloodFlowSystem<dim, spacedim>::update_terminal_pressures(
       Pc_old = Pc_new;
 
       // Debug output
-      if (std::abs(Q_tot) > 1e-10)
-        std::cout << "Step Update: Boundary " << bid << " Q=" << Q_tot
-                  << " Pc: " << Pc_old << std::endl;
+      // if (std::abs(Q_tot) > 1e-10)
+      //   std::cout << "Step Update: Boundary " << bid << " Q=" << Q_tot
+      //             << " Pc: " << Pc_old << std::endl;
     }
 }
 // ========================================================================
@@ -2407,6 +2410,10 @@ BloodFlowSystem<dim, spacedim>::run()
         [this](const double t, const Vector<double> &y, Vector<double> &Mydot) {
           deallog.push("implicit_function");
           deallog << "Called implicit_function t=" << t << std::endl;
+          double dt_internal = this->current_dt;
+          if (dt_internal <= 0)
+            dt_internal = arkode_parameters.initial_step_size;
+          this->update_terminal_pressures(dt_internal, y);
           assemble_implicit_function(t, y, Mydot);
           deallog.pop();
         };
@@ -2481,10 +2488,27 @@ BloodFlowSystem<dim, spacedim>::run()
         const unsigned int actual_step_number =
           (t - arkode_parameters.initial_time) /
           arkode_parameters.output_period;
+        static double t_old = -1.0;
 
-        this->current_dt = (actual_step_number == 0) ? 0.0 : (t - this->time);
-        // update_terminal_pressures(this->current_dt, sol);
+        if (t_old < 0.0)
+          {
+            t_old = t;
+            return;
+          }
 
+        // ignore duplicate calls at same time
+        if (std::abs(t - t_old) < 1e-14)
+          {
+            return;
+          }
+
+        double dt        = t - t_old;
+        this->current_dt = dt;
+
+
+        std::cout << "dt used = " << dt << std::endl;
+
+        t_old = t;
         for (const auto &cell : dof_handler.active_cell_iterators())
           {
             if (!cell->is_locally_owned())
@@ -2536,16 +2560,12 @@ BloodFlowSystem<dim, spacedim>::run()
       time = arkode_parameters.initial_time;
       while (time < arkode_parameters.final_time)
         {
-          double             t_old = time;
           const unsigned int n_timesteps =
             ode.solve_ode_incrementally(solution,
                                         time + arkode_parameters.output_period,
                                         true);
           std::cout << "  ARKode intermediate steps: " << n_timesteps
                     << std::endl;
-          double dt = (time + arkode_parameters.output_period) - t_old;
-
-          update_terminal_pressures(dt, solution);
 
           time += arkode_parameters.output_period;
         }
