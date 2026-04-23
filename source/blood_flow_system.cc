@@ -2023,9 +2023,9 @@ BloodFlowSystem<dim, spacedim>::update_terminal_pressures(
               Q_accumulated[bid] += Q_local;
 
               // Optional debug
-              if (q == 0)
-                std::cout << "DEBUG: A=" << A_values[q] << " U=" << U_values[q]
-                          << " Q=" << Q_local << std::endl;
+              // if (q == 0)
+              //   std::cout << "DEBUG: A=" << A_values[q] << " U=" << U_values[q]
+              //             << " Q=" << Q_local << std::endl;
             }
         }
     }
@@ -2051,9 +2051,9 @@ BloodFlowSystem<dim, spacedim>::update_terminal_pressures(
       Pc_old = Pc_new;
 
       // Debug output
-      if (std::abs(Q_tot) > 1e-10)
-        std::cout << "Step Update: Boundary " << bid << " Q=" << Q_tot
-                  << " Pc: " << Pc_old << std::endl;
+      // if (std::abs(Q_tot) > 1e-10)
+      //   std::cout << "Step Update: Boundary " << bid << " Q=" << Q_tot
+      //             << " Pc: " << Pc_old << std::endl;
     }
 }
 // ========================================================================
@@ -2377,6 +2377,7 @@ BloodFlowSystem<dim, spacedim>::run()
         [this](const double t, const Vector<double> &y, Vector<double> &Mydot) {
           deallog.push("implicit_function");
           deallog << "Called implicit_function t=" << t << std::endl;
+         // update_terminal_pressures(this->current_dt, y);
           assemble_implicit_function(t, y, Mydot);
           deallog.pop();
         };
