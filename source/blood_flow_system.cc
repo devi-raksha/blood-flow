@@ -166,13 +166,14 @@ BloodFlowSystem<dim, spacedim>::detect_junctions()
       // If it's 2, it's just a continuous pipe (usually handled by deal.II
       // automatically).
       // If we want to solve the junction equations manually,
-      // use >= 2 then every inlet vertex is treated as junction and we solve
+      // use > 2 then every inlet vertex is treated as junction and we solve
       // the junction equations at inlets as well.
       if (attached_faces.size() > 2)
         {
           JunctionInfo<dim, spacedim> J;
           J.point = triangulation.get_vertices()[v_idx];
 
+          unsigned int face_idx = 0;
           for (const auto &face_info : attached_faces)
             {
               JunctionFace<dim, spacedim> jf;
@@ -185,6 +186,11 @@ BloodFlowSystem<dim, spacedim>::detect_junctions()
               // Mark for assembly
               all_junction_faces.insert(
                 std::make_pair(jf.cell->id(), jf.face_no));
+              std::cout << "Junction face " << face_idx
+                        << ": cell_id=" << jf.cell->id()
+                        << ", face_no=" << jf.face_no
+                        << ", orientation=" << jf.orientation << std::endl;
+              ++face_idx;
             }
           junctions.push_back(J);
         }
@@ -216,6 +222,7 @@ BloodFlowSystem<dim, spacedim>::compute_junction_residual(
       R[0] += s * X.A(i) * X.U(i);
     }
 
+  //std::cout  << " mass residual at junction = " << R[0] << std::endl;
   // 2. Pressure Continuity: H_0 - H_i = 0
   double H0 =
     0.5 * std::pow(X.U(0), 2) +
@@ -227,15 +234,19 @@ BloodFlowSystem<dim, spacedim>::compute_junction_residual(
         compute_pressure_value(X.A(i), junction.faces[i].cell->material_id()) /
           rho;
       R[i] = H0 - Hi;
+      //std::cout << " pressure continuity at junction = " << R[i] << std::endl;
     }
-
+  
   // 3. Compatibility: U_i + s_i * 4c_i - W_in_i = 0
   for (unsigned int i = 0; i < K; ++i)
     {
       double s = static_cast<double>(junction.faces[i].orientation);
       double c = compute_wave_speed(std::max(X.A(i), Amin),
                                     junction.faces[i].cell->material_id());
-      R[K + i] = (X.U(i) + s * 4.0 * c) - W_in[i];
+      unsigned int vid = junction.faces[i].cell->material_id();
+      const double c0  = compute_wave_speed(vessel_map.at(vid).a_d, vid);                              
+      R[K + i] = (X.U(i) + s * 4.0 * (c-c0)) - W_in[i];
+      //std::cout << " compatibility at junction = " << R[K + i] << std::endl;
     }
 }
 
@@ -337,8 +348,9 @@ BloodFlowSystem<dim, spacedim>::assemble_junction_residual(
 
   const double A_min = 1e-10;
 
-  for (const auto &J : junctions)
+  for (unsigned int jid = 0; jid < junctions.size(); ++jid)
     {
+      const auto        &J = junctions[jid];
       const unsigned int K = J.faces.size();
 
       std::vector<double> A(K), U(K), W_in(K);
@@ -353,28 +365,36 @@ BloodFlowSystem<dim, spacedim>::assemble_junction_residual(
           const double s   = static_cast<double>(J.faces[i].orientation);
 
           const double c = compute_wave_speed(std::max(A[i], A_min), vid);
-
+          const auto  &vpp = vessel_map.at(vid);
           // incoming invariant
-          W_in[i] = U[i] + s * 4.0 * c;
+          const double c0 =
+            compute_wave_speed(vpp.a_d, vid);
+          W_in[i] = U[i] + s * 4.0 * (c - c0);
         }
 
       // =====================================================
       // 2. Solve junction nonlinear system
       // =====================================================
-      JunctionState X0;
-      X0.X.reinit(2 * K);
+      // JunctionState X0;
+      // X0.X.reinit(2 * K);
 
-      for (unsigned int i = 0; i < K; ++i)
-        {
-          X0.A(i) = A[i];
-          X0.U(i) = U[i];
-        }
+      // for (unsigned int i = 0; i < K; ++i)
+      //   {
+      //     X0.A(i)        = A[i];
+      //     X0.U(i)        = U[i];
+      //   }
 
-      JunctionState X = junction_solver.solve(X0, W_in, J, *this);
-
+      // //std::cout << "  → Solving junction system..." << std::endl;
+      // JunctionState X = junction_solver.solve(X0, W_in, J, *this);
+      //std::cout << "  ✓ Junction solved. Star state: ";
+      //for (unsigned int i = 0; i < K; ++i)
+        //std::cout << "A" << i << "=" << X.A(i) << " U" << i << "=" << X.U(i) << " ";
+      //std::cout << std::endl;
+      const JunctionState &X = cached_junction_states[jid];
       // =====================================================
       // 3. Assemble DG flux using star state
       // =====================================================
+      //std::cout << "  → Assembling junction fluxes..." << std::endl;
       for (unsigned int face_idx = 0; face_idx < K; ++face_idx)
         {
           const auto  &fd        = J.faces[face_idx];
@@ -411,7 +431,7 @@ BloodFlowSystem<dim, spacedim>::assemble_junction_residual(
                 U_star,
                 vessel_id,
                 vessel_id);
-
+             
               for (unsigned int i = 0; i < fe->n_dofs_per_cell(); ++i)
                 {
                   const unsigned int comp =
@@ -423,7 +443,9 @@ BloodFlowSystem<dim, spacedim>::assemble_junction_residual(
                 }
             }
         }
+      //std::cout << "  ✓ Junction fluxes assembled." << std::endl;
     }
+  //std::cout << "✓ All junctions assembled successfully." << std::endl;
 }
 
 // .........................................................
@@ -433,7 +455,7 @@ BloodFlowSystem<dim, spacedim>::assemble_junction_residual(
 // state to variations in the interior states
 // and then applying the Jacobian of the numerical flux with respect to these
 // variations.
-// ................................................................
+// ........................................................
 
 template <int dim, int spacedim>
 void
@@ -453,8 +475,9 @@ BloodFlowSystem<dim, spacedim>::assemble_junction_jacobian(
 
   const double A_min = 1e-10;
 
-  for (const auto &J : junctions)
+  for (unsigned int jid = 0; jid < junctions.size(); ++jid)
     {
+      const auto        &J = junctions[jid];
       const unsigned int K = J.faces.size();
 
       std::vector<double> A(K), U(K), W_in(K);
@@ -468,23 +491,25 @@ BloodFlowSystem<dim, spacedim>::assemble_junction_jacobian(
           unsigned int vid = J.faces[i].cell->material_id();
           const double s   = static_cast<double>(J.faces[i].orientation);
           const double c   = compute_wave_speed(std::max(A[i], A_min), vid);
-
-          W_in[i] = U[i] + s * 4.0 * c;
+          const auto  &vpp = vessel_map.at(vid);
+          const double c0  = compute_wave_speed(vpp.a_d, vid);
+          W_in[i] = U[i] + s * 4.0 * (c - c0);
         }
 
       // ----------------------------------------------------
       // 2. Solve junction nonlinear system
       // ----------------------------------------------------
-      JunctionState X0;
-      X0.X.reinit(2 * K);
+      // JunctionState X0;
+      // X0.X.reinit(2 * K);
 
-      for (unsigned int i = 0; i < K; ++i)
-        {
-          X0.A(i) = A[i];
-          X0.U(i) = U[i];
-        }
+      // for (unsigned int i = 0; i < K; ++i)
+      //   {
+      //     X0.A(i) = A[i];
+      //     X0.U(i) = U[i];
+      //   }
 
-      JunctionState X = junction_solver.solve(X0, W_in, J, *this);
+      // JunctionState X = junction_solver.solve(X0, W_in, J, *this);
+      const JunctionState &X = cached_junction_states[jid];
 
       // ----------------------------------------------------
       // 3. Junction Jacobian inverse
@@ -534,7 +559,7 @@ BloodFlowSystem<dim, spacedim>::assemble_junction_jacobian(
                   const double bn_L =
                     compute_tangent_normal_product(fd.cell, normals[q]);
                   const double bn_R = bn_L;
-                  ;
+                  
                   // --------------------------------------------------
                   // (a) Direct DG derivative
                   // --------------------------------------------------
@@ -550,7 +575,6 @@ BloodFlowSystem<dim, spacedim>::assemble_junction_jacobian(
                                                                     0.0,
                                                                     vessel_id,
                                                                     vessel_id);
-
 
                   // --------------------------------------------------
                   // (b) Star state sensitivity
@@ -603,7 +627,129 @@ BloodFlowSystem<dim, spacedim>::assemble_junction_jacobian(
     }
 }
 
+template <int dim, int spacedim>
+void
+BloodFlowSystem<dim, spacedim>::update_junction_states(const Vector<double> &y)
+{
+  if (junctions.empty())
+    return;
 
+  cached_junction_states.clear();
+  cached_junction_states.resize(junctions.size());
+
+  const double A_min = 1e-10;
+
+  static bool junction_geometry_printed = false;
+
+  for (unsigned int jid = 0; jid < junctions.size(); ++jid)
+    {
+      const auto        &J = junctions[jid];
+      const unsigned int K = J.faces.size();
+
+      std::vector<double> A(K), U(K), W_in(K);
+
+      // ── Print junction geometry once ──
+      if (!junction_geometry_printed)
+        {
+          std::cout << "[Junction " << jid << "] point: " << J.point
+                    << std::endl;
+          for (unsigned int i = 0; i < K; ++i)
+            {
+              const unsigned int face_no = J.faces[i].face_no;
+              const unsigned int v_idx = J.faces[i].cell->vertex_index(face_no);
+              const Point<3>     v_pos = J.faces[i].cell->vertex(face_no);
+              std::cout << "  Face " << i << " vertex_index=" << v_idx
+                        << " vertex_pos=" << v_pos << std::endl;
+            }
+          junction_geometry_printed = true;
+        }
+
+      // ── Extract traces ──
+      bool traces_physical = true;
+      for (unsigned int i = 0; i < K; ++i)
+        {
+          get_trace(y, J.faces[i].cell, J.faces[i].face_no, A[i], U[i]);
+
+          unsigned int vid   = J.faces[i].cell->material_id();
+          const auto  &vpp   = vessel_map.at(vid);
+          const double c_ref = compute_wave_speed(vpp.a_d, vid);
+
+          // Check physical bounds — ARKode Newton iterates can be unphysical
+          if (A[i] < A_min || A[i] > 10.0 * vpp.a_d ||
+              std::abs(U[i]) > 3.0 * c_ref)
+            {
+              traces_physical = false;
+              break;
+            }
+
+          const double s  = static_cast<double>(J.faces[i].orientation);
+          const double c  = compute_wave_speed(std::max(A[i], A_min), vid);
+          const double c0 = compute_wave_speed(vpp.a_d, vid);
+          W_in[i]         = U[i] + s * 4.0 * (c - c0);
+        }
+
+      // ── If traces are unphysical, use diastolic rest state ──
+      if (!traces_physical)
+        {
+          for (unsigned int i = 0; i < K; ++i)
+            {
+              const auto &vpp_i = vessel_map.at(J.faces[i].cell->material_id());
+              cached_junction_states[jid].X.reinit(2 * K);
+              cached_junction_states[jid].A(i) = vpp_i.a_d;
+              cached_junction_states[jid].U(i) = 0.0;
+            }
+          continue; // skip Newton solve
+        }
+
+      // ── Physical initial guess ──
+      JunctionState X0;
+      X0.X.reinit(2 * K);
+      for (unsigned int i = 0; i < K; ++i)
+        {
+          const auto  &vpp = vessel_map.at(J.faces[i].cell->material_id());
+          const double s   = static_cast<double>(J.faces[i].orientation);
+
+          X0.A(i) = std::max(A[i], vpp.a_d * 0.5);
+
+          // Enforce physically correct flow direction:
+          // s=+1 (aorta, junction at right end): U should be positive (forward)
+          // s=-1 (daughter, junction at left end): U should be positive
+          // (forward) In both cases the physical flow at junction is U > 0
+          if (std::abs(U[i]) > 1e-10)
+            X0.U(i) = std::abs(U[i]); // always positive — forward flow
+          else
+            X0.U(i) = 0.01 * compute_wave_speed(X0.A(i),
+                                                J.faces[i].cell->material_id());
+        }
+
+      // ── Solve junction nonlinear system ──
+      cached_junction_states[jid] = junction_solver.solve(X0, W_in, J, *this);
+
+      if (time > 0.018 && time < 0.022)
+        {
+          Vector<double> R(2 * K);
+          compute_junction_residual(cached_junction_states[jid], W_in, J, R);
+          std::cout << "[Junc t=" << time << "] residual=" << R.l2_norm()
+                    << std::endl;
+          for (unsigned int i = 0; i < K; ++i)
+            std::cout << "  vessel " << i
+                      << " A*=" << cached_junction_states[jid].A(i)
+                      << " U*=" << cached_junction_states[jid].U(i)
+                      << " W_in=" << W_in[i] << std::endl;
+        }
+      // ── Residual check (silent unless large) ──
+      Vector<double> R_check(2 * K);
+      compute_junction_residual(cached_junction_states[jid], W_in, J, R_check);
+      static double max_res_seen = 0.0;
+      const double  res_norm     = R_check.l2_norm();
+      if (res_norm > max_res_seen && res_norm > 1e-4)
+        {
+          max_res_seen = res_norm;
+          std::cout << "[Junction " << jid << "] NEW MAX residual=" << res_norm
+                    << " at t=" << time << std::endl;
+        }
+    }
+}
 // ========================================================================
 // SETUP SYSTEM
 // ========================================================================
@@ -1010,7 +1156,7 @@ BloodFlowSystem<dim, spacedim>::assemble_jacobian(const double          t,
     };
 
   //========== BOUNDARY WORKER – CONSISTENT A/U RIEMANN BOUNDARY ==========
-
+  const double dt = this->current_dt;
   auto boundary_worker_riemann_invariant = [&](
                                              const Iterator    &cell,
                                              const unsigned int face_no,
@@ -1043,7 +1189,7 @@ BloodFlowSystem<dim, spacedim>::assemble_jacobian(const double          t,
         const double c_L     = compute_wave_speed(A_L, vessel_id);
         const double dc_dA_L = compute_wave_speed_derivative(A_L, vessel_id);
         const double c0      = compute_wave_speed(Ad, vessel_id);
-        // const double c0      = compute_wave_speed(vpp.a0, vessel_id);
+        
         const double W1_L =
           U_L + 4.0 * (c_L - c0); // OUTGOING FOR TERMINAL BOUNDARY
         const double W2_L = U_L - 4.0 * (c_L - c0); // INCOMING FOR INLET
@@ -1055,7 +1201,7 @@ BloodFlowSystem<dim, spacedim>::assemble_jacobian(const double          t,
 
         if (boundary_id == 0) // INFLOW: Prescribed Q_in(t)
           {
-            const double t_shifted = t; // +0.055
+            const double t_shifted = t; 
             inflow_function.set_time(t_shifted);
             const double Qin = inflow_function.value(Point<1>(t_shifted));
             for (unsigned int it = 0; it < 20; ++it)
@@ -1097,11 +1243,6 @@ BloodFlowSystem<dim, spacedim>::assemble_jacobian(const double          t,
                 const double R1 = rcr.R1;
                 const double R2 = rcr.R2;
                 const double C  = rcr.C;
-                // const double Pc = terminal_Pc_storage.at(boundary_id);
-                const double dt_local = current_dt;
-                // std::cout << "Assembling RCR boundary Jacobian with dt=" <<
-                // dt_local
-                //           << std::endl;
                 double Pc_old = 0.0;
                 try
                   {
@@ -1115,13 +1256,8 @@ BloodFlowSystem<dim, spacedim>::assemble_jacobian(const double          t,
                         "Boundary ID not found in Pc storage. Initialize it in setup_system."));
                   }
 
-                // const double Pc_old = terminal_Pc_storage.at(boundary_id);
-
-                const double denom = 1.0 + dt_local / (C * R2);
-                // double Pc_star = Pc_old; // Initial guess for Pc at new time
-                // level
-                //     double dPc_star_dA = 0.0;
-
+               // const double denom = 1.0 + dt / (C * R2);
+                
                 for (unsigned int it = 0; it < 20; ++it)
                   {
                     const double A  = std::max(A_star, 1e-12);
@@ -1134,45 +1270,32 @@ BloodFlowSystem<dim, spacedim>::assemble_jacobian(const double          t,
                       A * (-4.0 * compute_wave_speed_derivative(A, vessel_id));
 
                     // DISCRETIZATION: Use current_dt from ARKode
-                    const double Pc_star =
-                      (Pc_old + (dt_local / C) * (Q + rcr.P_out / R2)) / denom;
-                    const double dPc_star_dA = (dt_local / C) * (dQdA) / denom;
+                    // const double Pc_star =
+                    //   (Pc_old + (dt / C) * (Q + rcr.P_out / R2)) / denom;
+                    // const double dPc_star_dA = (dt / C) * (dQdA) / denom;
+                    // const double Pc_star =
+                    //   (Pc_old + (current_dt / C) * (Q + rcr.P_out / R2)) /
+                    //   (1.0 + dt / (C * R2));
+                    // const double dPc_star_dA =
+                    //   (dt / C) * (dQdA) / (1.0 + dt / (C * R2));
 
-                    const double F = Pe - (R1 * Q + Pc_star);
+                    const double F = Pe - (R1 * Q + Pc_old); // - Pc_star);
                     const double dF_dA =
                       compute_pressure_derivative(A, vessel_id) -
-                      (R1 * dQdA + dPc_star_dA);
+                      (R1 * dQdA /*+ dPc_star_dA*/);
 
                     const double step = F / dF_dA;
                     A_star -= step;
-
                     if (std::abs(step) < 1e-12)
                       break;
                   }
                 U_star =
                   W1_L - 4.0 * (compute_wave_speed(A_star, vessel_id) - c0);
-                const double Q_star = A_star * U_star;
-                const double Pc_star =
-                  (Pc_old + (dt_local / C) * (Q_star + rcr.P_out / R2)) / denom;
-                terminal_Pc_storage[boundary_id] = Pc_star;
-                const double dPc_dA_partial = (dt_local / C) * U_star / denom;
-                // // Final state sync and Jacobian for sensitivity (Step 4)
-
+                
                 J_boundary_local(0, 0) =
-                  compute_pressure_derivative(A_star, vessel_id) - R1 * U_star -
-                  dPc_dA_partial;
+                  compute_pressure_derivative(A_star, vessel_id) - R1 * U_star;
+                  //  - dPc_dA_partial;
 
-                // const double dQ_dA_star =
-                //   U_star +
-                //   A_star *
-                //     (-4.0 * compute_wave_speed_derivative(A_star,
-                //     vessel_id));
-                // // const double dPc_dA_star =
-                // //   (current_dt_local/ C) * dQ_dA_star / denom;
-
-                // J_boundary_local(0, 0) =
-                //   compute_pressure_derivative(A_star, vessel_id) -
-                //   R1 * dQ_dA_star;
                 J_boundary_local(0, 1) = -R1 * A_star;
                 J_boundary_local(1, 0) =
                   4.0 * compute_wave_speed_derivative(A_star, vessel_id);
@@ -1346,7 +1469,7 @@ BloodFlowSystem<dim, spacedim>::assemble_jacobian(const double          t,
                             boundary_worker_with_characteristics,
                             face_worker);
     }
-
+  update_junction_states(y);
   assemble_junction_jacobian(y);
   deallog.pop();
 }
@@ -1368,7 +1491,7 @@ BloodFlowSystem<dim, spacedim>::assemble_implicit_function(
   using Iterator = typename DoFHandler<dim, spacedim>::active_cell_iterator;
 
   Mydot = 0;
-
+  
   const FEValuesExtractors::Scalar area_extractor(0);
   const FEValuesExtractors::Scalar velocity_extractor(1);
 
@@ -1605,7 +1728,7 @@ BloodFlowSystem<dim, spacedim>::assemble_implicit_function(
     };
 
   //========== BOUNDARY WORKER – CONSISTENT A/U RIEMANN BOUNDARY ==========
-
+  const double dt = this->current_dt;
   auto boundary_worker_riemann_invariant = [&](
                                              const Iterator    &cell,
                                              const unsigned int face_no,
@@ -1638,7 +1761,7 @@ BloodFlowSystem<dim, spacedim>::assemble_implicit_function(
         const double U_L = Uh[q];
         const double c_L = compute_wave_speed(A_L, vessel_id);
         const double c0  = compute_wave_speed(Ad, vessel_id);
-        // const double c0  = compute_wave_speed(vpp.a0, vessel_id);
+        const double bn_L = compute_tangent_normal_product(cell, normals[q]);
 
         const double W1_L =
           U_L + 4.0 * (c_L - c0); // OUTGOING FOR TERMINAL BOUNDARY
@@ -1647,12 +1770,13 @@ BloodFlowSystem<dim, spacedim>::assemble_implicit_function(
         double             A_star = A_L;
         double             U_star = U_L;
         FullMatrix<double> J_boundary_local(2, 2);
-        if (boundary_id == 0) // INFLOW: Prescribed Q_in(t)
+        if (boundary_id == 0) 
           {
-            const double t_shifted = t; // +0.055
+            const double t_shifted = t;
+            
             inflow_function.set_time(t_shifted);
-            const double Qin = inflow_function.value(Point<1>(t_shifted));
-            // std::cout << "t=" << t << " Qin=" << Qin << std::endl;
+            const double Qin =  inflow_function.value(Point<1>(t_shifted));
+          
             for (unsigned int it = 0; it < 20; ++it)
               {
                 const double A  = std::max(A_star, A_min);
@@ -1682,6 +1806,7 @@ BloodFlowSystem<dim, spacedim>::assemble_implicit_function(
                 if (delta.l2_norm() < 1e-12)
                   break;
               }
+            
           }
         else // ================= OUTLET BOUNDARY =================
           {
@@ -1707,15 +1832,8 @@ BloodFlowSystem<dim, spacedim>::assemble_implicit_function(
                       ExcMessage(
                         "Boundary ID not found in Pc storage. Initialize it in setup_system."));
                   }
-                const double dt_local = current_dt;
-
-
-                // const double Pc = terminal_Pc_storage.at(boundary_id);
-                // double Pc_star =
-                //   Pc_old; // Initial guess for Pc at new time level
-                // double dPc_star_dA = 0.0;
-                // const double Pc_old = terminal_Pc_storage.at(boundary_id);
-                double denom = 1.0 + dt_local / (C * R2);
+                
+               // double denom = 1.0 + dt / (C * R2);
                 for (unsigned int it = 0; it < 20; ++it)
                   {
                     const double A  = std::max(A_star, 1e-12);
@@ -1727,15 +1845,15 @@ BloodFlowSystem<dim, spacedim>::assemble_implicit_function(
                       U +
                       A * (-4.0 * compute_wave_speed_derivative(A, vessel_id));
 
-                    // DISCRETIZATION: Use dt_localfrom ARKode
-                    const double Pc_star =
-                      (Pc_old + (dt_local / C) * (Q + P_out / R2)) / denom;
-                    const double dPc_star_dA = (dt_local / C) * (dQdA) / denom;
-
-                    const double F = Pe - (R1 * Q + Pc_star);
+                    // DISCRETIZATION: Use dtfrom ARKode
+                    // const double Pc_star =
+                    //   (Pc_old + (dt / C) * (Q + P_out / R2)) / denom;
+                    // const double dPc_star_dA = (dt / C) * (dQdA) / denom;
+                    
+                    const double F = Pe - (R1 * Q + Pc_old); // - Pc_star);
                     const double dF_dA =
                       compute_pressure_derivative(A, vessel_id) -
-                      (R1 * dQdA + dPc_star_dA);
+                      (R1 * dQdA /*+ dPc_star_dA*/);
 
                     const double step = F / dF_dA;
                     A_star -= step;
@@ -1744,10 +1862,17 @@ BloodFlowSystem<dim, spacedim>::assemble_implicit_function(
                   }
                 U_star =
                   W1_L - 4.0 * (compute_wave_speed(A_star, vessel_id) - c0);
-
                 // const double Q_star = A_star * U_star;
                 // const double Pc_star =
-                //   (Pc_old + (dt_local / C) * (Q_star + rcr.P_out / R2)) / denom;
+                //   (Pc_old + (dt / C) * (Q_star + P_out / R2)) / denom;
+                
+                // std::cout << "[IMPLICIT BC] bid=" << boundary_id
+                //           << " Q*=" << Q_star << " Pc_old=" << Pc_old
+                //           << " Pc_star=" << Pc_star << std::endl;
+
+                
+                // const double Pc_star =
+                //   (Pc_old + (dt / C) * (Q_star + rcr.P_out / R2)) / denom;
                 // terminal_Pc_storage[boundary_id] = Pc_star;
               }
 
@@ -1792,7 +1917,7 @@ BloodFlowSystem<dim, spacedim>::assemble_implicit_function(
 
         // ---------- 4. Newton-Consistent Jacobian (Sensitivity) ----------
 
-        const double bn_L = compute_tangent_normal_product(cell, normals[q]);
+       // const double bn_L = compute_tangent_normal_product(cell, normals[q]);
         auto [flux_A, flux_U] = numerical_flux(
           bn_L, bn_L, A_L, U_L, A_star, U_star, vessel_id, vessel_id);
 
@@ -1855,7 +1980,7 @@ BloodFlowSystem<dim, spacedim>::assemble_implicit_function(
                             boundary_worker_with_characteristics,
                             face_worker);
     }
-
+  update_junction_states(y);
   assemble_junction_residual(y, Mydot);
   deallog.pop();
 }
@@ -2018,7 +2143,6 @@ BloodFlowSystem<dim, spacedim>::initialize_terminal_capacitors()
             {
               terminal_Pc_storage.try_emplace(bid, vpp.p_d);
               // Initialize to diastolic pressure
-
               std::cout << "  [Init] Boundary " << bid << " (Vessel " << v_id
                         << ") Pc = " << vpp.p_d << " Pa" << std::endl;
             }
@@ -2033,6 +2157,7 @@ BloodFlowSystem<dim, spacedim>::update_terminal_pressures(
   const double          dt,
   const Vector<double> &evaluation_point)
 {
+  
   // ===================== 1. Initialize flow accumulator =====================
   std::map<unsigned int, double> Q_accumulated;
   for (const auto &[bid, Pc] : terminal_Pc_storage)
@@ -2059,17 +2184,13 @@ BloodFlowSystem<dim, spacedim>::update_terminal_pressures(
 
   for (const auto &cell : dof_handler.active_cell_iterators())
     {
-      if (!cell->is_locally_owned())
-        continue;
-
       for (unsigned int f = 0; f < GeometryInfo<dim>::faces_per_cell; ++f)
         {
           if (!cell->face(f)->at_boundary())
             continue;
 
           const unsigned int bid = cell->face(f)->boundary_id();
-
-          if (!this->is_terminal_boundary(bid))
+          if (!is_terminal_boundary(bid))
             continue;
 
           fe_face.reinit(cell, f);
@@ -2085,12 +2206,6 @@ BloodFlowSystem<dim, spacedim>::update_terminal_pressures(
 
               Q_accumulated[bid] += Q_local;
 
-
-              //  Optional debug
-              // if (q == 0)
-              //   std::cout << "DEBUG: A=" << A_values[q] << " U=" <<
-              //   U_values[q]
-              //             << " Q=" << Q_local << std::endl;
             }
         }
     }
@@ -2112,14 +2227,13 @@ BloodFlowSystem<dim, spacedim>::update_terminal_pressures(
 
       const double Pc_new =
         (Pc_old + (dt / C) * Q_tot + (dt / (C * R2)) * P_out) / denom;
-
-      // Store updated value
+      std::cout << "[Pc_debug] bid=" << bid << " dt=" << dt << " C=" << C
+                << " R2=" << R2 << " Q_tot=" << Q_tot << " Pc_old=" << Pc_old
+                << " denom=" << denom << " Pc_new=" << Pc_new << std::endl;
+      //  Store updated value
       Pc_old = Pc_new;
 
-      // Debug output
-      // if (std::abs(Q_tot) > 1e-10)
-      //   std::cout << "Step Update: Boundary " << bid << " Q=" << Q_tot
-      //             << " Pc: " << Pc_old << std::endl;
+     
     }
 }
 // ========================================================================
@@ -2373,8 +2487,9 @@ BloodFlowSystem<dim, spacedim>::run()
       for (auto id : terminal_boundary_ids)
         std::cout << id << " ";
       std::cout << std::endl;
-      compute_theoretical_peak(theoretical_peak);
+
       initialize_terminal_capacitors();
+      compute_theoretical_peak(theoretical_peak);
       compute_initial_solution(solution, arkode_parameters.initial_time);
       time = arkode_parameters.initial_time;
 
@@ -2410,10 +2525,6 @@ BloodFlowSystem<dim, spacedim>::run()
         [this](const double t, const Vector<double> &y, Vector<double> &Mydot) {
           deallog.push("implicit_function");
           deallog << "Called implicit_function t=" << t << std::endl;
-          double dt_internal = this->current_dt;
-          if (dt_internal <= 0)
-            dt_internal = arkode_parameters.initial_step_size;
-          this->update_terminal_pressures(dt_internal, y);
           assemble_implicit_function(t, y, Mydot);
           deallog.pop();
         };
@@ -2456,6 +2567,7 @@ BloodFlowSystem<dim, spacedim>::run()
             linear_system_matrix.add(-gamma, jacobian_matrix);
             linear_solver.initialize(linear_system_matrix);
             jcur = SUNTRUE;
+            this->current_dt = std::abs(gamma); // Store the current time step size for use in preconditioner
           }
         else
           {
@@ -2488,27 +2600,11 @@ BloodFlowSystem<dim, spacedim>::run()
         const unsigned int actual_step_number =
           (t - arkode_parameters.initial_time) /
           arkode_parameters.output_period;
-        static double t_old = -1.0;
+        // const double dt_true = t - this->last_accepted_time;
+        // if (dt_true > 0)
+        //   update_terminal_pressures(dt_true, sol);
+        // this->last_accepted_time = t;
 
-        if (t_old < 0.0)
-          {
-            t_old = t;
-            return;
-          }
-
-        // ignore duplicate calls at same time
-        if (std::abs(t - t_old) < 1e-14)
-          {
-            return;
-          }
-
-        double dt        = t - t_old;
-        this->current_dt = dt;
-
-
-        std::cout << "dt used = " << dt << std::endl;
-
-        t_old = t;
         for (const auto &cell : dof_handler.active_cell_iterators())
           {
             if (!cell->is_locally_owned())
@@ -2553,21 +2649,51 @@ BloodFlowSystem<dim, spacedim>::run()
         compute_pressure(sol, pressure);
         compute_theoretical_peak(theoretical_peak);
         output_results(sol, pressure, theoretical_peak, actual_step_number);
+       // output_results(sol, pressure, theoretical_peak, step_number);
         deallog.pop();
       };
 
-
+      // ode.custom_setup = [](void *arkode_mem) {
+      //   ARKStepSetMaxNumSteps(arkode_mem, 500000);
+      // };
       time = arkode_parameters.initial_time;
-      while (time < arkode_parameters.final_time)
+      std::cout << "Initial time = " << time
+                << " final_time = " << arkode_parameters.final_time
+                << std::endl;
+       bool first_step = true;
+      while (time < arkode_parameters.final_time - 1e-12)
         {
+          // std::cout << "ENTER while loop time = " << time << std::endl;
+          // const unsigned int n_timesteps =
+          //   ode.solve_ode_incrementally(solution,
+          //                               time + arkode_parameters.output_period,
+          //                               true);
+          // std::cout << "  ARKode intermediate steps: " << n_timesteps
+          //           << std::endl;
+          
+          // time += arkode_parameters.output_period;
+          const double tout = std::min(time + arkode_parameters.output_period,
+                                       arkode_parameters.final_time);
+
+          const double time_before = time; // ← save BEFORE solve
+
           const unsigned int n_timesteps =
-            ode.solve_ode_incrementally(solution,
-                                        time + arkode_parameters.output_period,
-                                        true);
+            ode.solve_ode_incrementally(solution, tout, first_step);
+          first_step = false;
+
           std::cout << "  ARKode intermediate steps: " << n_timesteps
                     << std::endl;
 
-          time += arkode_parameters.output_period;
+          // dt is the interval just solved, computed from saved time
+          const double dt_solved = tout - time_before; // ← use saved value
+          std::cout << "[dt_check] time=" << time << " tout=" << tout
+                    << " dt_solved=" << dt_solved << std::endl;
+
+          update_terminal_pressures(dt_solved, solution);
+
+          time = tout;
+          
+          
         }
       compute_pressure(solution, pressure);
       compute_errors(cycle);

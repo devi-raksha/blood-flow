@@ -38,14 +38,14 @@ LOOKUP_TABLE default
 SCALARS a_d double 1
 LOOKUP_TABLE default
 0.282740e-4
-SCALARS r0 double 1
+SCALARS r_d double 1
 LOOKUP_TABLE default
 3e-3
 
 POINT_DATA 2
 SCALARS boundary_id int 1
 LOOKUP_TABLE default
-1 2
+0 1
 SCALARS R1 double 1
 LOOKUP_TABLE default
 0.0 2.4875e8

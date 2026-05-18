@@ -1,5 +1,5 @@
 subsection BloodFlowSystem<1, 3>
-  set Finite element degree                = 1
+  set Finite element degree                = 2
   set Number of global refinement          = 6
   set Number of refinement cycles          = 1
   set Vtk file path for mesh input         = ../../blood-flow/notebooks/common_carotid_artery.vtk
@@ -14,7 +14,7 @@ subsection BloodFlowSystem<1, 3>
   set Use junction mesh                    = false
   set Verbosity (console depth)            = 1
   subsection ARKOde parameters
-    set Final time                        = 1.1
+    set Final time                        = 2.2
     set Initial time                      = 0
     set Time interval between each output = 0.01
     
@@ -26,9 +26,9 @@ subsection BloodFlowSystem<1, 3>
       set Anderson-acceleration subspace         = 3
       set Implicit function is linear            = false
       set Implicit function is time independent  = false
-      set Initial step size                      = 1e-06
+      set Initial step size                      = 1e-04
       set Mass is time independent               = true
-      set Maximum number of nonlinear iterations = 40
+      set Maximum number of nonlinear iterations = 10
       set Maximum order of ARK                   = 5
       set Minimum step size                      = 1e-08
    

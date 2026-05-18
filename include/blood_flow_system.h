@@ -134,15 +134,19 @@ public:
   detect_junctions();
   void
   initialize_terminal_capacitors();
+ 
   void
   update_terminal_pressures(const double          dt,
                             const Vector<double> &evaluation_point);
+  
   void
   setup_system();
   void
   assemble_jacobian(const double          t,
                     const Vector<double> &y,
                     const Vector<double> &Mydot);
+  void
+  update_junction_states(const Vector<double> &y);
   void
   assemble_junction_jacobian(const Vector<double> &y);
   void
@@ -211,14 +215,16 @@ private:
   double                    P_peak;
   double                    current_dt;
   double                    last_rcr_dt;
+  
   // Key: Boundary ID, Value: Pressure at the previous time step
   // One capacitor pressure per terminal boundary
   std::map<types::boundary_id, double> terminal_Pc_storage;
-  // std::map<std::pair<CellId, unsigned int>, double> terminal_Pc_storage;
+
   std::set<dealii::types::boundary_id> terminal_boundary_ids;
   using CellIterator = typename DoFHandler<dim, spacedim>::active_cell_iterator;
 
   std::vector<JunctionInfo<dim, spacedim>>       junctions;
+  std::vector<JunctionState>                     cached_junction_states;
   std::set<std::pair<CellId, unsigned int>>      all_junction_faces;
   JunctionSolver<BloodFlowSystem<dim, spacedim>> junction_solver;
 
@@ -387,6 +393,15 @@ private:
     const double beta = compute_beta_p(vpp.E, vpp.h_wall);
     return vpp.p0 + beta / vpp.a_d * (std::sqrt(A) - std::sqrt(vpp.a_d)) +
            vpp.p_d;
+  }
+
+  double
+  compute_A0(unsigned int vessel_id) const
+  {
+    const auto  &vpp    = vessel_map.at(vessel_id);
+    const double beta   = compute_beta_p(vpp.E, vpp.h_wall);
+    const double factor = 1.0 - std::sqrt(vpp.a_d) * vpp.p_d / beta;
+    return vpp.a_d * factor * factor;
   }
 
   /**
