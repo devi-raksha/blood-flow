@@ -21,6 +21,7 @@
 #include <deal.II/grid/tria.h>
 
 #include <deal.II/lac/affine_constraints.h>
+#include <deal.II/lac/dynamic_sparsity_pattern.h>
 #include <deal.II/lac/precondition.h>
 #include <deal.II/lac/solver_control.h>
 #include <deal.II/lac/solver_gmres.h>
@@ -35,27 +36,42 @@
 
 #include <deal.II/sundials/arkode.h>
 
+#include <array>
 #include <iosfwd>
+#include <map>
 #include <memory>
+#include <set>
+#include <utility>
 
 #include "constants.h"
 #include "function.h"
-#include "junction_solver.h"
 
 using namespace dealii;
 
-//====================================================================
-// PHYSICAL CONSTANTS AND PARAMETERS
-//====================================================================
 using BloodFlowParameters = ParsedTools::Constants;
 
-//====================================================================
-// SCRATCH AND COPY DATA STRUCTURES
-//====================================================================
+// ---------------------------------------------------------------------------
+// FaceTraceDof
+//
+// One (A_hat, U_hat) trace pair lives on every unique face of the mesh.
+// In 1-D (dim=1, spacedim=3) a "face" is a single vertex / 0-D object,
+// so there is exactly one quadrature point on it and one pair of scalar
+// unknowns per face.
+//
+// face_key  = (CellId, local_face_number)   — canonical: the *lower* global
+//             cell-index side when the face is interior.
+// a_hat_dof = global DOF index of the area  trace unknown
+// u_hat_dof = global DOF index of the velocity trace unknown
+// ---------------------------------------------------------------------------
+struct FaceTraceDof
+{
+  types::global_dof_index a_hat_dof;
+  types::global_dof_index u_hat_dof;
+};
 
-/**
- * Scratch data for MeshWorker
- */
+// ---------------------------------------------------------------------------
+// Scratch / copy-data for MeshWorker 
+// ---------------------------------------------------------------------------
 template <int dim, int spacedim>
 struct BloodFlowScratchData
 {
@@ -75,22 +91,19 @@ struct BloodFlowScratchData
     , fe_interface_values(fe, quadrature_face, interface_update_flags)
   {}
 
-  BloodFlowScratchData(const BloodFlowScratchData<dim, spacedim> &scratch_data)
-    : fe_values(scratch_data.fe_values.get_fe(),
-                scratch_data.fe_values.get_quadrature(),
-                scratch_data.fe_values.get_update_flags())
-    , fe_interface_values(scratch_data.fe_interface_values.get_fe(),
-                          scratch_data.fe_interface_values.get_quadrature(),
-                          scratch_data.fe_interface_values.get_update_flags())
+  BloodFlowScratchData(const BloodFlowScratchData<dim, spacedim> &src)
+    : fe_values(src.fe_values.get_fe(),
+                src.fe_values.get_quadrature(),
+                src.fe_values.get_update_flags())
+    , fe_interface_values(src.fe_interface_values.get_fe(),
+                          src.fe_interface_values.get_quadrature(),
+                          src.fe_interface_values.get_update_flags())
   {}
 
   FEValues<dim, spacedim>          fe_values;
   FEInterfaceValues<dim, spacedim> fe_interface_values;
 };
 
-/**
- * Copy data structures for MeshWorker
- */
 struct BloodFlowCopyDataFace
 {
   FullMatrix<double>                   cell_matrix;
@@ -107,7 +120,7 @@ struct BloodFlowCopyData
 
   template <class Iterator>
   void
-  reinit(const Iterator &cell, unsigned int dofs_per_cell)
+  reinit(const Iterator &cell, const unsigned int dofs_per_cell)
   {
     cell_matrix.reinit(dofs_per_cell, dofs_per_cell);
     cell_rhs.reinit(dofs_per_cell);
@@ -116,10 +129,9 @@ struct BloodFlowCopyData
   }
 };
 
-//====================================================================
-// MAIN CLASS DECLARATION
-//====================================================================
-
+// ===========================================================================
+// Main class
+// ===========================================================================
 template <int dim, int spacedim = dim>
 class BloodFlowSystem : public ParameterAcceptor
 {
@@ -129,34 +141,37 @@ public:
   void
   initialize_params(const std::string &filename = "");
   void
-  create_vascular_network();
+  setup_system();
+
+  // Build the face-trace DOF map and extend the solution vector.
+  // Must be called after dof_handler.distribute_dofs() inside setup_system.
+  void
+  build_face_dof_map();
+
   void
   detect_junctions();
   void
   initialize_terminal_capacitors();
- 
   void
   update_terminal_pressures(const double          dt,
                             const Vector<double> &evaluation_point);
-  
+
+  // Residual F(t,y) for ARKode — assembles cell + trace equations.
   void
-  setup_system();
+  assemble_implicit_function(const double          t,
+                             const Vector<double> &y,
+                             Vector<double>       &F);
+
+  // Jacobian ∂F/∂y — assembles all four blocks
+  // (cell–cell, cell–trace, trace–cell, trace–trace).
   void
   assemble_jacobian(const double          t,
                     const Vector<double> &y,
                     const Vector<double> &Mydot);
+
+  // Builds per_cell_mass_inv: the local M_K^-1 for every cell K.
   void
-  update_junction_states(const Vector<double> &y);
-  void
-  assemble_junction_jacobian(const Vector<double> &y);
-  void
-  assemble_implicit_function(const double          t,
-                             const Vector<double> &y,
-                             Vector<double>       &Mydot);
-  void
-  assemble_junction_residual(const Vector<double> &y, Vector<double> &Mydot);
-  void
-  assemble_mass_matrix();
+  build_per_cell_mass_inv();
   void
   compute_initial_solution(Vector<double> &dst, const double t);
 
@@ -164,29 +179,27 @@ public:
   output_results(const Vector<double> &y,
                  const Vector<double> &pressure_vec,
                  const Vector<double> &theoretical_peak,
-                 const unsigned int    cycle) const;
-  void
-  update_peak_pressure();
-
-  void
-  compute_theoretical_peak(Vector<double> &theoretical_peak) const;
+                 unsigned int          cycle) const;
 
   void
   compute_pressure(const Vector<double> &y, Vector<double> &pressure_vec) const;
 
   void
+  compute_theoretical_peak(Vector<double> &theoretical_peak) const;
+  void
   compute_errors(unsigned int k);
   void
   run();
 
+  // Numerical flux type selector
   enum class NumericalFluxType
   {
     HLL,
-    LAX_FRIEDRICHS,
-    HLL_SYMPY
+    LAX_FRIEDRICHS
   };
+
   void
-  set_numerical_flux(NumericalFluxType flux_type)
+  set_numerical_flux(const NumericalFluxType flux_type)
   {
     numerical_flux_type = flux_type;
   }
@@ -197,58 +210,18 @@ public:
     return numerical_flux_type;
   }
 
-  void
-  compute_junction_residual(const JunctionState               &X,
-                            const std::vector<double>         &W_in,
-                            const JunctionInfo<dim, spacedim> &junction,
-                            Vector<double>                    &R) const;
-
-  void
-  compute_junction_jacobian(const JunctionState               &X,
-                            const JunctionInfo<dim, spacedim> &junction,
-                            FullMatrix<double>                &J) const;
-
-
 private:
+  // -----------------------------------------------------------------------
+  // Physical parameters
+  // -----------------------------------------------------------------------
   ParsedTools::Constants    par;
   AffineConstraints<double> constraints;
-  double                    P_peak;
-  double                    current_dt;
-  double                    last_rcr_dt;
-  
-  // Key: Boundary ID, Value: Pressure at the previous time step
-  // One capacitor pressure per terminal boundary
-  std::map<types::boundary_id, double> terminal_Pc_storage;
+  double                    current_dt  = 0.0;
+  double                    last_rcr_dt = 0.0;
 
-  std::set<dealii::types::boundary_id> terminal_boundary_ids;
-  using CellIterator = typename DoFHandler<dim, spacedim>::active_cell_iterator;
-
-  std::vector<JunctionInfo<dim, spacedim>>       junctions;
-  std::vector<JunctionState>                     cached_junction_states;
-  std::set<std::pair<CellId, unsigned int>>      all_junction_faces;
-  JunctionSolver<BloodFlowSystem<dim, spacedim>> junction_solver;
-
-
-  inline bool
-  is_junction_face(const CellId &cell_id, const unsigned int face_no) const
-  {
-    // Explicitly using std::make_pair resolves initializer_list ambiguity
-    return all_junction_faces.count(std::make_pair(cell_id, face_no)) > 0;
-  }
-
-
-  // Embedded 1D-3D network coupling
-  struct EmbeddedVessel
-  {
-    std::vector<Point<3>> centerline;      // 1D vessel path
-    std::vector<double>   radius;          // Vessel radius at each point
-    unsigned int          material_id = 0; // Vessel properties
-  };
-
-  std::vector<EmbeddedVessel> embedded_vessels;
-  std::vector<Point<3>>       hypersingular_points; // Key coupling points
-
-  // Structures to hold the "Physics" read from VTK
+  // -----------------------------------------------------------------------
+  // Vessel / RCR physics (read from VTK)
+  // -----------------------------------------------------------------------
   struct VesselPhysicalProperties
   {
     double a0, r_d, a_d, E, h_wall, p_d, p0, L;
@@ -259,197 +232,142 @@ private:
   {
     double R1, R2, C, P_out;
   };
-  std::map<unsigned int, RCRPhysics> rcr_map;
+  std::map<unsigned int, RCRPhysics>   rcr_map;
+  std::map<types::boundary_id, double> terminal_Pc_storage;
+  std::set<types::boundary_id>         terminal_boundary_ids;
 
-  // Vectors to hold the "Physics" read from VTK data
-  Vector<double> cell_vessel_ids, cell_a0, cell_r_d, cell_a_d, cell_E,
-    cell_h_wall, cell_p_d, cell_p0, cell_L;
+  // Raw VTK cell/point data arrays
+  Vector<double> cell_vessel_ids, cell_a0, cell_r_d, cell_a_d, cell_E;
+  Vector<double> cell_h_wall, cell_p_d, cell_p0, cell_L;
   Vector<double> point_boundary_id, point_R1, point_R2, point_C, point_P_out;
 
-  SUNDIALS::ARKode<Vector<double>>::AdditionalData arkode_parameters;
+  // -----------------------------------------------------------------------
+  // Mesh and FE spaces (cell unknowns only — DGQ)
+  // -----------------------------------------------------------------------
+  Triangulation<dim, spacedim>                  triangulation;
+  DoFHandler<dim, spacedim>                     dof_handler;
+  std::unique_ptr<FiniteElement<dim, spacedim>> fe;
+
+  // -----------------------------------------------------------------------
+  // Face-trace DOF management
+  //
+  // face_dof_map_:  (CellId, local_face_no) → FaceTraceDof
+  //
+  //   * For interior faces the key uses the cell whose CellId compares
+  //     *less* among the two neighbours — canonical ordering guarantees
+  //     uniqueness without needing a separate "processed" set.
+  //   * For boundary faces and junction faces, the unique cell owning
+  //     that face edge is used directly.
+  //
+  // n_cell_dofs_  : dof_handler.n_dofs()   (A,U per DGQ cell)
+  // n_trace_dofs_ : 2 * (number of unique faces)
+  // n_total_dofs_ : n_cell_dofs_ + n_trace_dofs_
+  //
+  // Solution vector layout:  [ cell block | trace block ]
+  //                           0 …n_cell-1   n_cell … n_total-1
+  // -----------------------------------------------------------------------
+  std::map<std::pair<CellId, unsigned int>, FaceTraceDof> face_dof_map;
+
+  types::global_dof_index n_cell_dofs  = 0;
+  types::global_dof_index n_trace_dofs = 0;
+  types::global_dof_index n_total_dofs = 0;
+
+  // -----------------------------------------------------------------------
+  // Junction detection
+  //
+  // A junction is a mesh vertex touched by more than two cells.
+  // all_junction_faces holds (CellId, local_face_no) for every half-face
+  // that ends at a junction vertex — used to skip those faces in the
+  // ordinary boundary-condition assembly so they are handled exclusively
+  // by assemble_trace_junction_equations().
+  // -----------------------------------------------------------------------
+  struct JunctionHalfFace
+  {
+    typename DoFHandler<dim, spacedim>::active_cell_iterator cell;
+    unsigned int                                             face_no;
+    int                                                      orientation; // ±1
+  };
+
+  struct JunctionInfo
+  {
+    Point<spacedim>               location;
+    std::vector<JunctionHalfFace> half_faces; // one entry per incident vessel
+    unsigned int
+    n_vessels() const
+    {
+      return static_cast<unsigned int>(half_faces.size());
+    }
+  };
+
+  std::vector<JunctionInfo>                 junctions;
+  std::set<std::pair<CellId, unsigned int>> all_junction_faces;
+
+  // -----------------------------------------------------------------------
+  // Linear algebra  (sized to n_total_dofs)
+  // -----------------------------------------------------------------------
+  SparsityPattern      sparsity_pattern;
+  SparseMatrix<double> jacobian_matrix;
+  SparseMatrix<double> linear_system_matrix;
+  SparseDirectUMFPACK  linear_solver;
+
+  // Per-cell inverse mass matrices.
+  // The system seen by ARKode is the pure ODE
+  //   dy_cell/dt = M_K^-1 * F_cell(y)     (cell block)
+  //   0           = F_trace(y)             (trace block, algebraic)
+  // No mass-matrix callbacks are registered with ARKode (M_ARKode = I).
+  // Each dense per-cell inverse is applied locally after global assembly.
+  std::map<CellId, FullMatrix<double>> per_cell_mass_inv;
+
+  Vector<double> solution;
+  Vector<double> pressure;
+  Vector<double> theoretical_peak;
+
+  // -----------------------------------------------------------------------
+  // User parameters
+  // -----------------------------------------------------------------------
+  unsigned int fe_degree            = 1;
+  std::string  constants            = "1.0";
+  std::string  output_filename      = "solution";
+  bool         use_direct_solver    = true;
+  bool         use_junction_mesh     = true;
+  bool         use_riemann_invariants = true;
+  unsigned int n_refinement_cycles  = 1;
+  unsigned int n_global_refinements = 5;
+  std::string  vtk_file_path        = "mesh.vtk";
+  std::string  output_directory     = "";
+  unsigned int verbosity            = 0;
+  std::string  outlet_type;
+  double       theta    = 0.5;
+  double       theta_bd = 0.5;
+  double       time     = 0.0;
+
   NumericalFluxType numerical_flux_type     = NumericalFluxType::HLL;
   std::string       numerical_flux_type_str = "HLL";
-  /**
-   * Wrapper for residual flux - selects HLL or Lax-Friedrichs
-   */
-  std::array<double, 2>
-  numerical_flux(double       bn_L,
-                 double       bn_R,
-                 double       A_L,
-                 double       U_L,
-                 double       A_R,
-                 double       U_R,
-                 unsigned int vessel_id_L,
-                 unsigned int vessel_id_R) const
+
+  SUNDIALS::ARKode<Vector<double>>::AdditionalData arkode_parameters;
+
+  ParsedTools::Function<spacedim> rhs_function;
+  ParsedTools::Function<spacedim> exact_solution;
+  ParsedTools::Function<1>        inflow_function;
+
+  mutable TimerOutput computing_timer;
+
+  // -----------------------------------------------------------------------
+  // Internal helpers — geometry
+  // -----------------------------------------------------------------------
+
+  bool
+  is_terminal_boundary(types::boundary_id bid) const
   {
-    if (numerical_flux_type == NumericalFluxType::HLL)
-      return hll_numerical_flux(
-        bn_L, bn_R, A_L, U_L, A_R, U_R, vessel_id_L, vessel_id_R);
-    // else if (numerical_flux_type == NumericalFluxType::HLL_SYMPY)
-    //   return hll_sympy_numerical_flux(bn_L, bn_R, A_L, U_L, A_R, U_R);
-    else
-      return lf_numerical_flux(
-        bn_L, bn_R, A_L, U_L, A_R, U_R, vessel_id_L, vessel_id_R);
+    return terminal_boundary_ids.count(bid) > 0;
   }
 
-  /**
-   * Wrapper for Jacobian flux - selects HLL or Lax-Friedrichs
-   */
-  std::array<double, 2>
-  numerical_flux_jacobian(double       bn_L,
-                          double       bn_R,
-                          double       A_L,
-                          double       U_L,
-                          double       A_R,
-                          double       U_R,
-                          double       trial_A_L,
-                          double       trial_U_L,
-                          double       trial_A_R,
-                          double       trial_U_R,
-                          unsigned int vessel_id_L,
-                          unsigned int vessel_id_R) const
+  bool
+  is_junction_face(const CellId &cid, const unsigned int f) const
   {
-    if (numerical_flux_type == NumericalFluxType::HLL)
-      return hll_numerical_flux_jacobian(bn_L,
-                                         bn_R,
-                                         A_L,
-                                         U_L,
-                                         A_R,
-                                         U_R,
-                                         trial_A_L,
-                                         trial_U_L,
-                                         trial_A_R,
-                                         trial_U_R,
-                                         vessel_id_L,
-                                         vessel_id_R);
-    // else if (numerical_flux_type == NumericalFluxType::HLL_SYMPY)
-    //   return hll_sympy_numerical_flux_jacobian(bn_L,
-    //                                            bn_R,
-    //                                            A_L,
-    //                                            U_L,
-    //                                            A_R,
-    //                                            U_R,
-    //                                            trial_A_L,
-    //                                            trial_U_L,
-    //                                            trial_A_R,
-    //                                            trial_U_R);
-    else
-      return lf_numerical_flux_jacobian(bn_L,
-                                        bn_R,
-                                        A_L,
-                                        U_L,
-                                        A_R,
-                                        U_R,
-                                        trial_A_L,
-                                        trial_U_L,
-                                        trial_A_R,
-                                        trial_U_R,
-                                        vessel_id_L,
-                                        vessel_id_R);
+    return all_junction_faces.count(std::make_pair(cid, f)) > 0;
   }
 
-  // --------------------------------------------------
-  // ===  Physical and Constitutive Relations  ===
-  // --------------------------------------------------
-
-  /**
-   * Compute wave speed using the tube law
-   */
-  double
-  compute_wave_speed(const double area, unsigned int vessel_id) const
-  {
-    const double eps    = 1e-10;
-    const double A_safe = std::max(area, eps);
-    const double dpda   = compute_pressure_derivative(area, vessel_id);
-    return std::sqrt(A_safe / par["rho"] * dpda);
-  }
-
-  /**
-   * Compute wave speed derivative using the tube law
-   */
-  double
-  compute_wave_speed_derivative(const double area, unsigned int vessel_id) const
-  {
-    const double eps    = 1e-10;
-    const double A_safe = std::max(area, eps);
-    return compute_wave_speed(A_safe, vessel_id) * par["m"] / (2.0 * A_safe);
-  }
-
-
-  /**
-   * Compute beta_p which reflects the material properties for shifted tube law
-   */
-  double
-  compute_beta_p(const double E, const double h_wall) const
-  {
-    return (4.0 * std::sqrt(3.14159) / 3.0) * E * h_wall;
-  }
-
-  double
-  compute_pressure_value(double A, unsigned int vessel_id) const
-  {
-    const auto &vpp =
-      vessel_map.at(vessel_id); // vessel_physical_properties(vpp)
-    const double beta = compute_beta_p(vpp.E, vpp.h_wall);
-    return vpp.p0 + beta / vpp.a_d * (std::sqrt(A) - std::sqrt(vpp.a_d)) +
-           vpp.p_d;
-  }
-
-  double
-  compute_A0(unsigned int vessel_id) const
-  {
-    const auto  &vpp    = vessel_map.at(vessel_id);
-    const double beta   = compute_beta_p(vpp.E, vpp.h_wall);
-    const double factor = 1.0 - std::sqrt(vpp.a_d) * vpp.p_d / beta;
-    return vpp.a_d * factor * factor;
-  }
-
-  /**
-   * Compute pressure derivative dP/dA for shifted tube law
-   */
-
-  double
-  compute_pressure_derivative(const double area, unsigned int vessel_id) const
-  {
-    const auto  &vpp    = vessel_map.at(vessel_id);
-    const double beta_p = compute_beta_p(vpp.E, vpp.h_wall);
-    return beta_p / (2.0 * vpp.a_d * std::sqrt(area));
-  }
-
-
-  double
-  compute_LF_penalty(const double area_L,
-                     const double area_R,
-                     const double U_L,
-                     const double U_R,
-                     const double bn_L,
-                     const double bn_R,
-                     unsigned int vessel_id_L,
-                     unsigned int vessel_id_R) const
-  {
-    const double cL = compute_wave_speed(area_L, vessel_id_L);
-    const double cR = compute_wave_speed(area_R, vessel_id_R);
-
-    // Multiply by bn (directional scaling)
-    const double lambda1_L = (U_L - cL) * bn_L;
-    const double lambda2_L = (U_L + cL) * bn_L;
-    const double lambda1_R = (U_R - cR) * bn_R;
-    const double lambda2_R = (U_R + cR) * bn_R;
-
-    return std::max({std::abs(lambda1_L),
-                     std::abs(lambda2_L),
-                     std::abs(lambda1_R),
-                     std::abs(lambda2_R)});
-  }
-
-
-  // --------------------------------------------------
-  // ===  Geometry and Flux helper functions  ===
-  // --------------------------------------------------
-
-  /**
-   * Compute the unit tangent vector b along the 1D vessel axis.
-   */
   Tensor<1, spacedim>
   compute_directional_vector(
     const typename DoFHandler<dim, spacedim>::active_cell_iterator &cell) const
@@ -458,579 +376,267 @@ private:
            cell->vertex(1).distance(cell->vertex(0));
   }
 
-  /**
-   * Compute the physical flux for the area equation:
-   *   F_A = A * U * b
-   */
-  Tensor<1, spacedim>
-  compute_physical_area_flux(
-    const typename DoFHandler<dim, spacedim>::active_cell_iterator &cell,
-    const double implicit_area,
-    const double explicit_velocity) const
-  {
-    const Tensor<1, spacedim> b = compute_directional_vector(cell);
-    return implicit_area * explicit_velocity * b;
-  }
-
-  /**
-   * Compute the physical flux for the jacobian area equation:
-   *   F_A =  (current_velocity[point] * trial_A +
-                  current_area[point] * trial_U) * b;
-   */
-  Tensor<1, spacedim>
-  compute_physical_area_jacobian_flux(
-    const typename DoFHandler<dim, spacedim>::active_cell_iterator &cell,
-    const double current_area,
-    const double trial_velocity,
-    const double current_velocity,
-    const double trial_area) const
-  {
-    const Tensor<1, spacedim> b = compute_directional_vector(cell);
-    return (current_area * trial_velocity + current_velocity * trial_area) * b;
-  }
-
-  /**
-   * Compute the physical flux for the momentum equation:
-   *   F_U = 0.5 * U * U * b + P/rho * b
-   * (extend later with +P(A)*b if needed)
-   */
-  Tensor<1, spacedim>
-  compute_physical_momentum_flux(
-    const typename DoFHandler<dim, spacedim>::active_cell_iterator &cell,
-    const double implicit_velocity,
-    const double explicit_velocity,
-    const double pressure) const
-  {
-    const Tensor<1, spacedim> b = compute_directional_vector(cell);
-    return (0.5 * implicit_velocity * explicit_velocity +
-            pressure / par["rho"]) *
-           b;
-  }
-
-  /**
-   * Compute the physical flux for the jacobian area equation:
-   *   F_u =  ((c^2/A)*trial_A + U*trial_U)*b;
-   */
-  Tensor<1, spacedim>
-  compute_physical_momentum_jacobian_flux(
-    const typename DoFHandler<dim, spacedim>::active_cell_iterator &cell,
-    const double                                                    c_squared,
-    const double current_area,
-    const double trial_area,
-    const double current_velocity,
-    const double trial_velocity) const
-  {
-    AssertThrow(current_area > 0,
-                ExcMessage("Area must be positive to compute flux."));
-    const Tensor<1, spacedim> b = compute_directional_vector(cell);
-    return (c_squared / current_area * trial_area +
-            current_velocity * trial_velocity) *
-           b;
-  }
-
-  /**
-   * Compute tangent-normal projection: (b · n)
-   */
   double
   compute_tangent_normal_product(
     const typename DoFHandler<dim, spacedim>::active_cell_iterator &cell,
     const Tensor<1, spacedim> &normal) const
   {
-    const Tensor<1, spacedim> b = compute_directional_vector(cell);
-    return b * normal;
+    return compute_directional_vector(cell) * normal;
   }
 
-  // For scalar projection of physcial fluxes on normals we create another
-  // functions
+  // -----------------------------------------------------------------------
+  // Internal helpers — physics / constitutive
+  // -----------------------------------------------------------------------
 
-  /**
-   * Compute scalar physical flux for the area equation:
-   *   F_A = A * U * bn
-   */
   double
-  compute_scalar_physical_area_flux(double       bn,
-                                    const double implicit_area,
-                                    const double explicit_velocity) const
+  compute_beta_p(const double E, const double h_wall) const
   {
-    return implicit_area * explicit_velocity * bn;
+    return (4.0 * std::sqrt(3.14159265358979323846) / 3.0) * E * h_wall;
   }
 
-  /**
-   * Compute the scalar physical flux for the jacobian area equation:
-   *   F_A =  (current_velocity[point] * trial_A +
-                  current_area[point] * trial_U) * bn;
-   */
   double
-  compute_scalar_physical_area_jacobian_flux(double       bn,
-                                             const double current_area,
-                                             const double trial_velocity,
-                                             const double current_velocity,
-                                             const double trial_area) const
+  compute_pressure_value(const double A, const unsigned int vid) const
   {
-    return (current_area * trial_velocity + current_velocity * trial_area) * bn;
+    const auto  &vpp  = vessel_map.at(vid);
+    const double beta = compute_beta_p(vpp.E, vpp.h_wall);
+    return vpp.p0 + beta / vpp.a_d * (std::sqrt(A) - std::sqrt(vpp.a_d)) +
+           vpp.p_d;
   }
 
-  /**
-   * Compute the physical flux for the momentum equation:
-   *   F_U = 0.5 * U * U * b + P/rho * b
-   * (extend later with +P(A)*b if needed)
-   */
   double
-  compute_scalar_physical_momentum_flux(double       bn,
-                                        const double implicit_velocity,
-                                        const double explicit_velocity,
-                                        const double pressure) const
+  compute_pressure_derivative(const double A, const unsigned int vid) const
   {
-    return (0.5 * implicit_velocity * explicit_velocity +
-            pressure / par["rho"]) *
-           bn;
+    const auto  &vpp    = vessel_map.at(vid);
+    const double beta_p = compute_beta_p(vpp.E, vpp.h_wall);
+    return beta_p / (2.0 * vpp.a_d * std::sqrt(std::max(A, 1e-30)));
   }
 
-  /**
-   * Compute the scalar physical flux for the jacobian area equation:
-   *   F_u =  ((c^2/A)*trial_A + U*trial_U)*bn;
-   */
   double
-  compute_scalar_physical_momentum_jacobian_flux(
-    double       bn,
-    const double c_squared,
-    const double current_area,
-    const double trial_area,
-    const double current_velocity,
-    const double trial_velocity) const
+  compute_wave_speed(const double A, const unsigned int vid) const
   {
-    AssertThrow(current_area > 0,
-                ExcMessage("Area must be positive to compute flux."));
-
-    return (c_squared / current_area * trial_area +
-            current_velocity * trial_velocity) *
-           bn;
+    const double A_safe = std::max(A, 1e-10);
+    return std::sqrt(A_safe / par["rho"] *
+                     compute_pressure_derivative(A_safe, vid));
   }
 
-
-  /**
-   * compute the Lax-Friedrich flux for residual computation
-   */
-
-  std::array<double, 2>
-  lf_numerical_flux(double       bn_L,
-                    double       bn_R,
-                    double       A_L,
-                    double       U_L,
-                    double       A_R,
-                    double       U_R,
-                    unsigned int vessel_id_L,
-                    unsigned int vessel_id_R) const
+  double
+  compute_wave_speed_derivative(const double A, const unsigned int vid) const
   {
-    // physical fluxes projected on normal
-    double FAL = compute_scalar_physical_area_flux(bn_L, A_L, U_L);
-    double FUL = compute_scalar_physical_momentum_flux(
-      bn_L, U_L, U_L, compute_pressure_value(A_L, vessel_id_L));
-
-
-    double FAR = compute_scalar_physical_area_flux(bn_R, A_R, U_R);
-    double FUR = compute_scalar_physical_momentum_flux(
-      bn_R, U_R, U_R, compute_pressure_value(A_R, vessel_id_R));
-
-    double beta = compute_LF_penalty(
-      A_L, A_R, U_L, U_R, bn_L, bn_R, vessel_id_L, vessel_id_R);
-    double alpha = theta * beta;
-    // LF flux
-    double FLF_A = 0.5 * (FAL + FAR) - 0.5 * alpha * (A_R - A_L);
-    double FLF_U = 0.5 * (FUL + FUR) - 0.5 * alpha * (U_R - U_L);
-
-    return {{FLF_A, FLF_U}};
+    const double A_safe = std::max(A, 1e-10);
+    return compute_wave_speed(A_safe, vid) * par["m"] / (2.0 * A_safe);
   }
 
-  /**
-   * compute the Lax-Friedrich flux for JACOBIAN computation
-   * For jacobian: linearized fluxes using current state
-   */
-  std::array<double, 2>
-  lf_numerical_flux_jacobian(double       bn_L,
-                             double       bn_R,
-                             double       A_L,
-                             double       U_L,
-                             double       A_R,
-                             double       U_R,
-                             double       trial_A_L,
-                             double       trial_U_L,
-                             double       trial_A_R,
-                             double       trial_U_R,
-                             unsigned int vessel_id_L,
-                             unsigned int vessel_id_R) const
-  {
-    // Jacobian of physical fluxes projected on normal
-    double FAL_jac = compute_scalar_physical_area_jacobian_flux(
-      bn_L, A_L, trial_U_L, U_L, trial_A_L);
-    double c_L     = compute_wave_speed(A_L, vessel_id_L);
-    double c_L_sq  = c_L * c_L;
-    double FUL_jac = compute_scalar_physical_momentum_jacobian_flux(
-      bn_L, c_L_sq, A_L, trial_A_L, U_L, trial_U_L);
-    double FAr_jac = compute_scalar_physical_area_jacobian_flux(
-      bn_R, A_R, trial_U_R, U_R, trial_A_R);
-    double c_R     = compute_wave_speed(A_R, vessel_id_R);
-    double c_R_sq  = c_R * c_R;
-    double FUR_jac = compute_scalar_physical_momentum_jacobian_flux(
-      bn_R, c_R_sq, A_R, trial_A_R, U_R, trial_U_R);
-    double beta = compute_LF_penalty(
-      A_L, A_R, U_L, U_R, bn_L, bn_R, vessel_id_L, vessel_id_R);
+  // -----------------------------------------------------------------------
+  // Internal helpers — face-trace access
+  // -----------------------------------------------------------------------
 
-    double alpha = theta * beta;
-    // LF flux jacobian
-    double FLF_A_jac =
-      0.5 * (FAL_jac + FAr_jac) - 0.5 * alpha * (trial_A_R - trial_A_L);
-    double FLF_U_jac =
-      0.5 * (FUL_jac + FUR_jac) - 0.5 * alpha * (trial_U_R - trial_U_L);
-    return {{FLF_A_jac, FLF_U_jac}};
+  // Return the canonical key for a face.  For interior faces the cell
+  // with the lexicographically smaller CellId is always the key owner.
+  std::pair<CellId, unsigned int>
+  canonical_face_key(
+    const typename DoFHandler<dim, spacedim>::active_cell_iterator &cell,
+    const unsigned int face_no) const;
+
+  // Read (A_hat, U_hat) from the trace block of y.
+  void
+  get_face_trace(
+    const Vector<double>                                           &y,
+    const typename DoFHandler<dim, spacedim>::active_cell_iterator &cell,
+    unsigned int                                                    face_no,
+    double                                                         &A_hat,
+    double &U_hat) const;
+
+  // -----------------------------------------------------------------------
+  // Internal helpers — physical fluxes (scalar projections)
+  // -----------------------------------------------------------------------
+
+  double
+  scalar_area_flux(const double bn, const double A, const double U) const
+  {
+    return A * U * bn;
   }
 
-  std::array<double, 2>
-  hll_sympy_numerical_flux(double bn_L,
-                           double bn_R,
-                           double A_L,
-                           double U_L,
-                           double A_R,
-                           double U_R) const
+  double
+  scalar_momentum_flux(const double bn,
+                       const double U,
+                       const double pressure,
+                       const double rho) const
   {
-    double FHLL_A, FHLL_U;
-    // FHLL_A
-    {
-      const double t_0  = A_L * U_L * bn_L;
-      const double t_1  = 1.0 / par["a0"];
-      const double t_2  = par["m"] * par["mu"] / par["rho"];
-      const double t_3  = std::sqrt(t_2 * std::pow(A_L * t_1, par["m"]));
-      const double t_4  = (1.0 / 2.0) * t_3;
-      const double t_5  = std::sqrt(t_2 * std::pow(A_R * t_1, par["m"]));
-      const double t_6  = (1.0 / 2.0) * t_5;
-      const double t_7  = (1.0 / 2.0) * U_L + (1.0 / 2.0) * U_R;
-      const double t_8  = -t_4 - t_6 + t_7;
-      const double t_9  = A_R * U_R * bn_R;
-      const double t_10 = t_4 + t_6 + t_7;
-      FHLL_A =
-        ((t_8 >= 0) ? (t_0) :
-                      ((t_10 <= 0) ?
-                         (t_9) :
-                         ((t_0 * t_10 + t_10 * t_8 * (-A_L + A_R) - t_8 * t_9) /
-                          (t_3 + t_5))));
-    }
+    return (0.5 * U * U + pressure / rho) * bn;
+  }
 
-    // FHLL_U
-    {
-      const double t_0  = 1.0 / par["rho"];
-      const double t_1  = 1.0 / par["a0"];
-      const double t_2  = std::pow(A_L * t_1, par["m"]);
-      const double t_3  = bn_L * (0.5 * std::pow(U_L, 2) +
-                                 t_0 * (par["mu"] * (t_2 - 1) + par["p0"]));
-      const double t_4  = par["m"] * par["mu"] * t_0;
-      const double t_5  = std::sqrt(t_2 * t_4);
-      const double t_6  = (1.0 / 2.0) * t_5;
-      const double t_7  = std::pow(A_R * t_1, par["m"]);
-      const double t_8  = std::sqrt(t_4 * t_7);
-      const double t_9  = (1.0 / 2.0) * t_8;
-      const double t_10 = (1.0 / 2.0) * U_L + (1.0 / 2.0) * U_R;
-      const double t_11 = t_10 - t_6 - t_9;
-      const double t_12 = bn_R * (0.5 * std::pow(U_R, 2) +
-                                  t_0 * (par["mu"] * (t_7 - 1) + par["p0"]));
-      const double t_13 = t_10 + t_6 + t_9;
-      FHLL_U            = ((t_11 >= 0) ?
-                             (t_3) :
-                             ((t_13 <= 0) ?
-                                (t_12) :
-                                ((-t_11 * t_12 + t_11 * t_13 * (-U_L + U_R) + t_13 * t_3) /
-                      (t_5 + t_8))));
-    }
-    return {{FHLL_A, FHLL_U}};
+  // Linearised (Jacobian) versions
+  double
+  scalar_area_flux_jac(const double bn,
+                       const double A,
+                       const double U,
+                       const double dA,
+                       const double dU) const
+  {
+    return (A * dU + U * dA) * bn;
+  }
+
+  double
+  scalar_momentum_flux_jac(const double bn,
+                           const double c2_over_A,
+                           const double U,
+                           const double dA,
+                           const double dU) const
+  {
+    return (c2_over_A * dA + U * dU) * bn;
+  }
+
+  double
+  compute_LF_penalty(const double       A_L,
+                     const double       A_R,
+                     const double       U_L,
+                     const double       U_R,
+                     const double       bn_L,
+                     const double       bn_R,
+                     const unsigned int vid_L,
+                     const unsigned int vid_R) const
+  {
+    const double cL = compute_wave_speed(A_L, vid_L);
+    const double cR = compute_wave_speed(A_R, vid_R);
+    return std::max({std::abs((U_L - cL) * bn_L),
+                     std::abs((U_L + cL) * bn_L),
+                     std::abs((U_R - cR) * bn_R),
+                     std::abs((U_R + cR) * bn_R)});
+  }
+
+  // -----------------------------------------------------------------------
+  // Internal helpers — numerical fluxes
+  // -----------------------------------------------------------------------
+
+  std::array<double, 2>
+  hll_flux(double       bn_L,
+           double       bn_R,
+           double       A_L,
+           double       U_L,
+           double       A_R,
+           double       U_R,
+           unsigned int vid_L,
+           unsigned int vid_R) const;
+
+  std::array<double, 2>
+  lf_flux(double       bn_L,
+          double       bn_R,
+          double       A_L,
+          double       U_L,
+          double       A_R,
+          double       U_R,
+          unsigned int vid_L,
+          unsigned int vid_R) const;
+
+  std::array<double, 2>
+  numerical_flux(double       bn_L,
+                 double       bn_R,
+                 double       A_L,
+                 double       U_L,
+                 double       A_R,
+                 double       U_R,
+                 unsigned int vid_L,
+                 unsigned int vid_R) const
+  {
+    if (numerical_flux_type == NumericalFluxType::HLL)
+      return hll_flux(bn_L, bn_R, A_L, U_L, A_R, U_R, vid_L, vid_R);
+    return lf_flux(bn_L, bn_R, A_L, U_L, A_R, U_R, vid_L, vid_R);
   }
 
   std::array<double, 2>
-  hll_sympy_numerical_flux_jacobian(double bn_L,
-                                    double bn_R,
-                                    double A_L,
-                                    double U_L,
-                                    double A_R,
-                                    double U_R,
-                                    double trial_A_L,
-                                    double trial_U_L,
-                                    double trial_A_R,
-                                    double trial_U_R) const
-  {
-    double dFHLL_A, dFHLL_U;
-    // dFHLL_A
-    {
-      const double t_0  = A_L * bn_L;
-      const double t_1  = t_0 * trial_U_L;
-      const double t_2  = U_L * bn_L * trial_A_L;
-      const double t_3  = 1.0 / par["a0"];
-      const double t_4  = par["m"] * par["mu"] / par["rho"];
-      const double t_5  = std::sqrt(t_4 * std::pow(A_L * t_3, par["m"]));
-      const double t_6  = (1.0 / 2.0) * t_5;
-      const double t_7  = std::sqrt(t_4 * std::pow(A_R * t_3, par["m"]));
-      const double t_8  = (1.0 / 2.0) * t_7;
-      const double t_9  = (1.0 / 2.0) * U_L + (1.0 / 2.0) * U_R;
-      const double t_10 = -t_6 - t_8 + t_9;
-      const double t_11 = A_R * bn_R;
-      const double t_12 = t_11 * trial_U_R;
-      const double t_13 = U_R * bn_R * trial_A_R;
-      const double t_14 = t_6 + t_8 + t_9;
-      const double t_15 = t_5 + t_7;
-      const double t_16 = trial_A_L / A_L;
-      const double t_17 = trial_A_R / A_R;
-      const double t_18 = U_L * t_0;
-      const double t_19 = U_R * t_11;
-      const double t_20 = -A_L + A_R;
-      const double t_21 = t_14 * t_20;
-      const double t_22 = (1.0 / 4.0) * par["m"];
-      const double t_23 = t_16 * t_22 * t_5;
-      const double t_24 = t_17 * t_22 * t_7;
-      const double t_25 = (1.0 / 2.0) * trial_U_L + (1.0 / 2.0) * trial_U_R;
-      const double t_26 = t_23 + t_24 + t_25;
-      const double t_27 = -t_23 - t_24 + t_25;
-      dFHLL_A =
-        ((t_10 >= 0) ?
-           (t_1 + t_2) :
-           ((t_14 <= 0) ?
-              (t_12 + t_13) :
-              ((t_1 * t_14 - t_10 * t_12 - t_10 * t_13 +
-                t_10 * t_14 * (-trial_A_L + trial_A_R) + t_10 * t_20 * t_26 +
-                t_14 * t_2 + t_18 * t_26 - t_19 * t_27 + t_21 * t_27) /
-                 t_15 +
-               (-par["m"] * t_16 * t_6 - par["m"] * t_17 * t_8) *
-                 (-t_10 * t_19 + t_10 * t_21 + t_14 * t_18) /
-                 std::pow(t_15, 2))));
-    }
+  hll_flux_jac(double       bn_L,
+               double       bn_R,
+               double       A_L,
+               double       U_L,
+               double       A_R,
+               double       U_R,
+               double       dA_L,
+               double       dU_L,
+               double       dA_R,
+               double       dU_R,
+               unsigned int vid_L,
+               unsigned int vid_R) const;
 
-    // dFHLL_U
-    {
-      const double t_0  = 1.0 / par["a0"];
-      const double t_1  = std::pow(A_L * t_0, par["m"]);
-      const double t_2  = 1.0 / par["rho"];
-      const double t_3  = par["m"] * par["mu"] * t_2;
-      const double t_4  = t_1 * t_3;
-      const double t_5  = trial_A_L / A_L;
-      const double t_6  = bn_L * (1.0 * U_L * trial_U_L + t_4 * t_5);
-      const double t_7  = std::sqrt(t_4);
-      const double t_8  = (1.0 / 2.0) * t_7;
-      const double t_9  = std::pow(A_R * t_0, par["m"]);
-      const double t_10 = t_3 * t_9;
-      const double t_11 = std::sqrt(t_10);
-      const double t_12 = (1.0 / 2.0) * t_11;
-      const double t_13 = (1.0 / 2.0) * U_L + (1.0 / 2.0) * U_R;
-      const double t_14 = -t_12 + t_13 - t_8;
-      const double t_15 = trial_A_R / A_R;
-      const double t_16 = bn_R * (1.0 * U_R * trial_U_R + t_10 * t_15);
-      const double t_17 = t_12 + t_13 + t_8;
-      const double t_18 = t_11 + t_7;
-      const double t_19 = bn_L * (0.5 * std::pow(U_L, 2) +
-                                  t_2 * (par["mu"] * (t_1 - 1) + par["p0"]));
-      const double t_20 = bn_R * (0.5 * std::pow(U_R, 2) +
-                                  t_2 * (par["mu"] * (t_9 - 1) + par["p0"]));
-      const double t_21 = -U_L + U_R;
-      const double t_22 = t_17 * t_21;
-      const double t_23 = (1.0 / 4.0) * par["m"];
-      const double t_24 = t_23 * t_5 * t_7;
-      const double t_25 = t_11 * t_15 * t_23;
-      const double t_26 = (1.0 / 2.0) * trial_U_L + (1.0 / 2.0) * trial_U_R;
-      const double t_27 = t_24 + t_25 + t_26;
-      const double t_28 = -t_24 - t_25 + t_26;
-      dFHLL_U           = ((t_14 >= 0) ?
-                             (t_6) :
-                             ((t_17 <= 0) ?
-                                (t_16) :
-                                ((-t_14 * t_16 + t_14 * t_17 * (-trial_U_L + trial_U_R) +
-                        t_14 * t_21 * t_27 + t_17 * t_6 + t_19 * t_27 -
-                        t_20 * t_28 + t_22 * t_28) /
-                         t_18 +
-                       (-par["m"] * t_12 * t_15 - par["m"] * t_5 * t_8) *
-                         (-t_14 * t_20 + t_14 * t_22 + t_17 * t_19) /
-                         std::pow(t_18, 2))));
-    }
-    return {{dFHLL_A, dFHLL_U}};
-  }
-
-  /**
-   * Compute HLL flux at interface for residual computation
-   */
   std::array<double, 2>
-  hll_numerical_flux(double       bn_L,
+  lf_flux_jac(double       bn_L,
+              double       bn_R,
+              double       A_L,
+              double       U_L,
+              double       A_R,
+              double       U_R,
+              double       dA_L,
+              double       dU_L,
+              double       dA_R,
+              double       dU_R,
+              unsigned int vid_L,
+              unsigned int vid_R) const;
+
+  std::array<double, 2>
+  numerical_flux_jac(double       bn_L,
                      double       bn_R,
                      double       A_L,
                      double       U_L,
                      double       A_R,
                      double       U_R,
-                     unsigned int vessel_id_L,
-                     unsigned int vessel_id_R) const
+                     double       dA_L,
+                     double       dU_L,
+                     double       dA_R,
+                     double       dU_R,
+                     unsigned int vid_L,
+                     unsigned int vid_R) const
   {
-    // wave speeds
-    double c_L = compute_wave_speed(A_L, vessel_id_L);
-    double c_R = compute_wave_speed(A_R, vessel_id_R);
-
-    // For Roe averages, avg eigenvalues could be used instead of min/max
-    // See sec 10.5 in "Riemann Solvers and Numerical Methods for Fluids
-    // Dynamics" by E.F. Toro
-
-    double U_bar = 0.5 * (U_L + U_R);
-    double c_bar = 0.5 * (c_L + c_R);
-    double s_L   = U_bar - c_bar; // std::min(U_L - c_L, U_R - c_R);
-    double s_R   = U_bar + c_bar; // std::max(U_L + c_L, U_R + c_R);
-
-    // physical fluxes projected on normal
-    double FAL = compute_scalar_physical_area_flux(bn_L, A_L, U_L);
-    double FUL = compute_scalar_physical_momentum_flux(
-      bn_L, U_L, U_L, compute_pressure_value(A_L, vessel_id_L));
-
-
-    double FAR = compute_scalar_physical_area_flux(bn_R, A_R, U_R);
-    double FUR = compute_scalar_physical_momentum_flux(
-      bn_R, U_R, U_R, compute_pressure_value(A_R, vessel_id_R));
-
-
-    // Case 1: all waves go right
-    if (s_L >= 0.0)
-      return {{FAL, FUL}};
-
-    // Case 2: all waves go left
-    if (s_R <= 0.0)
-      return {{FAR, FUR}};
-
-    // Case 3: mixed — HLL formula
-    double inv = 1.0 / (s_R - s_L);
-
-    double FHLL_A = (s_R * FAL - s_L * FAR + s_R * s_L * (A_R - A_L)) * inv;
-    double FHLL_U = (s_R * FUL - s_L * FUR + s_R * s_L * (U_R - U_L)) * inv;
-
-    return {{FHLL_A, FHLL_U}};
+    if (numerical_flux_type == NumericalFluxType::HLL)
+      return hll_flux_jac(
+        bn_L, bn_R, A_L, U_L, A_R, U_R, dA_L, dU_L, dA_R, dU_R, vid_L, vid_R);
+    return lf_flux_jac(
+      bn_L, bn_R, A_L, U_L, A_R, U_R, dA_L, dU_L, dA_R, dU_R, vid_L, vid_R);
   }
 
+  // -----------------------------------------------------------------------
+  // Assembly sub-routines
+  // -----------------------------------------------------------------------
 
-  /**
-   * Compute HLL flux at interface for JACOBIAN computation
-   * For jacobian: linearized fluxes using current state
-   */
-  std::array<double, 2>
-  hll_numerical_flux_jacobian(double       bn_L,
-                              double       bn_R,
-                              double       A_L,
-                              double       U_L,
-                              double       A_R,
-                              double       U_R,
-                              double       trial_A_L,
-                              double       trial_U_L,
-                              double       trial_A_R,
-                              double       trial_U_R,
-                              unsigned int vessel_id_L,
-                              unsigned int vessel_id_R) const
-  {
-    // wave speeds at current state
-    double c_L = compute_wave_speed(A_L, vessel_id_L);
-    double c_R = compute_wave_speed(A_R, vessel_id_R);
+  // Cell residuals: volume integrals + flux through face traces.
+  void
+  assemble_cell_residuals(const double          t,
+                          const Vector<double> &y,
+                          Vector<double>       &F);
 
-    double U_bar = 0.5 * (U_L + U_R);
-    double c_bar = 0.5 * (c_L + c_R);
-    double s_L   = U_bar - c_bar; // std::min(U_L - c_L, U_R - c_R);
-    double s_R   = U_bar + c_bar; // std::max(U_L + c_L, U_R + c_R);
+  // Trace equations for interior faces (Riemann-invariant continuity).
+  void
+  assemble_trace_interior_equations(const Vector<double> &y, Vector<double> &F);
 
-    // Jacobian of area flux: ∂(A*U*b)/∂trial = (trial_U*A + trial_A*U)*b
-    double FAL_jac = compute_scalar_physical_area_jacobian_flux(
-      bn_L, A_L, trial_U_L, U_L, trial_A_L);
+  // Trace equations for boundary faces (inflow Q / RCR / reflection).
+  void
+  assemble_trace_boundary_equations(const double          t,
+                                    const Vector<double> &y,
+                                    Vector<double>       &F);
 
+  // Trace equations for junction faces (mass conservation +
+  // total-head continuity + Riemann compatibility per vessel).
+  void
+  assemble_trace_junction_equations(const Vector<double> &y, Vector<double> &F);
 
-    // Jacobian of momentum flux: ∂(0.5*U²+P/ρ)*b)/∂trial
-    double c_L_sq  = c_L * c_L;
-    double FUL_jac = compute_scalar_physical_momentum_jacobian_flux(
-      bn_L, c_L_sq, A_L, trial_A_L, U_L, trial_U_L);
-
-    double FAR_jac = compute_scalar_physical_area_jacobian_flux(
-      bn_R, A_R, trial_U_R, U_R, trial_A_R);
-
-    double c_R_sq  = c_R * c_R;
-    double FUR_jac = compute_scalar_physical_momentum_jacobian_flux(
-      bn_R, c_R_sq, A_R, trial_A_R, U_R, trial_U_R);
-
-    // Case 1: all waves go right
-    if (s_L >= 0.0)
-      return {{FAL_jac, FUL_jac}};
-
-    // Case 2: all waves go left
-    if (s_R <= 0.0)
-      return {{FAR_jac, FUR_jac}};
-
-    // Case 3: mixed — HLL formula with jacobian
-    double inv = 1.0 / (s_R - s_L);
-
-    double FHLL_A_jac =
-      (s_R * FAL_jac - s_L * FAR_jac + s_R * s_L * (trial_A_R - trial_A_L)) *
-      inv;
-    double FHLL_U_jac =
-      (s_R * FUL_jac - s_L * FUR_jac + s_R * s_L * (trial_U_R - trial_U_L)) *
-      inv;
-
-    return {{FHLL_A_jac, FHLL_U_jac}};
-  }
-
+  // Jacobian blocks
+  void
+  assemble_jacobian_cell_block(const double t, const Vector<double> &y);
 
   void
-  get_trace(
-    const Vector<double>                                           &vec,
-    const typename DoFHandler<dim, spacedim>::active_cell_iterator &cell,
-    unsigned int                                                    face_no,
-    double                                                         &A,
-    double                                                         &U) const;
+  assemble_jacobian_trace_interior_block(const Vector<double> &y);
 
-  //  private:
-  // Mesh and finite elements
-  Triangulation<dim, spacedim>                  triangulation;
-  DoFHandler<dim, spacedim>                     dof_handler;
-  std::unique_ptr<FiniteElement<dim, spacedim>> fe;
+  void
+  assemble_jacobian_trace_boundary_block(const double          t,
+                                         const Vector<double> &y);
 
-  std::string outlet_type;
-  bool
-  is_terminal_boundary(dealii::types::boundary_id bid) const;
+  void
+  assemble_jacobian_trace_junction_block(const Vector<double> &y);
 
-  // Linear system
-  SparsityPattern      sparsity_pattern;
-  SparseMatrix<double> jacobian_matrix;
-  SparseMatrix<double> mass_matrix;
-  SparseMatrix<double> linear_system_matrix;
-  SparseDirectUMFPACK  linear_solver;
-  SparseDirectUMFPACK  mass_solver;
-  unsigned int         verbosity        = 0;
-  std::string          output_directory = "";
-  Vector<double>       solution;
-  Vector<double>       pressure;
-  Vector<double>       theoretical_peak;
+  // Mass matrix — only acts on the cell block; trace block rows/cols = 0.
+  void
+  build_extended_sparsity_pattern();
 
-
-  // Parameters
-  unsigned int fe_degree              = 1;
-  std::string  constants              = "1.0";
-  std::string  output_filename        = "solution";
-  bool         use_direct_solver      = true;
-  bool         use_riemann_invariants = false;
-  bool         use_junction_mesh      = false;
-  unsigned int n_refinement_cycles    = 1;
-  std::string  vtk_file_path =
-    "/home/rakshad/blood-flow/notebooks/bifurcation_physics.vtk";
-  unsigned int n_global_refinements = 5;
-  double       time                 = 0.0;
-  double       last_accepted_time   = 0.0; // updated only at accepted steps
-  double       last_accepted_dt     = 0.0;
-
-  // Numerical parameters
-  double theta    = 0.5;
-  double theta_bd = 0.5;
-
-
-  // Allow access to private members for all free functions whose name
-  // is test
   friend void
   test();
-
-  ParsedTools::Function<spacedim> rhs_function;
-  ParsedTools::Function<spacedim> exact_solution;
-  ParsedTools::Function<1> inflow_function; // inflow depends on time only
-
-  mutable TimerOutput computing_timer;
 };
 
 #endif // BLOOD_FLOW_SYSTEM_H
