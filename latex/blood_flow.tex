@@ -4,276 +4,1250 @@
 \usepackage{bm}
 \usepackage{xcolor}
 \usepackage{hyperref}
+
 \newtheorem{theorem}{Theorem}
 \newtheorem{remark}[theorem]{Remark}
-\title{DG formulation and Newton linearization
-for a 1D embedded Blood Flow system with Lax--Friedrichs flux}
+
+\title{HDG Discretization of 1D Embedded Blood Flow with junctions and $RCR$ Boundaries}
 \author{}
 \date{}
 
 \newcommand{\R}{\mathbb{R}}
-\newcommand{\avg}[1]{\left\{\!\!\left\{#1\right\}\!\!\right\}}
-\newcommand{\jump}[1]{\left[\!\left[#1\right]\!\right]}
 \newcommand{\dt}{\Delta t}
-\newcommand{\Vh}{V_h}
 \newcommand{\Th}{\mathcal{T}_h}
-\newcommand{\Fh}{\mathcal{F}_h}
-\newcommand{\Kh}{K}
+\newcommand{\Eh}{\mathcal{E}_h}
+\newcommand{\Eho}{\mathcal{E}_h^o}
+\newcommand{\Ehb}{\mathcal{E}_h^{\partial}}
+\newcommand{\Ehj}{\mathcal{E}_h^{J}}
 \newcommand{\norm}[1]{\left\lVert #1\right\rVert}
+\newcommand{\wh}{\mathbf{w}_h}
+\newcommand{\whl}{\mathbf{w}^L_h}
+\newcommand{\whr}{\mathbf{w}^R_h}
+\newcommand{\who}{\widehat{\mathbf{w}}_h}
+\newcommand{\Hn}{\mathbf{H}_n}
+\newcommand{\Hnl}{\mathbf{H}_n^{L}}
+\newcommand{\Hnr}{\mathbf{H}_n^{R}}
 
 \begin{document}
 \maketitle
 
-
-\section{Model problem and geometry}
-
-We consider the one-dimensional blood flow equations embedded along a
-centerline $\Gamma\subset\R^{\text{spacedim}}$, parameterized by a unit tangent
-vector $\bm b(\bm x)$:
-\begin{align}
-  \partial_t A + \nabla \cdot (\bm b A U) &= 0,
-  && \text{(Area equation)}, \label{eq:area-eq}\\[2mm]
-  \partial_t U + \nabla \cdot
-  \left( \bm b  \!\left(\frac{U^2}{2}  + \frac{1}{\rho} P(A)\right) \right)
-  + c\,U &= 0,
-  && \text{(Momentum equation).} \label{eq:momentum-eq}
-\end{align}
-Here $A$ and $U$ denote the cross-sectional area and mean velocity,
-respectively.
-The direction vector of each 1D element is
-\[
-  \bm b = \frac{\bm x_1 - \bm x_0}{\lVert \bm x_1 - \bm x_0\rVert},
-  \qquad
-  \beta := \bm b\!\cdot\!\bm n
-\]
-where $\bm n$ is the outward normal. The pressure $P(A)$ is governed by a
-constitutive \emph{tube law}, for example
-\[
-  P(A) = P_0 + \mu \!\left[\!\left(\frac{A}{A_0}\right)^m - 1\!\right],
-  \qquad
-  \frac{dP}{dA} = \mu \,m\,\frac{A^{m-1}}{A_0^m},
-\]
-and the wave speed is
-\[
-  c = \sqrt{\frac{A}{\rho}\frac{dP}{dA}}.
-\]
-
-The compact vector form of the system is
+\section{Governing System}
+We consider the one-dimensional blood flow equations parameterized along a centerline tangent vector $\bm b(\bm x)$. The compact vector form of the conservation system is given by:
 \begin{equation}
-  \partial_t \mathbf{W} + \nabla \cdot (\bm b \mathbf{F}(\mathbf{W}))
-  = S(\mathbf{W}),
+  \partial_t \mathbf{w} + \bm b \cdot \nabla \mathbf{F}(\mathbf{w}) = \mathbf{S}(\mathbf{w}), \qquad
+  \mathbf{w} = \begin{pmatrix} A \\ U \end{pmatrix}, \qquad
+  \mathbf{S}(\mathbf{w}) = \begin{pmatrix} 0 \\ - \frac{f U}{A} \end{pmatrix},
+\end{equation}
+where $A$ is the cross-sectional area, $U$ is the mean velocity, $\rho$ is the blood density, and $f$ is the friction coefficient. The non-linear physical flux vector $\mathbf{F}(\mathbf{w})$ is:
+\begin{equation}
+  \mathbf{F}(\mathbf{w}) = \begin{pmatrix} F_A(\mathbf{w}) \\ F_U(\mathbf{w}) \end{pmatrix} = \begin{pmatrix} A U \\ \frac{U^2}{2} + \frac{1}{\rho} P(A) \end{pmatrix}.
+\end{equation}
+The arterial wall mechanics are governed by the tube law $$P(A) - P_0 = P_d + \frac{\beta}{A_d} \left[ (A^m - A_d^m \right],$$ with $\beta = 4/3 \sqrt{\pi} E h_w$, yielding the physical wave speed $c(A) = \sqrt{\frac{A}{\rho}\frac{dP}{dA}}$ and , $f = 2(\zeta+2)\mu \pi$.
+
+\section{HDG Variable Spaces}
+Let $\Th$ be the collection of non-overlapping line elements $K$, and let $\Eh$ be the set of all boundary endpoints (nodes). We partition $\Eh$ into three mutually disjoint subsets:
+\[
+  \Eh = \Eho \cup \Ehb \cup \Ehj,
+\]
+representing standard interior nodes ($\Eho$), exterior boundary terminals ($\Ehb$), and branching junctions ($\Ehj$). 
+
+We define the local element state space $\mathbf{W}_h^k$ and the globally single-valued trace space $\mathbf{M}_h^k$ as:
+\begin{align*}
+  \mathbf{W}_h^k &= \left\{ \mathbf{v} \in (L^2(\Th))^2 : \mathbf{v}|_K \in (\mathcal{P}^k(K))^2, \, \forall K \in \Th \right\}, \\
+  \mathbf{M}_h^k &= \left\{ \bm{\mu} \in (L^2(\Eh))^2 : \bm{\mu}|_F \in (\mathcal{P}^k(F))^2, \, \forall F \in \Eh \right\}.
+\end{align*}
+the HDG trace variable $\widehat{\mathbf{w}}_h = (\widehat{A}_h, \widehat{U}_h)^\top \in \mathbf{M}_h^k$ is uniquely defined over $\Eh$.
+
+\section{The HDG Weak Formulation}
+Inside each element $K \in \Th$, the interior state $\mathbf{w}_h \in \mathbf{W}_h^k$ is driven entirely by the trace variable $\widehat{\mathbf{w}}_h$ through the local weak form:
+\begin{equation}
+  \left(\partial_t \mathbf{w}_h, \mathbf{v}\right)_K - \left(\mathbf{F}(\mathbf{w}_h), \bm b \cdot \nabla \mathbf{v}\right)_K + \left\langle \widehat{\mathbf{F}}_h \cdot \bm n, \mathbf{v} \right\rangle_{\partial K} = \left(\mathbf{S}(\mathbf{w}_h), \mathbf{v}\right)_K, \quad \forall \mathbf{v} \in (\mathcal{P}^k(K))^2,
+  \label{eq:hdg_local}
+\end{equation}
+where $\bm n$ is the outward unit normal vector pointing out of element $K$ ($\bm n = \pm 1$). 
+
+\subsection{Numerical Trace Flux}
+The numerical trace flux vector $\widehat{\mathbf{F}}_h \cdot \bm{n}$ on $\partial K$ is expressed as a unified numerical interface flux function $\mathcal{F}_{\text{num}}$ that depends simultaneously on the internal cell state $\mathbf{w}_h$ and the single-valued global trace $\widehat{\mathbf{w}}_h$:
+\begin{equation}
+  \widehat{\mathbf{F}}_h \cdot \bm{n} = \mathcal{F}_{\text{num}}(\bm{n}, \mathbf{w}_h, \widehat{\mathbf{w}}_h).
+  \label{eq:numerical_flux}
+\end{equation}
+Depending on the runtime execution context, the operator $\mathcal{F}_{\text{num}}$ evaluates the total interface flux using either a Local Lax-Friedrichs or an HLL discretization closure:
+\begin{equation}
+  \mathcal{F}_{\text{num}}(\bm{n}, \mathbf{w}_h, \widehat{\mathbf{w}}_h) = \mathbf{F}(\widehat{\mathbf{w}}_h) \cdot \bm{n} + \bm{\Sigma}(\mathbf{w}_h, \widehat{\mathbf{w}}_h)\bigl(\mathbf{w}_h - \widehat{\mathbf{w}}_h\bigr),
+\end{equation}
+where $\bm{\Sigma}(\mathbf{w}_h, \widehat{\mathbf{w}}_h)$ acts as the local stabilization penalty matrix, taking either the scalar identity form $\alpha_{\text{LF}}\mathbf{I}$ or the directionally-split matrix form $\bm{\Sigma}_{\text{HLL}}$.
+% \subsection{Unified Global Transmission Condition}
+% The global problem is completed by requiring that the numerical trace flux satisfies conservative physical principles at every interface. This is stated via the global weak equation: find $\widehat{\mathbf{w}}_h \in \mathbf{M}_h^k$ such that
+% \begin{equation}
+%   \sum_{K \in \Th} \left\langle \widehat{\mathbf{F}}_h \cdot \bm n, \bm{\mu} \right\rangle_{\partial \Th \setminus (\Ehb \cup \Ehj)} + \sum_{F \in \Ehb \cup \Ehj} \left\langle \widehat{\mathbf{B}}_h(\mathbf{w}_h, \widehat{\mathbf{w}}_h), \bm{\mu} \right\rangle_F = 0, \quad \forall \bm{\mu} \in \mathbf{M}_h^k.
+%   \label{eq:hdg_global}
+% \end{equation}
+% The boundary operator $\widehat{\mathbf{B}}_h(\mathbf{w}_h, \widehat{\mathbf{w}}_h)$ wraps junctions and inlet/outlet boundaries.
+
+% \paragraph{Interior Faces}
+
+% A face $F$ shared by left element $K_L$ (outward normal $n=+1$) and right
+% element $K_R$ (outward normal $n=-1$) must conserve the normal flux:
+% \[
+%   \widehat{\mathbf{F}}_h(\whl,\who)\cdot(+1)
+%   + \widehat{\mathbf{F}}_h(\whr,\who)\cdot(-1) = \mathbf{0}.
+% \]
+% \begin{align}
+%   \mathcal{F}_{\mathrm{int}}(\whl,\whr,\who)
+%   &= \bm{\Sigma}_{K_L}(\whl-\who)
+%     -\bm{\Sigma}_{K_R}(\whr-\who)
+%   = 0.
+%   \label{eq:int_transmission}
+% \end{align}
+% \subsection{Unified Global Transmission Condition}
+
+% The global HDG problem is completed by requiring that the numerical
+% trace flux satisfies conservative transmission conditions at all
+% interfaces. Specifically, we seek
+% $\widehat{\mathbf{w}}_h \in \mathbf{M}_h^k$ such that
+% \begin{equation}
+%   \sum_{K \in \Th}
+%   \left\langle
+%   \widehat{\mathbf{F}}_h \cdot \bm n,
+%   \bm{\mu}
+%   \right\rangle_{\partial K \setminus (\Ehb \cup \Ehj)}
+%   +
+%   \sum_{F \in \Ehb}
+%   \left\langle
+%   \widehat{\mathbf{B}}_h,
+%   \bm{\mu}
+%   \right\rangle_F
+%   +
+%   \sum_{J \in \Ehj}
+%   \left\langle
+%   \widehat{\mathbf{J}}_h,
+%   \bm{\mu}
+%   \right\rangle_J
+%   =0,
+%   \qquad
+%   \forall \bm{\mu}\in \mathbf{M}_h^k.
+% \label{eq:global_hdg}
+% \end{equation}
+
+% Here:
+% \begin{itemize}
+% \item $\widehat{\mathbf{F}}_h$ denotes the standard HDG interior numerical flux,
+% \item $\widehat{\mathbf{B}}_h$ denotes the physical boundary operator,
+% \item $\widehat{\mathbf{J}}_h$ denotes the junction coupling operator.
+% \end{itemize}
+
+% \subsubsection{Cell Numerical Flux}
+
+% For each element $K\in\Th$, the HDG numerical flux is defined by
+% \begin{equation}
+% \widehat{\mathbf F}_h \cdot \bm n
+% =
+% \mathbf F(\widehat{\mathbf w}_h)\cdot \bm n
+% +
+% \bm{\Sigma}
+% (\mathbf w_h-\widehat{\mathbf w}_h),
+% \label{eq:cell_flux}
+% \end{equation}
+% where $\bm{\Sigma}$ is a stabilization matrix.
+
+% \subsubsection{Interior Face Transmission}
+
+% Consider an interior face shared by two neighboring elements
+% $K_L$ and $K_R$ with outward normals satisfying
+% \[
+% \bm n_R=-\bm n_L.
+% \]
+
+% Since the trace variable $\widehat{\mathbf w}_h$ is single-valued on the
+% interface, the physical flux contributions cancel:
+% \[
+% \mathbf F(\widehat{\mathbf w}_h)\cdot \bm n_L
+% +
+% \mathbf F(\widehat{\mathbf w}_h)\cdot \bm n_R
+% =
+% 0.
+% \]
+
+% Consequently, the transmission condition reduces to
+% \begin{equation}
+% \mathcal F_{\mathrm{int}}
+% =
+% \bm{\Sigma}_{K_L}
+% (\mathbf w_{h,L}-\widehat{\mathbf w}_h)
+% -
+% \bm{\Sigma}_{K_R}
+% (\mathbf w_{h,R}-\widehat{\mathbf w}_h)
+% =
+% 0.
+% \label{eq:interior_transmission}
+% \end{equation}
+
+% \subsubsection{Physical Boundary Conditions}
+
+% At physical boundaries there is no neighboring element and therefore no
+% cancellation of the physical flux occurs. In this case the stabilization
+% term is replaced by a characteristic boundary operator:
+% \begin{equation}
+% \widehat{\mathbf B}_h
+% =
+% H_R(\widehat{\mathbf w}_h)
+% (\mathbf w_h-\widehat{\mathbf w}_h)
+% -
+% H_L(\widehat{\mathbf w}_h)
+% (\mathbf w_{\mathrm{bc}}-\widehat{\mathbf w}_h),
+% \label{eq:boundary_operator}
+% \end{equation}
+% where
+% \[
+% H_R=\frac12(H+|H|),
+% \qquad
+% H_L=\frac12(H-|H|),
+% \]
+% with
+% \[
+% H=
+% \begin{pmatrix}
+% U & A \\
+% \dfrac{c^2}{A} & U
+% \end{pmatrix}.
+% \]
+
+% The matrices $H_R$ and $H_L$ represent respectively the outgoing and
+% incoming characteristic components of the hyperbolic blood flow system.
+% Thus, outgoing information is obtained from the interior solution,
+% whereas incoming information is imposed weakly through the boundary
+% state $\mathbf w_{\mathrm{bc}}$.
+
+% \paragraph{Inflow Boundary}
+
+% At inflow boundaries, a prescribed flow rate $Q_{in}(t)$ is imposed
+% through the target state
+% \[
+% \mathbf w_{\mathrm{bc}}
+% =
+% \begin{pmatrix}
+% \widehat A_h \\
+% \dfrac{Q_{in}(t)}{\widehat A_h}
+% \end{pmatrix}.
+% \]
+
+% \paragraph{RCR Outlet Boundary}
+
+% At terminal outlet boundaries, a three-element
+% Windkessel (RCR) model is employed to represent the downstream
+% vasculature. The capacitor pressure satisfies
+% \begin{equation}
+% C\frac{dP_c}{dt}
+% =
+% Q_h-\frac{P_c-P_{out}}{R_2},
+% \label{eq:RCR_ODE}
+% \end{equation}
+% where
+% \[
+% Q_h=\widehat A_h \widehat U_h .
+% \]
+
+% The outlet pressure is given by
+% \begin{equation}
+% P_{\mathrm{RCR}}
+% =
+% R_1 Q_h + P_c .
+% \label{eq:RCR_pressure}
+% \end{equation}
+
+% Using the pressure-area constitutive relation
+% \[
+% P(A) - P_0
+% =
+% P_d
+% +
+% \frac{\beta}{A_d}
+% \left(
+% A^m - A_d^m
+% \right),
+% \]
+% the outlet area $A_{\mathrm{RCR}}$ is reconstructed from the RCR pressure
+% through the pressure continuity condition
+% \[
+% P(A_{\mathrm{RCR}})=P_{\mathrm{RCR}}.
+% \]
+
+% Substituting the constitutive law yields
+% \[
+% P_{\mathrm{RCR}} - P_0
+% =
+% P_d
+% +
+% \frac{\beta}{A_d}
+% \left(
+% A_{\mathrm{RCR}}^m - A_d^m
+% \right).
+% \]
+
+% Hence,
+% \[
+% A_{\mathrm{RCR}}^m
+% =
+% A_d^m
+% +
+% \frac{A_d}{\beta}
+% \left(
+% P_{\mathrm{RCR}} - P_0 - P_d
+% \right),
+% \]
+% and therefore
+% \[
+% A_{\mathrm{RCR}}
+% =
+% \left[
+% A_d^m
+% +
+% \frac{A_d}{\beta}
+% \left(
+% P_{\mathrm{RCR}} - P_0 - P_d
+% \right)
+% \right]^{1/m}.
+% \]
+
+% At terminal outlet boundaries, the target state is constructed from the
+% RCR model:
+% \[
+% \mathbf w_{\mathrm{bc}}
+% =
+% \begin{pmatrix}
+% A_{\mathrm{RCR}} \\
+% \widehat U_h
+% \end{pmatrix},
+% \]
+% where $A_{\mathrm{RCR}}$ is reconstructed from the Windkessel pressure
+% through the constitutive pressure-area relation.
+
+% \subsubsection{Junction Coupling Conditions}
+
+% Consider a junction $J$ connecting $K\ge3$ vessels. Let
+% \[
+% \widehat{\mathbf w}_i=
+% \begin{pmatrix}
+% \widehat A_i\\
+% \widehat U_i
+% \end{pmatrix},
+% \qquad i=1,\dots,K,
+% \]
+% denote the hybrid trace state associated with vessel $i$ at the
+% junction.
+
+% Unlike physical boundaries, a junction is an internal network interface.
+% Therefore, no external characteristic information is imposed. Instead,
+% all incoming and outgoing wave information is generated internally
+% through the coupled trace unknowns satisfying the conservation laws.
+
+% For this reason, the standard HDG stabilization form is retained at the
+% junction interfaces:
+% \begin{equation}
+% \widehat{\mathbf J}_{h,i}
+% =
+% \mathbf F(\widehat{\mathbf w}_i)\cdot \bm n_i
+% +
+% \bm{\Sigma}_i
+% (\mathbf w_{h,i}-\widehat{\mathbf w}_i),
+% \qquad i=1,\dots,K.
+% \label{eq:junction_flux}
+% \end{equation}
+
+% The junction trace states are determined by imposing:
+
+% \paragraph{Mass Conservation}
+% \begin{equation}
+% \sum_{i=1}^{K}
+% s_i \widehat A_i \widehat U_i
+% =
+% 0,
+% \label{eq:junction_mass}
+% \end{equation}
+% where
+% \[
+% s_i=
+% \begin{cases}
+% +1, & \text{if vessel } i \text{ ends at the junction},\\
+% -1, & \text{if vessel } i \text{ starts at the junction}.
+% \end{cases}
+% \]
+
+% \paragraph{Pressure/Total Head Continuity}
+% \begin{equation}
+% \frac12 \widehat U_1^2+\Psi(\widehat A_1)
+% =
+% \frac12 \widehat U_i^2+\Psi(\widehat A_i),
+% \qquad i=2,\dots,K,
+% \label{eq:junction_pressure}
+% \end{equation}
+% with
+% \[
+% \Psi(A)=\frac{P(A)}{\rho}.
+% \]
+
+% The use of the standard stabilization operator
+% in~\eqref{eq:junction_flux} is motivated by the fact that junctions do
+% not introduce external states. In contrast to physical boundaries,
+% where incoming characteristics must be prescribed externally, the
+% junction coupling conditions themselves provide the missing incoming
+% information through the globally coupled trace system.
+
+\subsection{Unified Global Transmission Condition}
+
+The global HDG problem is completed by requiring that the numerical
+trace flux satisfies conservative transmission conditions at all
+interfaces. Specifically, we seek
+$\widehat{\mathbf{w}}_h \in \mathbf{M}_h^k$ such that
+\begin{equation}
+  \sum_{K \in \Th}
+  \left\langle
+  \widehat{\mathbf{F}}_h \cdot \bm n,
+  \bm{\mu}
+  \right\rangle_{\partial K \setminus (\Ehb \cup \Ehj)}
+  +
+  \sum_{F \in \Ehb}
+  \left\langle
+  \widehat{\mathbf{B}}_h,
+  \bm{\mu}
+  \right\rangle_F
+  +
+  \sum_{J \in \Ehj}
+  \left\langle
+  \widehat{\mathbf{J}}_h,
+  \bm{\mu}
+  \right\rangle_J
+  =0,
   \qquad
-  \mathbf{W} =
-  \begin{pmatrix} A \\[1mm] U \end{pmatrix},
-  \quad
-  S(\mathbf{W}) = -
-  \begin{pmatrix} 0 \\[1mm] cU \end{pmatrix},
-  \label{eq:model-vector}
+  \forall \bm{\mu}\in \mathbf{M}_h^k.
+\label{eq:global_hdg}
 \end{equation}
-with the physical flux
-\[
-  \mathbf{F}(\mathbf{W}) =
-  \begin{pmatrix}
-    A U \\[2mm]
-    \dfrac{U^2}{2} + \dfrac{1}{\rho} P(A)
-  \end{pmatrix}.
-\]
 
-
-\section{Discontinuous Galerkin weak formulation}
-
-
-Let $\Th$ denote a partition of $\Gamma$ into 1D elements $K$, and for
-polynomial degree $k\ge0$ define the discontinuous finite element space
-\[
-  \Vh = \{v\in L^2(\Gamma): v|_K \in \mathbb P_k(K),\ \forall K\in\Th\}.
-\]
-For an interior face $F\in\Fh^\circ$ across two elements $E^+$ and $E^-$, with
-outward unit normals $\bm n^+$ and $\bm n^-$, the jump and average operators are
-\[
-  \jump{v}=v^-\bm n^- \cdot \bm b^- + v^+\bm n^+ \cdot \bm b^+ = \beta^- v^- + \beta^+v^+ ,
-  \qquad
-  \avg{v}=\tfrac12(v^-+v^+),
-\]
-and on boundary faces $F\subset\partial\Gamma$ we set
-$\avg{v}=v$ and $\jump{v}=v\bm n$
-
-DG weak form for \eqref{eq:model-vector} is 
-\begin{equation}{\label{semi-discrete-weak-form}}
-     \left( \partial_t \mathbf{W}_h , \phi \right)
-  - (\mathbf{F}(\mathbf{W}), \bm b\cdot \nabla \phi) + \langle \widehat{\mathbf{F}}(\mathbf{W}), \jump{\phi} \rangle
-  - (S(\mathbf{W}_h), \phi) = 0,
-\end{equation}
-where $\widehat{\mathbf{F}}$ is a numerical flux defined later.
-
-\section{Time integration with ARKode}
-
-The deal.II wrapper \texttt{SUNDIALS::ARKode} expects the semi-discrete system
-in the form
-\begin{equation}\label{eq:ark-ivp}
-  \mathcal{M}\,\dot{\mathbf{y}}
-  = f_E(t,\mathbf{y}) + f_I(t,\mathbf{y}),
-  \qquad \mathbf{y}\equiv\mathbf{W}_h\in\Vh^2,
-\end{equation}
-where $\mathcal{M}$ is a (possibly time-dependent) mass operator acting on
-vectors in $\Vh^2$, and $f_E$ and $f_I$ denote the explicit and implicit
-contributions to the right-hand side.  Setting either $f_E\equiv0$ or
-$f_I\equiv0$ recovers the explicit RK or DIRK limits supported by ARKode.
-
-\subsection*{DG operators in ARKode notation}
-
-For any pair of test functions $\bm\phi=(\phi_A,\phi_U)\in\Vh^2$, the DG mass
-operator is
-\[
-  (\mathcal{M}\,\mathbf{v},\bm\phi)
-  := (\mathbf{v},\bm\phi)
-  = \sum_{K\in\Th} \int_K \mathbf{v}\cdot\bm\phi\,dx .
-\]
-We collect all spatial terms (physical flux, numerical flux, source) in the
-bilinear form
-\[
-  \mathcal{L}(\mathbf{W}_h;\bm\phi)
-  :=
-      (\mathbf{F}(\mathbf{W}_h),\bm b\!\cdot\!\nabla\bm\phi)
-      - \langle \widehat{\mathbf{F}}(\mathbf{W}_h),\jump{\bm\phi} \rangle
-      + (S(\mathbf{W}_h),\bm\phi),
-\]
-so that \eqref{semi-discrete-weak-form} reads
-$(\mathcal{M}\,\dot{\mathbf{W}}_h,\bm\phi) = \mathcal{L}(\mathbf{W}_h;\bm\phi)$.
-The ARKode callbacks are then
-\[
-  (f_E(t,\mathbf{W}_h),\bm\phi) = \mathcal{L}_E(\mathbf{W}_h;\bm\phi),\qquad
-  (f_I(t,\mathbf{W}_h),\bm\phi) = \mathcal{L}_I(\mathbf{W}_h;\bm\phi),
-\]
-with $\mathcal{L}_E+\mathcal{L}_I=\mathcal{L}$.  In practice we use the fully
-implicit choice $\mathcal{L}_E\equiv0$ and $\mathcal{L}_I\equiv\mathcal{L}$,
-which mirrors the backward Euler treatment used before; other ImEx splits
-(e.g. explicit advection, implicit damping) can be obtained by moving terms
-between $\mathcal{L}_E$ and $\mathcal{L}_I$ without changing the formulas
-below.
-
-\subsection*{Implicit stages and Newton system}
-
-For an implicit ARK stage $i$ with step size $h_n$ and Butcher coefficient
-$\gamma=A^I_{i,i}$, ARKode solves the nonlinear stage equation
-\begin{equation}\label{eq:ark-stage}
-  G(z_i) := \mathcal{M}\,z_i
-    - h_n\,\gamma\,f_I(t^I_{n,i},z_i) - a_i = 0,
-\end{equation}
-where $a_i$ collects already-known information from previous stages and the
-explicit part,
-\[
-  a_i
-  = \mathcal{M}\,y_{n-1}
-    + h_n \sum_{j=1}^{i-1}
-      \Big(
-        A^E_{i,j}\,f_E(t^E_{n,j},z_j)
-        + A^I_{i,j}\,f_I(t^I_{n,j},z_j)
-      \Big).
-\]
-When $f_I$ is nonlinear, ARKode uses Newton's method
-$z_i^{m+1}=z_i^{m}+\delta z^{m+1}$ with linear systems
-\begin{equation}\label{eq:ark-newton}
-  N(z_i^{m})\,\delta z^{m+1} = -G(z_i^{m}),
-  \qquad
-  N(z) := \mathcal{M} - \gamma\,J(z),
-\end{equation}
-where $J(z) = (\partial f_I / \partial y) (z)$ is the Jacobian of $f_I$
-evaluated in $z$.
-
-\subsection*{Jacobian action for the implicit operator}
-
-Using the same notation as in \eqref{semi-discrete-weak-form}, the weak action
-of $J(\mathbf{W}_h)$ on a perturbation $\delta\mathbf{W}_h$ is
-\begin{equation}\label{eq:ark-jacobian}
-\boxed{
-\begin{aligned}
-  \bigl(J(\mathbf{W}_h)\,\delta\mathbf{W}_h,\bm\phi\bigr)
-  &=
-    (\mathbf{H}(\mathbf{W}_h)\,\delta\mathbf{W}_h,\bm b\!\cdot\!\nabla\bm\phi)
-    - \langle \delta\widehat{\mathbf{F}}(\mathbf{W}_h;\delta\mathbf{W}_h),
-              \jump{\bm\phi} \rangle \\
-  &\qquad\qquad
-    + \big(\tfrac{\partial S}{\partial\mathbf{W}}(\mathbf{W}_h)\,\delta\mathbf{W}_h,
-       \bm\phi\big),
-\end{aligned}}
-\end{equation}
-with the physical flux Jacobian
-\[
-  \mathbf{H}(\mathbf{W})
-  =
-  \begin{pmatrix}
-    U & A \\[1mm]
-    \dfrac{c^2}{A} & U
-  \end{pmatrix},
-  \qquad
-  c = \sqrt{\frac{A}{\rho}\frac{dP}{dA}(A)}.
-\]
-For the Lax--Friedrichs numerical flux the consistent linearization appearing
-in \eqref{eq:ark-jacobian} is
-\begin{equation}\label{eq:LF-derivative-ark}
-  \delta\widehat{\mathbf{F}}
-  =
-  \tfrac12\Big(
-    \mathbf{H}^-\,\delta\mathbf{W}^-\,\beta^-
-    + \mathbf{H}^+\,\delta\mathbf{W}^+\,\beta^+
-  \Big)
-  - \tfrac12\,\alpha
-    (\delta\mathbf{W}^+ - \delta\mathbf{W}^-),
-  \qquad \beta^\pm := \bm b\!\cdot\!\bm n^\pm ,
-\end{equation}
-where $\alpha$ is the usual Rusanov penalty
-$\alpha=\max(|U^\pm\!-\!c^\pm|,|U^\pm\!+\!c^\pm|)$.  Componentwise,
-\[
-\begin{aligned}
-\delta\widehat{F}_A
-&= \tfrac12\Big[(U^-\,\delta A^- + A^-\,\delta U^-)\beta^-
-                 + (U^+\,\delta A^+ + A^+\,\delta U^+)\beta^+\Big]
-   - \tfrac12\alpha(\delta A^+ - \delta A^-), \\[1mm]
-\delta\widehat{F}_U
-&= \tfrac12\Big[\big(\tfrac{(c^-)^2}{A^-}\delta A^- + U^-\,\delta U^-\big)\beta^-
-                 + \big(\tfrac{(c^+)^2}{A^+}\delta A^+ + U^+\,\delta U^+\big)\beta^+\Big]
-   - \tfrac12\alpha(\delta U^+ - \delta U^-).
-\end{aligned}
-\]
-Inserting \eqref{eq:ark-jacobian} in \eqref{eq:ark-newton} yields the matrix-free
-operator needed by \texttt{jacobian\_times\_vector} in
-\texttt{deal.II/sundials/arkode.h}; the mass term in \eqref{eq:ark-newton} is
-handled by the ARKode wrapper through the supplied $\mathcal{M}$.
-
-\subsection*{Boundary data inside the ARKode callbacks}
-
-When evaluating either $f_I$ or $J$, the exterior trace $\mathbf{W}^+$ in the
-flux and its variation follows the same characteristic-based logic as before.
-Let $\lambda_{1,2}=U\mp c$ denote the characteristic speeds.  The mapping from
-interior data to boundary data is summarised in
-Table~\ref{tab:bd-arkode}; it is applied identically inside
-$\widehat{\mathbf{F}}$ and $\delta\widehat{\mathbf{F}}$ in
-\eqref{eq:LF-derivative-ark}.
-
-\begin{table}[h!]
-\centering
-\begin{tabular}{c|c|c|c}
-\hline
-\textbf{Flow regime} & $A^+$ & $U^+$ & $(\delta A^+,\,\delta U^+)$ \\ \hline
-Subcritical inlet   & $A_b$  & $U^-$ & $(0,\ \delta U^-)$ \\[2mm]
-Subcritical outlet  & $A^-$  & $U_b$ & $(\delta A^-,\ 0)$ \\[2mm]
-Supercritical inflow & $A_b$ & $U_b$ & $(0,\ 0)$ \\[2mm]
-Supercritical outflow & $A^-$ & $U^-$ & $(\delta A^-,\ \delta U^-)$ \\
-\hline
-\end{tabular}
-\caption{Boundary states used inside the ARKode callbacks.}
-\label{tab:bd-arkode}
-\end{table}
-
+Here:
 \begin{itemize}
-  \item The choice $f_E\equiv0$ yields a DIRK scheme identical in spirit to the
-  backward Euler step used previously; switching terms between $f_E$ and $f_I$
-  gives ImEx schemes without altering the formulas for $\widehat{\mathbf{F}}$
-  and $J$.
-  \item In the code \texttt{assemble\_implicit\_function} assemble the vectors
-  corresponding to $\mathcal{L}_I$, \texttt{mass\_matrix} supplies
-  $\mathcal{M}$, and \texttt{jacobian\_times\_vector} applies
-  $N(\cdot)=\mathcal{M}-\gamma J(\cdot)$ using \eqref{eq:ark-jacobian}.
+\item $\widehat{\mathbf{F}}_h$ denotes the standard HDG interior
+      numerical flux,
+\item $\widehat{\mathbf{B}}_h$ denotes the physical boundary operator,
+\item $\widehat{\mathbf{J}}_h$ denotes the junction coupling operator.
 \end{itemize}
+
+\subsubsection{Cell Numerical Flux}
+
+For each element $K\in\Th$, the HDG numerical flux is defined by
+\begin{equation}
+\widehat{\mathbf F}_h \cdot \bm n
+=
+\mathbf F(\widehat{\mathbf w}_h)\cdot \bm n
++
+\bm{\Sigma}
+(\mathbf w_h-\widehat{\mathbf w}_h),
+\label{eq:cell_flux}
+\end{equation}
+where $\bm{\Sigma} = \alpha_{\mathrm{LF}}\mathbf{I}$ is the
+Local Lax--Friedrichs stabilization matrix with
+\[
+\alpha_{\mathrm{LF}}
+=
+\max\bigl(|U_h \pm c_h|,\,|\widehat{U}_h \pm \widehat{c}_h|\bigr).
+\]
+
+\subsubsection{Interior Face Transmission}
+
+Consider an interior face shared by two neighboring elements
+$K_L$ and $K_R$ with outward normals satisfying
+$\bm n_R = -\bm n_L$.
+Since the trace variable $\widehat{\mathbf w}_h$ is single-valued on
+the interface, the physical flux contributions cancel:
+\[
+\mathbf F(\widehat{\mathbf w}_h)\cdot \bm n_L
++
+\mathbf F(\widehat{\mathbf w}_h)\cdot \bm n_R
+=
+0.
+\]
+
+Consequently, the interior transmission condition reduces to
+\begin{equation}
+\mathcal{F}_{\mathrm{int}}(\mathbf{w}_{h,L},\mathbf{w}_{h,R},
+\widehat{\mathbf{w}}_h)
+=
+\bm{\Sigma}_{K_L}(\mathbf w_{h,L}-\widehat{\mathbf w}_h)
++
+\bm{\Sigma}_{K_R}(\mathbf w_{h,R}-\widehat{\mathbf w}_h)
+=
+\mathbf{0}.
+\label{eq:interior_transmission}
+\end{equation}
+
+The corresponding Jacobian blocks are:
+\[
+D_f
+=
+\frac{\partial\mathcal{F}_{\mathrm{int}}}
+     {\partial\widehat{\mathbf{w}}_h}
+=
+-(\bm{\Sigma}_{K_L}+\bm{\Sigma}_{K_R})
+=
+-2\alpha_{\mathrm{LF}}\mathbf{I},
+\]
+\[
+C_{f,K_{L/R}}
+=
+\frac{\partial\mathcal{F}_{\mathrm{int}}}
+     {\partial\mathbf{w}_{h,{L/R}}}
+=
+\bm{\Sigma}_{K_{L/R}}
+=
+\alpha_{\mathrm{LF}}\mathbf{I},
+\]
+where $\hat{n}_{R}= -\hat{n}_{L}$ 
+\subsubsection{Physical Boundary Conditions}
+
+At physical boundaries there is no neighboring element. The trace
+$\widehat{\mathbf{w}}_h$ is determined by a transmission residual
+$\mathcal{F}_{\mathrm{bc}}(\mathbf{w}_h, \widehat{\mathbf{w}}_h)
+= \mathbf{0}$ whose form depends on the boundary type. 
+
+The flux Jacobian matrix and its characteristic splitting are
+\[
+H(\widehat{\mathbf{w}}_h)
+=
+\begin{pmatrix}
+\widehat{U}_h & \widehat{A}_h \\[4pt]
+\dfrac{\widehat{c}_h^2}{\widehat{A}_h} & \widehat{U}_h
+\end{pmatrix},
+\qquad
+H_R = \tfrac{1}{2}(H+|H|),
+\qquad
+H_L = \tfrac{1}{2}(H-|H|),
+\]
+where $|H| = R|\Lambda|R^{-1}$ is constructed from the
+eigendecomposition of $H$ and
+$\widehat{c}_h = c(\widehat{A}_h)$ is the wave speed at the trace.
+$H_R \rightarrow $ outgoing characteristics (carrying interior
+information outward) and $H_L \rightarrow$ incoming characteristics
+(carrying exterior boundary data inward).
+
+\paragraph{Inflow Boundary}
+
+At an inflow face connected to element $K$, the trace
+$\widehat{\mathbf{w}}_h = (\widehat{A}_h, \widehat{U}_h)^\top$
+is determined by the prescribed flow rate $Q_{\mathrm{in}}(t)$ and
+compatibility with the interior through the backward Riemann
+invariant $W_2 = U - 4(c - c_0)$:
+\begin{equation}
+\mathcal{F}_{\mathrm{in}}(\mathbf{w}_h, \widehat{\mathbf{w}}_h)
+=
+\begin{pmatrix}
+\widehat{A}_h\,\widehat{U}_h - Q_{\mathrm{in}}(t)
+\\[8pt]
+\bigl[\widehat{U}_h - 4(\widehat{c}_h - c_0)\bigr]
+-
+\bigl[U_h - 4(c_h - c_0)\bigr]
+\end{pmatrix}
+= \mathbf{0}.
+\label{eq:inflow_transmission}
+\end{equation}
+
+Row 1 enforces the prescribed flow rate at the trace level. Row 2
+enforces continuity of $W_2$ between the trace and the interior,
+transmitting information from inside the domain outward.
+
+The Jacobian blocks are:
+\begin{equation}
+D_{\mathrm{in}}
+=
+\frac{\partial\mathcal{F}_{\mathrm{in}}}
+     {\partial\widehat{\mathbf{w}}_h}
+=
+\begin{bmatrix}
+\widehat{U}_h & \widehat{A}_h
+\\[8pt]
+4\,\dfrac{dc}{d\widehat{A}_h} & 1
+\end{bmatrix},
+\qquad
+C_{\mathrm{in}}
+=
+\frac{\partial\mathcal{F}_{\mathrm{in}}}
+     {\partial\mathbf{w}_h}
+=
+\begin{bmatrix}
+0 & 0
+\\[8pt]
+4\,\dfrac{dc}{dA_h} & -1
+\end{bmatrix},
+B_{\mathrm{in}}
+=
+\frac{\partial\mathcal{F}_{\mathrm{in}}}
+     {\partial\who}
+=
+\begin{bmatrix}
+\hat{U} & \hat{A}
+\\[8pt]
+-4\hat{c}_h' & 1
+\end{bmatrix}.
+\label{eq:inflow_jacobian}
+\end{equation}
+
+\paragraph{RCR Outlet Boundary}
+
+At terminal outlet boundaries, a three-element Windkessel (RCR)
+model represents the downstream vasculature. The capacitor pressure
+satisfies
+\begin{equation}
+C\frac{dP_c}{dt}
+=
+Q_h - \frac{P_c - P_{\mathrm{out}}}{R_2},
+\qquad
+Q_h = \widehat{A}_h\,\widehat{U}_h.
+\label{eq:RCR_ODE}
+\end{equation}
+
+Discretising~\eqref{eq:RCR_ODE} by backward Euler from time level $n$:
+\begin{equation}
+P_{\mathrm{rcr}}(\widehat{\mathbf{w}}_h)
+=
+\kappa_0 + \kappa_1\,\widehat{A}_h\,\widehat{U}_h,
+\label{eq:Prcr}
+\end{equation}
+with time-step constants
+\begin{equation}
+\kappa_0
+=
+\frac{C\,P_c^n + \dfrac{\Delta t}{R_2}P_{\mathrm{out}}}
+     {C + \dfrac{\Delta t}{R_2}},
+\qquad
+\kappa_1
+=
+\frac{\Delta t}{C + \dfrac{\Delta t}{R_2}}.
+\end{equation}
+
+The total terminal pressure at the outlet face is
+\begin{equation}
+P_{\infty}(\widehat{\mathbf{w}}_h)
+=
+P_{\mathrm{rcr}}(\widehat{\mathbf{w}}_h)
++
+R_1\,\widehat{A}_h\,\widehat{U}_h
+=
+\kappa_0 + (\kappa_1 + R_1)\,\widehat{A}_h\,\widehat{U}_h.
+\label{eq:Pinf}
+\end{equation}
+
+The trace $\widehat{\mathbf{w}}_h$ is determined by pressure
+continuity at the outlet face and compatibility with the interior
+through the forward Riemann invariant $W_1 = U + 4(c - c_0)$:
+\begin{equation}
+\mathcal{F}_{\mathrm{rcr}}(\mathbf{w}_h, \widehat{\mathbf{w}}_h)
+=
+\begin{pmatrix}
+P(\widehat{A}_h) - P_{\infty}(\widehat{\mathbf{w}}_h)
+\\[8pt]
+\bigl[\widehat{U}_h + 4(\widehat{c}_h - c_0)\bigr]
+-
+\bigl[U_h + 4(c_h - c_0)\bigr]
+\end{pmatrix}
+= \mathbf{0}.
+\label{eq:rcr_transmission}
+\end{equation}
+
+Row 1 enforces pressure continuity: the arterial pressure at the
+trace must equal the total Windkessel terminal pressure. Row 2
+enforces continuity of $W_1$ between the trace and the interior.
+
+The Jacobian blocks are:
+\begin{equation}
+D_{\mathrm{rcr}}
+=
+\frac{\partial\mathcal{F}_{\mathrm{rcr}}}
+     {\partial\widehat{\mathbf{w}}_h}
+=
+\begin{bmatrix}
+\dfrac{dP}{d\widehat{A}_h}
+- (\kappa_1 + R_1)\widehat{U}_h
+&
+-(\kappa_1 + R_1)\widehat{A}_h
+\\[10pt]
+4\,\dfrac{dc}{d\widehat{A}_h}
+&
+1
+\end{bmatrix},
+\label{eq:Drcr}
+\end{equation}
+
+\begin{equation}
+C_{\mathrm{rcr}}
+=
+\frac{\partial\mathcal{F}_{\mathrm{rcr}}}
+     {\partial\mathbf{w}_h}
+=
+\begin{bmatrix}
+0 & 0
+\\[8pt]
+-4\,\dfrac{dc}{dA_h} & -1
+\end{bmatrix}.
+\label{eq:Brcr}
+\end{equation}
+
+\subsubsection{Junction Coupling Conditions}
+
+Consider a junction $J$ connecting $K\ge 3$ vessels. Let
+\[
+\widehat{\mathbf{w}}_i
+=
+\begin{pmatrix}
+\widehat{A}_i \\ \widehat{U}_i
+\end{pmatrix},
+\qquad i = 1,\ldots,K,
+\]
+denote the hybrid trace state of vessel $i$ at the junction, with
+orientation sign
+\[
+s_i =
+\begin{cases}
++1, & \text{if vessel } i \text{ ends at the junction},\\
+-1, & \text{if vessel } i \text{ starts at the junction}.
+\end{cases}
+\]
+
+Unlike physical boundaries, a junction is an internal network
+interface. No external characteristic information is imposed.
+Instead, the standard HDG flux~\eqref{eq:cell_flux} is retained
+at each junction face:
+\begin{equation}
+\widehat{\mathbf{J}}_{h,i}
+=
+\mathbf{F}(\widehat{\mathbf{w}}_i)\cdot\bm{n}_i
++
+\bm{\Sigma}_i(\mathbf{w}_{h,i} - \widehat{\mathbf{w}}_i),
+\qquad i = 1,\ldots,K.
+\label{eq:junction_flux}
+\end{equation}
+
+The junction trace states are determined by the following
+$K$ constraints, assembled as the transmission residual:
+\begin{equation}
+\mathcal{F}_J
+(\widehat{\mathbf{w}}_1,\ldots,\widehat{\mathbf{w}}_K)
+=
+\begin{pmatrix}
+\displaystyle\sum_{i=1}^{K}
+s_i\,\widehat{A}_i\,\widehat{U}_i
+\\[10pt]
+\mathcal{H}(\widehat{\mathbf{w}}_1)
+- \mathcal{H}(\widehat{\mathbf{w}}_2)
+\\[4pt]
+\vdots
+\\[4pt]
+\mathcal{H}(\widehat{\mathbf{w}}_1)
+- \mathcal{H}(\widehat{\mathbf{w}}_K)
+\end{pmatrix}
+= \mathbf{0},
+\qquad
+\mathcal{H}(\widehat{\mathbf{w}}_i)
+=
+\tfrac{1}{2}\widehat{U}_i^2 + \Psi(\widehat{A}_i),
+\label{eq:junction_transmission}
+\end{equation}
+where $\Psi(A) = P(A)/\rho$. Row 1 enforces global mass
+conservation; rows 2 to $K$ enforce continuity of total energy
+head between all vessels and the reference vessel $i=1$.
+
+Since $\mathcal{F}_J$ depends only on junction trace unknowns
+and not on any interior element state, the element-to-trace
+coupling block vanishes:
+\begin{equation}
+C_{J,K_i}
+=
+\frac{\partial\mathcal{F}_J}{\partial\mathbf{w}_{h,i}}
+=
+\mathbf{0},
+\qquad i=1,\ldots,K.
+\label{eq:Cjunc}
+\end{equation}
+
+The trace control block is the $K\times 2K$ matrix:
+\begin{equation}
+D_J
+=
+\frac{\partial\mathcal{F}_J}
+     {\partial(\widehat{\mathbf{w}}_1,\ldots,\widehat{\mathbf{w}}_K)}
+=
+\begin{bmatrix}
+s_1\widehat{U}_1 & s_1\widehat{A}_1 &
+s_2\widehat{U}_2 & s_2\widehat{A}_2 &
+\cdots &
+s_K\widehat{U}_K & s_K\widehat{A}_K
+\\[8pt]
+\Psi'(\widehat{A}_1) & \widehat{U}_1 &
+-\Psi'(\widehat{A}_2) & -\widehat{U}_2 &
+\cdots & 0 & 0
+\\[4pt]
+\vdots & & & & \ddots & & \vdots
+\\[4pt]
+\Psi'(\widehat{A}_1) & \widehat{U}_1 &
+0 & 0 & \cdots &
+-\Psi'(\widehat{A}_K) & -\widehat{U}_K
+\end{bmatrix},
+\label{eq:DJ}
+\end{equation}
+where $\Psi'(\widehat{A}_i) = (1/\rho)\,dP/d\widehat{A}_i$.
+The system at the junction is closed by the $B$ blocks from the
+element equations, which supply the remaining $K$ equations
+through the HDG numerical flux~\eqref{eq:junction_flux}.
+\section{Example: Global HDG Matrix Structure for a Bifurcating Network}
+
+Consider a simple arterial network consisting of:
+\begin{itemize}
+\item one parent vessel $P$,
+\item two daughter vessels $D_1$ and $D_2$,
+\item one inflow boundary,
+\item one bifurcation junction,
+\item two RCR outlet boundaries.
+\end{itemize}
+
+
+% $\widehat{\mathbf w}$ yields the inflow trace block
+% \[
+% D_{in}
+% =
+% -H_R
+% +
+% H_L
+% +
+% H_L
+% \frac{\partial \mathbf w_{in}}
+% {\partial \widehat{\mathbf w}}.
+% \]
+
+% \paragraph{RCR Outlet Blocks}
+
+% At terminal outlet boundaries, the characteristic RCR operator is
+% \[
+% \widehat{\mathbf B}_h^{out}
+% =
+% H_R(\mathbf w_h-\widehat{\mathbf w})
+% -
+% H_L(\mathbf w_{RCR}-\widehat{\mathbf w}),
+% \]
+% where
+% \[
+% \mathbf w_{RCR}
+% =
+% \begin{pmatrix}
+% A_{RCR} \\
+% \widehat U_h
+% \end{pmatrix}.
+% \]
+
+% Linearization gives the outlet trace block
+% \[
+% D_{out}
+% =
+% -H_R
+% +
+% H_L
+% +
+% H_L
+% \left(
+% \frac{\partial \mathbf w_{RCR}}
+% {\partial \widehat{\mathbf w}}
+% -I
+% \right).
+% \]
+
+% These blocks contain the nonlinear coupling between the HDG blood flow
+% system and the Windkessel ODE model.
+
+\subsection{Global Newton System}
+
+After assembling all transmission residuals, the Newton linearisation
+at each time step yields the block system
+\begin{equation}
+\begin{pmatrix}
+A_P    & 0      & 0      & B_P    \\
+0      & A_{D_1}& 0      & B_{D_1}\\
+0      & 0      & A_{D_2}& B_{D_2}\\
+C_P    & C_{D_1}& C_{D_2}& D
+\end{pmatrix}
+\begin{pmatrix}
+\delta W_P \\ \delta W_{D_1} \\ \delta W_{D_2} \\ \delta\widehat{W}
+\end{pmatrix}
+=
+-
+\begin{pmatrix}
+R_P \\ R_{D_1} \\ R_{D_2} \\ R_{\widehat{W}}
+\end{pmatrix}.
+\label{eq:block_hdg_system}
+\end{equation}
+
+The trace unknown vector, ordered by face type, is
+\begin{equation}
+\widehat{W}
+=
+\begin{pmatrix}
+\widehat{W}_{\mathrm{in}}   \\
+\widehat{W}_{P,1}           \\
+\widehat{W}_{P,2}           \\
+\widehat{W}_{J}             \\
+\widehat{W}_{D_1,1}         \\
+\widehat{W}_{D_1,2}         \\
+\widehat{W}_{\mathrm{out},1}\\
+\widehat{W}_{D_2,1}         \\
+\widehat{W}_{D_2,2}         \\
+\widehat{W}_{\mathrm{out},2}
+\end{pmatrix},
+\end{equation}
+where each entry is a 2-vector $(\widehat{A}, \widehat{U})^\top$
+at the corresponding face, where \begin{align}
+A_\alpha 
+&= \frac{\partial R_\alpha}{\partial W_\alpha}
+& &\longrightarrow \text{element residual w.r.t. element unknowns}
+\\[6pt]
+B_\alpha 
+&= \frac{\partial R_\alpha}{\partial \widehat{W}}
+& &\longrightarrow \text{element residual w.r.t. trace unknowns}
+\\[6pt]
+C_\alpha 
+&= \frac{\partial R_{\widehat{W}}}{\partial W_\alpha}
+& &\longrightarrow \text{transmission residual w.r.t. element unknowns}
+\\[6pt]
+D 
+&= \frac{\partial R_{\widehat{W}}}{\partial \widehat{W}}
+& &\longrightarrow \text{transmission residual w.r.t. trace unknowns}
+\end{align}
+
+\subsection{Element Residual Vectors}
+
+The vessel residual vectors $R_\alpha$ appearing in the right-hand
+side of~\eqref{eq:block_hdg_system} are assembled from the local
+weak form residual on each element $K \in \alpha$:
+
+\begin{equation}
+R_\alpha
+=
+\begin{pmatrix}
+R_{K_1} \\ R_{K_2} \\ R_{K_3}
+\end{pmatrix},
+\end{equation}
+
+where for each element $K$ the local residual is:
+\begin{equation}
+R_K(\mathbf{w}_h, \widehat{\mathbf{w}}_h)
+=
+\underbrace{
+\left(\frac{\mathbf{w}_h - \mathbf{w}_h^n}{\Delta t},
+\mathbf{v}\right)_K
+}_{\text{time derivative}}
+-
+\underbrace{
+\left(\mathbf{F}(\mathbf{w}_h),
+\bm{b}\cdot\nabla\mathbf{v}\right)_K
+}_{\text{volume flux}}
++
+\underbrace{
+\left\langle
+\widehat{\mathbf{F}}_h \cdot \bm{n},
+\mathbf{v}
+\right\rangle_{\partial K}
+}_{\text{face flux via trace}}
+-
+\underbrace{
+\left(\mathbf{S}(\mathbf{w}_h),
+\mathbf{v}\right)_K
+}_{\text{source}},
+\label{eq:RK}
+\end{equation}
+
+with the numerical flux $\widehat{\mathbf{F}}_h$ defined
+in~\eqref{eq:cell_flux}. The face flux term couples $R_K$
+to the trace unknowns $\widehat{\mathbf{w}}_h$, which is
+why the $B_\alpha$ blocks appear in the element rows of
+the global system.
+
+Similarly, $R_{\widehat{W}}$ is the vector of transmission
+residuals assembled from all faces:
+\begin{equation}
+R_{\widehat{W}}
+=
+\begin{pmatrix}
+\mathcal{F}_{\mathrm{in}}(\mathbf{w}_h, \widehat{W}_{\mathrm{in}})   \\
+\mathcal{F}_{f}(\mathbf{w}_h, \widehat{W}_{P,1})                     \\
+\mathcal{F}_{f}(\mathbf{w}_h, \widehat{W}_{P,2})                     \\
+\mathcal{F}_{J}(\widehat{W}_{J})                                      \\
+\mathcal{F}_{f}(\mathbf{w}_h, \widehat{W}_{D_1,1})                   \\
+\mathcal{F}_{f}(\mathbf{w}_h, \widehat{W}_{D_1,2})                   \\
+\mathcal{F}_{\mathrm{rcr}}(\mathbf{w}_h, \widehat{W}_{\mathrm{out},1})\\
+\mathcal{F}_{f}(\mathbf{w}_h, \widehat{W}_{D_2,1})                   \\
+\mathcal{F}_{f}(\mathbf{w}_h, \widehat{W}_{D_2,2})                   \\
+\mathcal{F}_{\mathrm{rcr}}(\mathbf{w}_h, \widehat{W}_{\mathrm{out},2})
+\end{pmatrix},
+\label{eq:R_What}
+\end{equation}
+
+each entry being the transmission residual at the corresponding
+face as defined in
+equations~\eqref{eq:interior_transmission},
+\eqref{eq:inflow_transmission},
+\eqref{eq:rcr_transmission}, and
+\eqref{eq:junction_transmission}.
+% \subsection{Structure of the Coupling Blocks}
+
+% Each vessel-level coupling matrix $C_\alpha$ is a row-block vector
+% assembled from the individual face transmission Jacobians
+% $C_{\mathrm{in}}$, $C_f$, $C_J$, $C_{\mathrm{rcr}}$ defined in
+% equations~\eqref{eq:inflow_jacobian}--\eqref{eq:Cjunc}.
+% Explicitly:
+
+% \begin{equation}
+% C_P
+% =
+% \renewcommand{\arraystretch}{1.3}
+% \left(
+% \begin{array}{c}
+% C_{\mathrm{in}}  \\
+% \hline
+% C_{f}            \\
+% \hline
+% C_{f}            \\
+% \hline
+% C_{J}
+% \end{array}
+% \right)
+% \leftarrow \widehat{W}_{\mathrm{in}},
+% \quad
+% \leftarrow \widehat{W}_{P,1},
+% \quad
+% \leftarrow \widehat{W}_{P,2},
+% \quad
+% \leftarrow \widehat{W}_{J},
+% \label{eq:CP}
+% \end{equation}
+
+% \begin{equation}
+% C_{D_1}
+% =
+% \renewcommand{\arraystretch}{1.3}
+% \left(
+% \begin{array}{c}
+% C_{J}                       \\
+% \hline
+% C_{f}                       \\
+% \hline
+% C_{f}                       \\
+% \hline
+% C_{\mathrm{rcr}}
+% \end{array}
+% \right)
+% \leftarrow \widehat{W}_{J},
+% \quad
+% \leftarrow \widehat{W}_{D_1,1},
+% \quad
+% \leftarrow \widehat{W}_{D_1,2},
+% \quad
+% \leftarrow \widehat{W}_{\mathrm{out},1},
+% \label{eq:CD1}
+% \end{equation}
+
+% \begin{equation}
+% C_{D_2}
+% =
+% \renewcommand{\arraystretch}{1.3}
+% \left(
+% \begin{array}{c}
+% C_{J}                       \\
+% \hline
+% C_{f}                       \\
+% \hline
+% C_{f}                       \\
+% \hline
+% C_{\mathrm{rcr}}
+% \end{array}
+% \right)
+% \leftarrow \widehat{W}_{J},
+% \quad
+% \leftarrow \widehat{W}_{D_2,1},
+% \quad
+% \leftarrow \widehat{W}_{D_2,2},
+% \quad
+% \leftarrow \widehat{W}_{\mathrm{out},2}.
+% \label{eq:CD2}
+% \end{equation}
+
+% The explicit $2\times2$ values of each block are:
+% \begin{equation}
+% \renewcommand{\arraystretch}{1.8}
+% \begin{array}{ll}
+% C_{\mathrm{in}}
+% =
+% \begin{bmatrix} 0 & 0 \\ 4\,dc/dA_h & -1 \end{bmatrix},
+% &
+% \text{(inflow face, from } \partial\mathcal{F}_{\mathrm{in}}/
+% \partial\mathbf{w}_h \text{)}
+% \\[10pt]
+% C_{f}
+% =
+% \alpha_{\mathrm{LF}}\,\mathbf{I},
+% &
+% \text{(interior face, from } \partial\mathcal{F}_{\mathrm{int}}/
+% \partial\mathbf{w}_h \text{)}
+% \\[10pt]
+% C_{J}
+% =
+% \mathbf{0},
+% &
+% \text{(junction face, from } \partial\mathcal{F}_{J}/
+% \partial\mathbf{w}_h \text{)}
+% \\[10pt]
+% C_{\mathrm{rcr}}
+% =
+% \begin{bmatrix} 0 & 0 \\ -4\,dc/dA_h & -1 \end{bmatrix},
+% &
+% \text{(RCR outlet face, from } \partial\mathcal{F}_{\mathrm{rcr}}/
+% \partial\mathbf{w}_h \text{)}
+% \end{array}
+% \label{eq:C_blocks_summary}
+% \end{equation}
+\subsection{Structure of the Coupling Blocks}
+
+Each vessel-level coupling matrix $C_\alpha$ is assembled from
+the individual face transmission Jacobians $C_{\mathrm{in}}$,
+$C_f$, $C_J$, $C_{\mathrm{rcr}}$ defined in
+equations~\eqref{eq:inflow_jacobian}--\eqref{eq:Cjunc}.
+Each row block corresponds to the transmission condition at one
+face of the vessel, and acts on the element DOFs $W_\alpha$
+in the column direction, here $C_J =0$
+
+\begin{equation}
+C_P
+=
+\renewcommand{\arraystretch}{1.6}
+\left(
+\begin{array}{c}
+C_{\mathrm{in}}  \\
+\hline
+C_{f}            \\
+\hline
+C_{f}            \\
+\hline
+C_{J}
+\end{array}
+\right)
+\begin{array}{l}
+\leftarrow \text{inflow face } \widehat{W}_{\mathrm{in}}     \\
+\leftarrow \text{interior face } \widehat{W}_{P,1}           \\
+\leftarrow \text{interior face } \widehat{W}_{P,2}           \\
+\leftarrow \text{junction face } \widehat{W}_{J}
+\end{array}
+\label{eq:CP}
+\end{equation}
+
+\begin{equation}
+C_{D_1}
+=
+\renewcommand{\arraystretch}{1.6}
+\left(
+\begin{array}{c}
+C_{J}            \\
+\hline
+C_{f}            \\
+\hline
+C_{f}            \\
+\hline
+C_{\mathrm{rcr}}
+\end{array}
+\right)
+\begin{array}{l}
+\leftarrow \text{junction face } \widehat{W}_{J}             \\
+\leftarrow \text{interior face } \widehat{W}_{D_1,1}         \\
+\leftarrow \text{interior face } \widehat{W}_{D_1,2}         \\
+\leftarrow \text{RCR outlet face } \widehat{W}_{\mathrm{out},1}
+\end{array}
+\label{eq:CD1}
+\end{equation}
+
+\begin{equation}
+C_{D_2}
+=
+\renewcommand{\arraystretch}{1.6}
+\left(
+\begin{array}{c}
+C_{J}            \\
+\hline
+C_{f}            \\
+\hline
+C_{f}            \\
+\hline
+C_{\mathrm{rcr}}
+\end{array}
+\right)
+\begin{array}{l}
+\leftarrow \text{junction face } \widehat{W}_{J}             \\
+\leftarrow \text{interior face } \widehat{W}_{D_2,1}         \\
+\leftarrow \text{interior face } \widehat{W}_{D_2,2}         \\
+\leftarrow \text{RCR outlet face } \widehat{W}_{\mathrm{out},2}
+\end{array}
+\label{eq:CD2}
+\end{equation}
+\subsection{Structure of the Trace Block $D$}
+
+The trace block $D$ is block-diagonal, with each diagonal entry
+being the Jacobian $D_F = \partial\mathcal{F}_F/\partial
+\widehat{\mathbf{w}}_h$ at the corresponding face:
+
+\begin{equation}
+D
+=
+\mathrm{blockdiag}
+\bigl(
+D_{\mathrm{in}},\;
+D_{f},\;
+D_{f},\;
+D_{J},\;
+D_{f},\;
+D_{f},\;
+D_{\mathrm{rcr}},\;
+D_{f},\;
+D_{f},\;
+D_{\mathrm{rcr}}
+\bigr),
+\label{eq:D_blockdiag}
+\end{equation}
+with the $2\times2$ values:
+\begin{equation}
+\renewcommand{\arraystretch}{1.8}
+\begin{array}{ll}
+D_{\mathrm{in}}
+=
+\begin{bmatrix}
+\widehat{U}_h & \widehat{A}_h \\
+4\,dc/d\widehat{A}_h & 1
+\end{bmatrix},
+&
+\text{(inflow face)}
+\\[10pt]
+D_{f}
+=
+-2\alpha_{\mathrm{LF}}\,\mathbf{I},
+&
+\text{(interior face)}
+\\[10pt]
+D_{\mathrm{rcr}}
+=
+\begin{bmatrix}
+dP/d\widehat{A}_h - (\kappa_1{+}R_1)\widehat{U}_h
+& -(\kappa_1{+}R_1)\widehat{A}_h \\
+4\,dc/d\widehat{A}_h & 1
+\end{bmatrix},
+&
+\text{(RCR outlet face)}
+\end{array}
+\label{eq:D_blocks_summary}
+\end{equation}
+and $D_J$ is the $3\times6$ block from equation~\eqref{eq:DJ},
+spanning the three junction trace unknowns
+$(\widehat{W}_{J,P},\, \widehat{W}_{J,D_1},\, \widehat{W}_{J,D_2})$.
+
+
 \end{document}
