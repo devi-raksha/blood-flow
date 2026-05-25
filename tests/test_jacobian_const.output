@@ -1,3 +1,3 @@
 
-DEAL::Selected numerical flux: HLL
-DEAL::Jacobian FD check: max_diff=2.29286 ref=2.28936
+DEAL::F0 norm = 4.46836e-12
+DEAL::max fd vs jacobian error =7.36919e+06 at j=12
