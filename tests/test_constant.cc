@@ -16,42 +16,107 @@
 
 // Test constant functions
 
-#include <deal.II/base/parsed_function.h>
-
 #include <deal.II/grid/grid_generator.h>
+#include <deal.II/grid/grid_in.h>
 
-#include <deal.II/lac/affine_constraints.h>
-#include <deal.II/lac/sparse_direct.h>
-
-#include <deal.II/numerics/vector_tools.h>
+#include <deal.II/lac/vector.h>
 
 #include "blood_flow_system.h"
 #include "tests.h"
+#include "vtk_utils.h"
 
 using namespace dealii;
 
 void
 test()
 {
-  BloodFlowSystem<1, 3> problem; // 1-dim geometry embedded in \mathbb{R}^3
+  BloodFlowSystem<1, 3> problem;
   problem.initialize_params(PRM_DIR "constant.prm");
-  GridGenerator::hyper_cube(problem.triangulation, 0, 1);
+
+  // Load mesh and physics from the VTK path
+  dealii::GridIn<1, 3> grid_in;
+  grid_in.attach_triangulation(problem.triangulation);
+  std::ifstream mesh_file(problem.vtk_file_path);
+  grid_in.read_vtk(mesh_file);
+
+  VTKUtils::read_cell_data(problem.vtk_file_path,
+                           "vessel_id",
+                           problem.cell_vessel_ids);
+  VTKUtils::read_cell_data(problem.vtk_file_path, "a0", problem.cell_a0);
+  VTKUtils::read_cell_data(problem.vtk_file_path, "a_d", problem.cell_a_d);
+  VTKUtils::read_cell_data(problem.vtk_file_path, "E", problem.cell_E);
+  VTKUtils::read_cell_data(problem.vtk_file_path,
+                           "h_wall",
+                           problem.cell_h_wall);
+  VTKUtils::read_cell_data(problem.vtk_file_path, "p_d", problem.cell_p_d);
+  VTKUtils::read_cell_data(problem.vtk_file_path, "p0", problem.cell_p0);
+  VTKUtils::read_cell_data(problem.vtk_file_path, "L", problem.cell_L);
+  VTKUtils::read_cell_data(problem.vtk_file_path, "r_d", problem.cell_r_d);
+
+  VTKUtils::read_vertex_data(problem.vtk_file_path,
+                             "boundary_id",
+                             problem.point_boundary_id);
+  VTKUtils::read_vertex_data(problem.vtk_file_path, "R1", problem.point_R1);
+  VTKUtils::read_vertex_data(problem.vtk_file_path, "R2", problem.point_R2);
+  VTKUtils::read_vertex_data(problem.vtk_file_path, "C", problem.point_C);
+  VTKUtils::read_vertex_data(problem.vtk_file_path,
+                             "P_out",
+                             problem.point_P_out);
+
+  // Set material IDs and boundary IDs
+  {
+    unsigned int cell_idx = 0;
+    for (auto &cell : problem.triangulation.active_cell_iterators())
+      {
+        cell->set_material_id(
+          static_cast<unsigned int>(problem.cell_vessel_ids[cell_idx]));
+        for (unsigned int f = 0; f < GeometryInfo<1>::faces_per_cell; ++f)
+          if (cell->face(f)->at_boundary())
+            {
+              const unsigned int v = cell->face(f)->vertex_index(0);
+              cell->face(f)->set_boundary_id(
+                static_cast<types::boundary_id>(problem.point_boundary_id[v]));
+            }
+        ++cell_idx;
+      }
+  }
+
+  // Populate rcr_map
+  for (const auto &cell : problem.triangulation.active_cell_iterators())
+    for (unsigned int f = 0; f < GeometryInfo<1>::faces_per_cell; ++f)
+      if (cell->face(f)->at_boundary())
+        {
+          const types::boundary_id          bid = cell->face(f)->boundary_id();
+          const unsigned int                v = cell->face(f)->vertex_index(0);
+          BloodFlowSystem<1, 3>::RCRPhysics rcr;
+          rcr.R1    = problem.point_R1[v];
+          rcr.R2    = problem.point_R2[v];
+          rcr.C     = problem.point_C[v];
+          rcr.P_out = problem.point_P_out[v];
+          if (rcr.R1 > 0.0)
+            problem.rcr_map[bid] = rcr;
+        }
+
   problem.triangulation.refine_global(problem.n_global_refinements);
 
   problem.setup_system();
-
+  problem.initialize_terminal_capacitors();
+  problem.build_per_cell_mass_inv();
   problem.compute_initial_solution(problem.solution, problem.time);
 
   Vector<double> residual(problem.solution.size());
   problem.assemble_implicit_function(problem.time, problem.solution, residual);
-  problem.assemble_jacobian(problem.time,
-                            problem.solution,
-                            Vector<double>(problem.solution.size()));
 
-  // The residual should be zero.
-  deallog << "Residual norm: " << residual.l2_norm() << std::endl;
+  deallog << "n_active_cells = " << problem.triangulation.n_active_cells()
+          << std::endl;
+  deallog << "Residual L2 norm = " << residual.l2_norm() << std::endl;
+
+  AssertThrow(residual.l2_norm() < 1e-10,
+              ExcMessage(
+                "assemble_implicit_function() FAILED equilibrium test."));
+
+  deallog << "assemble_implicit_function() PASSED." << std::endl;
 }
-
 
 int
 main()
