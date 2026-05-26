@@ -13,25 +13,19 @@ subsection BloodFlowSystem<1, 3>
   set Use direct solver                    = true
   set Use junction mesh                    = false
   set Verbosity (console depth)            = 1
-  subsection ARKOde parameters
-    set Final time                        = 2.2
+  subsection IDA parameters
+    set Final time                        = 1.1
     set Initial time                      = 0
-    set Time interval between each output = 0.01
-    
+    set Time interval between each output = 0.005
     subsection Error control
-      set Absolute error tolerance = 1e-05 
-      set Relative error tolerance = 1e-04
+      set Absolute error tolerance = 1e-06 
+      set Relative error tolerance = 1e-05
     end
     subsection Running parameters
-      set Anderson-acceleration subspace         = 3
-      set Implicit function is linear            = false
-      set Implicit function is time independent  = false
-      set Initial step size                      = 1e-04
-      set Mass is time independent               = true
+      set Initial step size                      = 5e-05
       set Maximum number of nonlinear iterations = 10
-      set Maximum order of ARK                   = 5
+      set Maximum order of BDF                   = 3
       set Minimum step size                      = 1e-08
-   
     end
   end
 end
