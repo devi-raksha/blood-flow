@@ -78,9 +78,9 @@ BloodFlowSystem<dim, spacedim>::BloodFlowSystem()
   add_parameter("Outlet boundary condition type", outlet_type);
   add_parameter("Vtk file path for mesh input", vtk_file_path);
 
-  this->enter_subsection("ARKOde parameters");
+  this->enter_subsection("IDA parameters");
   this->enter_my_subsection(this->prm);
-  arkode_parameters.add_parameters(this->prm);
+  ida_parameters.add_parameters(this->prm);
   this->leave_my_subsection(this->prm);
   this->leave_subsection();
 }
@@ -415,6 +415,7 @@ BloodFlowSystem<dim, spacedim>::setup_system()
 
   // Solution vector covers cell + trace DOFs
   solution.reinit(n_total_dofs);
+  solution_dot.reinit(n_total_dofs);
   pressure.reinit(n_total_dofs);
   theoretical_peak.reinit(n_total_dofs);
 
@@ -530,15 +531,17 @@ BloodFlowSystem<dim, spacedim>::compute_initial_solution(Vector<double> &dst,
 }
 
 // ============================================================================
-// build_per_cell_mass_inv
+// build_per_cell_mass
 //
-// For every active cell K, compute M_K^-1: the inverse of the local
-// (n_dofs_per_cell x n_dofs_per_cell) mass matrix.
+// For every active cell K, compute both:
+//   per_cell_mass_    : forward M_K  — used in assemble_residual (M*ydot term)
+//                       and assemble_jacobian (alpha*M term)
+//   per_cell_mass_inv : M_K^{-1}    — used in computing consistent
+//                       initial solution_dot = M_K^{-1} * F_cell(y0)
 //
-// This replaces a global sparse mass matrix entirely.  ARKode sees
-// M_ARKode = I because we fold M_K^-1 into the RHS and Jacobian ourselves.
-// No mass-matrix callbacks are registered.
+// IDA receives the true DAE residual F(t,y,ydot) = M*ydot - R(y) directly.
 // ============================================================================
+
 template <int dim, int spacedim>
 void
 BloodFlowSystem<dim, spacedim>::build_per_cell_mass_inv()
@@ -577,6 +580,7 @@ BloodFlowSystem<dim, spacedim>::build_per_cell_mass_inv()
           }
 
       // Invert in place (small dense block-diagonal matrix)
+      per_cell_mass_[cell->id()] = M;
       M.gauss_jordan();
       per_cell_mass_inv[cell->id()] = std::move(M);
     }
@@ -1243,7 +1247,7 @@ BloodFlowSystem<dim, spacedim>::assemble_trace_junction_equations(
 }
 
 // ============================================================================
-// assemble_implicit_function
+// assemble_residual
 //
 // ARKode calls this to evaluate  f(t, y)  where the system is
 //   dy/dt = f(t, y)   with M_ARKode = I.
@@ -1256,59 +1260,60 @@ BloodFlowSystem<dim, spacedim>::assemble_trace_junction_equations(
 // ============================================================================
 template <int dim, int spacedim>
 void
-BloodFlowSystem<dim, spacedim>::assemble_implicit_function(
+BloodFlowSystem<dim, spacedim>::assemble_residual(
   const double          t,
   const Vector<double> &y,
-  Vector<double>       &F)
+  const Vector<double>&ydot,
+  Vector<double>       & residual)
 {
-  TimerOutput::Scope timer(computing_timer, "assemble_implicit_function");
-  deallog.push("assemble_implicit_function");
+  TimerOutput::Scope timer(computing_timer, "assemble_residual");
+  deallog.push("assemble_residual");
   deallog << "t=" << t << std::endl;
 
   AssertDimension(y.size(), n_total_dofs);
-  F.reinit(n_total_dofs);
+  AssertDimension(ydot.size(), n_total_dofs);
+  residual.reinit(n_total_dofs);
 
   // ---- Assemble raw residuals for all DOFs --------------------------------
-  assemble_cell_residuals(t, y, F);
-  assemble_trace_interior_equations(y, F);
-  assemble_trace_boundary_equations(t, y, F);
-  assemble_trace_junction_equations(y, F);
+  assemble_cell_residuals(t, y, residual);
+  assemble_trace_interior_equations(y, residual);
+  assemble_trace_boundary_equations(t, y, residual);
+  assemble_trace_junction_equations(y, residual);
 
   // ---- Apply M_K^-1 to cell rows ------------------------------------------
   // The cell block of F currently holds  F_cell(y).  
   const unsigned int n_dofs = fe->n_dofs_per_cell();
-  Vector<double>     local_F(n_dofs);
-  Vector<double>     local_MiF(n_dofs);
-
+  Vector<double>     local_F(n_dofs), local_Mydot(n_dofs), local_res(n_dofs);
+  
   for (const auto &cell : dof_handler.active_cell_iterators())
     {
       std::vector<types::global_dof_index> ldofs(n_dofs);
       cell->get_dof_indices(ldofs);
 
       for (unsigned int i = 0; i < n_dofs; ++i)
-        local_F(i) = F[ldofs[i]];
-
-      per_cell_mass_inv.at(cell->id()).vmult(local_MiF, local_F);
-
-      for (unsigned int i = 0; i < n_dofs; ++i)
-        F[ldofs[i]] = local_MiF(i);
+      {
+        local_F(i) = residual[ldofs[i]]; // F_cell
+        local_Mydot(i) = ydot[ldofs[i]];
+      }
+     per_cell_mass_.at(cell->id()).vmult(local_res, local_Mydot); // M_k*ydot
+     for (unsigned int i = 0; i < n_dofs; ++i)
+      {
+        residual[ldofs[i]] = local_res(i) -local_F(i); // M ydot - R_cell
+      }
     }
-    
-  // for (const auto &[key, td] : face_dof_map)
-  //   {
-  //     F[td.a_hat_dof] /= 1e-6; // flow scale: Q ~ 1e-6 m^3/s
-  //     // F[td.u_hat_dof] /= 1.0; // velocity already O(1), no change needed
-  //   }
-
-  deallog.pop();
+  for (types::global_dof_index i = n_cell_dofs; i < n_total_dofs; ++i)
+  {
+    residual[i] = -residual[i]; // algebraic constraint: F_trace = 0 -> residual = -F_trace
+  }
+   deallog.pop();
 }
 
-// // ============================================================================
-// // assemble_jacobian_cell_block
-// //
-// // Differentiates the cell residuals w.r.t. cell DOFs (block 1,1) and
-// // w.r.t. trace DOFs (block 1,2).
-// // ============================================================================
+// ============================================================================
+// assemble_jacobian_cell_block
+//
+// Differentiates the cell residuals w.r.t. cell DOFs (block 1,1) and
+// w.r.t. trace DOFs (block 1,2).
+// ============================================================================
 template <int dim, int spacedim>
 void
 BloodFlowSystem<dim, spacedim>::assemble_jacobian_cell_block(
@@ -1965,7 +1970,8 @@ void
 BloodFlowSystem<dim, spacedim>::assemble_jacobian(
   const double          t,
   const Vector<double> &y,
-  const Vector<double> & /*Mydot*/)
+  const Vector<double> & /*ydot*/,
+  const double alpha)
 {
   TimerOutput::Scope timer(computing_timer, "assemble_jacobian");
   deallog.push("assemble_jacobian");
@@ -1980,67 +1986,29 @@ BloodFlowSystem<dim, spacedim>::assemble_jacobian(
  assemble_jacobian_trace_boundary_block(t, y);
  assemble_jacobian_trace_junction_block(y);
 
-  // ---- Apply M_K^-1 to the cell rows of the Jacobian ---------------------
-  // For cell K with local DOFs {r_0,...,r_p}, rows r_i in jacobian_matrix
-  // represent  d F_cell|_K / d y.  Replace them with
-  //   (M_K^-1 * (d F_cell|_K / d y))_i  for all columns j.
-  //
-  // We do this by extracting each cell's dense row block, multiplying by
-  // M_K^-1, and writing back.  The column extent covers all n_total_dofs
-  // columns that can be non-zero for that cell's rows (from sparsity).
-  const unsigned int n_dofs = fe->n_dofs_per_cell();
 
-  // Collect all column indices that appear in at least one cell row
-  // (needed to iterate the sparse row efficiently).
-  for (const auto &cell : dof_handler.active_cell_iterators())
-    {
-      std::vector<types::global_dof_index> ldofs(n_dofs);
-      cell->get_dof_indices(ldofs);
+ // ---- Negate: ∂F/∂y = −∂R/∂y -------------------------------------------
+ // Residual is F = M*ydot − R_cell (cell) and F = −R_trace (trace)
+ // so ∂F/∂y = −∂R/∂y for both blocks.
+ jacobian_matrix *= -1.0;
 
-      const FullMatrix<double> &Minv = per_cell_mass_inv.at(cell->id());
+ // ---- Add alpha*M_K to cell-block (∂F/∂ydot term) ---------------------------
+  // J_IDA = ∂F/∂y + alpha · ∂F/∂ẏ = −∂R/∂y + alpha · M_block
+  // M_block is M_K on cell rows, zero on trace rows.
 
-      // Gather all column indices that are structurally non-zero in ANY of
-      // the rows belonging to this cell.
-      std::vector<types::global_dof_index> col_indices;
-      for (unsigned int i = 0; i < n_dofs; ++i)
-        for (auto it = jacobian_matrix.begin(ldofs[i]);
-             it != jacobian_matrix.end(ldofs[i]);
-             ++it)
-          col_indices.push_back(it->column());
+ const unsigned int n_dofs = fe->n_dofs_per_cell();
 
-      // Unique-sort so we process each column once
-      std::sort(col_indices.begin(), col_indices.end());
-      col_indices.erase(std::unique(col_indices.begin(), col_indices.end()),
-                        col_indices.end());
+ for (const auto &cell : dof_handler.active_cell_iterators())
+   {
+     std::vector<types::global_dof_index> ldofs(n_dofs);
+     cell->get_dof_indices(ldofs);
 
-      // For each column j, extract the local column vector, multiply by
-      // M_K^-1, and scatter back.
-      Vector<double> col_in(n_dofs), col_out(n_dofs);
-      for (const types::global_dof_index j : col_indices)
-        {
-          for (unsigned int i = 0; i < n_dofs; ++i)
-            col_in(i) = jacobian_matrix.el(ldofs[i], j);
+     const FullMatrix<double> &M_K = per_cell_mass_.at(cell->id());
 
-          Minv.vmult(col_out, col_in);
-
-          for (unsigned int i = 0; i < n_dofs; ++i)
-            jacobian_matrix.set(ldofs[i], j, col_out(i));
-        }
-    }
-  // for (const auto &[key, td] : face_dof_map)
-  //   {
-  //     // a_hat row: flow residual, scale = 1e-6 m^3/s
-  //     for (auto it = jacobian_matrix.begin(td.a_hat_dof);
-  //          it != jacobian_matrix.end(td.a_hat_dof);
-  //          ++it)
-  //       it->value() /= 1e-6;
-
-  //     // u_hat row: velocity residual, scale = 1.0 m/s (no rescaling needed)
-  //     // Uncomment if you rescale u_hat rows too:
-  //     // for (auto it = jacobian_matrix.begin(td.u_hat_dof); ...)
-  //     //   it->value() /= 1.0;
-  //   }
-
+     for (unsigned int i = 0; i < n_dofs; ++i)
+       for (unsigned int j = 0; j < n_dofs; ++j)
+         jacobian_matrix.add(ldofs[i], ldofs[j], alpha * M_K(i, j));
+   }
   deallog.pop();
 }
 
@@ -2402,102 +2370,107 @@ BloodFlowSystem<dim, spacedim>::run()
       compute_theoretical_peak(theoretical_peak);
       // Build per-cell mass inverses (replaces global mass matrix)
       build_per_cell_mass_inv();
-      compute_initial_solution(solution, arkode_parameters.initial_time);
-      time = arkode_parameters.initial_time;
+      compute_initial_solution(solution, ida_parameters.initial_time);
+      time = ida_parameters.initial_time;
 
-      // ARKode setup
-      // No mass-matrix callbacks: ARKode sees M = I.
-      // The cell equations carry M_K^-1 already folded into implicit_function
-      // and assemble_jacobian.  Trace equations are algebraic (f_trace = 0).
-      SUNDIALS::ARKode<Vector<double>> ode(arkode_parameters);
+      // ---- IDA setup
+      // -----------------------------------------------------------
+      SUNDIALS::IDA<Vector<double>> ida(ida_parameters);
 
-      ode.implicit_function =
-        [this](const double t, const Vector<double> &y, Vector<double> &F) {
-          assemble_implicit_function(t, y, F);
-        };
+      //vectoor allocation
+      ida.reinit_vector = [this](Vector<double> &v) 
+         { v.reinit(n_total_dofs);
+       };
 
-      ode.jacobian_times_setup = [this](const double          t,
-                                        const Vector<double> &y,
-                                        const Vector<double> &Mydot) {
-        assemble_jacobian(t, y, Mydot);
+      ida.differential_components = [this]() -> IndexSet {
+        IndexSet is(n_total_dofs);
+        is.add_range(0, n_cell_dofs); // only cell DOFs carry d/dt
+        return is;                    // trace DOFs are algebraic
       };
 
-      ode.jacobian_times_vector = [this](const Vector<double> &v,
-                                         Vector<double>       &Jv,
-                                         const double,
-                                         const Vector<double> &,
-                                         const Vector<double> &) {
-        TimerOutput::Scope t(computing_timer, "jacobian_times_vector");
-        jacobian_matrix.vmult(Jv, v);
+      // Residual F(t, y, ydot) = 0
+      ida.residual = [this](const double          t,
+                            const Vector<double> &y,
+                            const Vector<double> &ydot,
+                            Vector<double>       &res) -> int {
+        assemble_residual(t, y, ydot, res);
+        return 0;
       };
 
-      // Preconditioner approximates (I - gamma * J)^-1.
-      // No mass matrix: linear_system_matrix = I - gamma * J.
-      ode.jacobian_preconditioner_setup = [this](const double,
-                                                 const Vector<double> &,
-                                                 const Vector<double> &,
-                                                 const int    jok,
-                                                 int         &jcur,
-                                                 const double gamma) {
-        TimerOutput::Scope t(computing_timer, "preconditioner_setup");
-        if (jok == SUNFALSE)
-          {
-            // I - gamma * J: start from identity then subtract
-            linear_system_matrix = 0.0;
-            for (types::global_dof_index i = 0; i < n_total_dofs; ++i)
-              linear_system_matrix.set(i, i, 1.0);
-            linear_system_matrix.add(-gamma, jacobian_matrix);
-            linear_solver.initialize(linear_system_matrix);
-            jcur       = SUNTRUE;
-            current_dt = std::abs(gamma);
-          }
-        else
-          {
-            jcur = SUNFALSE;
-          }
+      // Jacobian J = ∂F/∂y + α · ∂F/∂ẏ
+      ida.setup_jacobian = [this](const double          t,
+                                  const Vector<double> &y,
+                                  const Vector<double> &ydot,
+                                  const double alpha) -> int {
+        TimerOutput::Scope ts(computing_timer, "setup_jacobian");
+        assemble_jacobian(t, y, ydot, alpha);
+        linear_system_matrix.copy_from(jacobian_matrix);
+        linear_solver.initialize(linear_system_matrix);
+        return 0;
       };
 
-      ode.jacobian_preconditioner_solve = [this](const double,
-                                                 const Vector<double> &,
-                                                 const Vector<double> &,
-                                                 const Vector<double> &r,
-                                                 Vector<double>       &z,
-                                                 const double,
-                                                 const double,
-                                                 const int) {
-        TimerOutput::Scope t(computing_timer, "preconditioner_solve");
+      // Linear solve: J * z = r
+      ida.solve_with_jacobian = [this](const Vector<double> &r,
+                                       Vector<double>       &z,
+                                       const double /*tol*/) -> int {
+        TimerOutput::Scope ts(computing_timer, "solve_with_jacobian");
         linear_solver.vmult(z, r);
+        return 0;
       };
 
-      ode.output_step = [this](const double          t,
+      // Output at each accepted step
+      ida.output_step = [this](const double          t,
                                const Vector<double> &sol,
-                               const unsigned int /*step_number*/) {
-        const unsigned int actual_step =
-          static_cast<unsigned int>((t - arkode_parameters.initial_time) /
-                                    arkode_parameters.output_period);
+                               const Vector<double> & /*ydot*/,
+                               const unsigned int step_number) {
         time = t;
-        // const double tout = std::min(time + arkode_parameters.output_period,
-        //                              arkode_parameters.final_time);
-        // const double dt_solved = tout - time;
-        // update_terminal_pressures(dt_solved, sol);
+        update_terminal_pressures(ida_parameters.output_period, sol);
         compute_pressure(sol, pressure);
         compute_theoretical_peak(theoretical_peak);
-        output_results(sol, pressure, theoretical_peak, actual_step);
+        output_results(sol, pressure, theoretical_peak, step_number);
       };
 
-      time = arkode_parameters.initial_time;
-      while (time < arkode_parameters.final_time)
-        {
-          const unsigned int n_steps =
-            ode.solve_ode_incrementally(solution,
-                                        time + arkode_parameters.output_period,
-                                        true);
+      // ---- Compute consistent initial ydot
+      // ------------------------------------
+      solution_dot = 0.0;
+      {
+        Vector<double> F0(n_total_dofs);
+        assemble_cell_residuals(ida_parameters.initial_time, solution, F0);
+        assemble_trace_interior_equations(solution, F0);
+        assemble_trace_boundary_equations(ida_parameters.initial_time,
+                                          solution,
+                                          F0);
+        assemble_trace_junction_equations(solution, F0);
+        std::cout << "  Initial F0 (spatial RHS) norm: " << F0.l2_norm()
+                  << "\n";
 
-          std::cout << "  ARKode steps: " << n_steps << "  t=" << time << "\n";
+        const unsigned int n_dpc = fe->n_dofs_per_cell();
+        Vector<double>     loc_F(n_dpc), loc_ydot(n_dpc);
+        for (const auto &cell : dof_handler.active_cell_iterators())
+          {
+            std::vector<types::global_dof_index> ldofs(n_dpc);
+            cell->get_dof_indices(ldofs);
+            for (unsigned int i = 0; i < n_dpc; ++i)
+              loc_F(i) = F0[ldofs[i]];
 
-          update_terminal_pressures(arkode_parameters.output_period, solution);
-          time += arkode_parameters.output_period;
-        }
+            per_cell_mass_inv.at(cell->id()).vmult(loc_ydot, loc_F);
+            for (unsigned int i = 0; i < n_dpc; ++i)
+              solution_dot[ldofs[i]] = loc_ydot(i);
+          }
+
+        Vector<double> res_check(n_total_dofs);
+        assemble_residual(ida_parameters.initial_time,
+                          solution,
+                          solution_dot,
+                          res_check);
+        std::cout << "  Initial DAE residual norm:     " << res_check.l2_norm()
+                  << "\n";
+      }
+
+      // ---- Solve
+      // ---------------------------------------------------------------
+      time = ida_parameters.initial_time;
+      ida.solve_dae(solution, solution_dot);
 
       compute_pressure(solution, pressure);
       compute_errors(cycle);

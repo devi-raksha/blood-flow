@@ -34,7 +34,8 @@
 #include <deal.II/numerics/matrix_tools.h>
 #include <deal.II/numerics/vector_tools.h>
 
-#include <deal.II/sundials/arkode.h>
+// #include <deal.II/sundials/arkode.h>
+#include <deal.II/sundials/ida.h>
 
 #include <array>
 #include <iosfwd>
@@ -158,16 +159,18 @@ public:
 
   // Residual F(t,y) for ARKode — assembles cell + trace equations.
   void
-  assemble_implicit_function(const double          t,
+  assemble_residual(const double          t,
                              const Vector<double> &y,
-                             Vector<double>       &F);
+                             const Vector<double> &ydot,
+                             Vector<double>       &residual);
 
   // Jacobian ∂F/∂y — assembles all four blocks
   // (cell–cell, cell–trace, trace–cell, trace–trace).
   void
   assemble_jacobian(const double          t,
                     const Vector<double> &y,
-                    const Vector<double> &Mydot);
+                    const Vector<double> &ydot,
+                    double alpha);
 
   // Builds per_cell_mass_inv: the local M_K^-1 for every cell K.
   void
@@ -317,8 +320,10 @@ private:
   // No mass-matrix callbacks are registered with ARKode (M_ARKode = I).
   // Each dense per-cell inverse is applied locally after global assembly.
   std::map<CellId, FullMatrix<double>> per_cell_mass_inv;
+  std::map<CellId, FullMatrix<double>> per_cell_mass_;
 
   Vector<double> solution;
+  Vector<double> solution_dot;
   Vector<double> pressure;
   Vector<double> theoretical_peak;
 
@@ -344,7 +349,7 @@ private:
   NumericalFluxType numerical_flux_type     = NumericalFluxType::HLL;
   std::string       numerical_flux_type_str = "HLL";
 
-  SUNDIALS::ARKode<Vector<double>>::AdditionalData arkode_parameters;
+  SUNDIALS::IDA<Vector<double>>::AdditionalData ida_parameters;
 
   ParsedTools::Function<spacedim> rhs_function;
   ParsedTools::Function<spacedim> exact_solution;
