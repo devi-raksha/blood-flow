@@ -357,6 +357,19 @@ private:
 
   mutable TimerOutput computing_timer;
 
+  // CSV timeseries output
+  void
+  output_csv(const double          t,
+             const Vector<double> &y);
+
+  void
+  open_csv_files();
+
+  // One stream per monitoring location
+  mutable std::ofstream csv_aorta_mid_;
+  mutable std::ofstream csv_junction_;
+  mutable std::ofstream csv_iliac_mid_;
+
   // -----------------------------------------------------------------------
   // Internal helpers — geometry
   // -----------------------------------------------------------------------
