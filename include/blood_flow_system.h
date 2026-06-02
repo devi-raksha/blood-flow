@@ -496,7 +496,7 @@ private:
 
   double
   scalar_momentum_flux_jac(const double bn,
-                           const double c2_over_A,
+                           const double c2_over_A, // 1/rho dp/da = c^2/A
                            const double U,
                            const double dA,
                            const double dU) const
@@ -631,7 +631,7 @@ private:
                                     Vector<double>       &F);
 
   // Trace equations for junction faces (mass conservation +
-  // total-head continuity + Riemann compatibility per vessel).
+  // tottotalal-head continuity + Riemann compatibility per vessel).
   void
   assemble_trace_junction_equations(const Vector<double> &y, Vector<double> &F);
 

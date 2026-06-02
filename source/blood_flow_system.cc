@@ -782,8 +782,8 @@ BloodFlowSystem<dim, spacedim>::output_csv(const double          t,
     const double s_L   = U_bar - c_bar;
     const double s_R   = U_bar + c_bar;
 
-    const double c2L_over_AL = c_L * c_L;
-    const double c2R_over_AR = c_R * c_R;
+    const double c2L_over_AL = c_L * c_L / A_L;
+    const double c2R_over_AR = c_R * c_R / A_R;
 
     const double FAL_j = scalar_area_flux_jac(bn_L, A_L, U_L, dA_L, dU_L);
     const double FUL_j =
@@ -856,10 +856,10 @@ BloodFlowSystem<dim, spacedim>::output_csv(const double          t,
 
     const double FAL_j = scalar_area_flux_jac(bn_L, A_L, U_L, dA_L, dU_L);
     const double FUL_j =
-      scalar_momentum_flux_jac(bn_L, c2L * c2L, U_L, dA_L, dU_L);
+      scalar_momentum_flux_jac(bn_L, c2L * c2L / A_L, U_L, dA_L, dU_L);
     const double FAR_j = scalar_area_flux_jac(bn_R, A_R, U_R, dA_R, dU_R);
     const double FUR_j =
-      scalar_momentum_flux_jac(bn_R, c2R * c2R, U_R, dA_R, dU_R);
+      scalar_momentum_flux_jac(bn_R, c2R * c2R / A_R, U_R, dA_R, dU_R);
     const double alpha =
       theta * compute_LF_penalty(A_L, A_R, U_L, U_R, bn_L, bn_R, vid_L, vid_R);
 
@@ -1215,14 +1215,23 @@ BloodFlowSystem<dim, spacedim>::output_csv(const double          t,
                 res_U = (U_hat_cur - 4.0 * (c_hat - c0)) - W2_int;
               }
             else if (outlet_type == "RCR" && rcr_map.count(bid) &&
-                     rcr_map.at(bid).R1 > 0.0)
+                     (rcr_map.at(bid).R1 > 0.0 || rcr_map.at(bid).R2 > 0.0))
+
               {
                 const auto  &rcr    = rcr_map.at(bid);
-                const double Pc     = terminal_Pc_storage.at(bid);
                 const double Q      = A_hat_cur * U_hat_cur;
-                const double W1_int = U_int + 4.0 * (c_int - c0);
-
-                res_A = compute_pressure_value(A_hat, vid) - (rcr.R1 * Q + Pc);
+                if (rcr.C >0.0)
+                {
+                  const double Pc = terminal_Pc_storage.at(bid);
+                  res_A =
+                    compute_pressure_value(A_hat, vid) - (rcr.R1 * Q + Pc);
+                }
+                else
+                  { // single R: P = R2*Q + P_out
+                    res_A = compute_pressure_value(A_hat, vid) -
+                            (rcr.R2 * Q + rcr.P_out);
+                  }
+                const double W1_int = U_int + 4.0 * (c_int - c0);    
                 res_U = (U_hat_cur + 4.0 * (c_hat - c0)) - W1_int;
               }
             else // Reflection outlet
@@ -1919,33 +1928,74 @@ BloodFlowSystem<dim, spacedim>::output_csv(const double          t,
                   }
               }
             else if (outlet_type == "RCR" && rcr_map.count(bid) &&
-                     rcr_map.at(bid).R1 > 0.0)
+                     (rcr_map.at(bid).R1 > 0.0 || rcr_map.at(bid).R2 > 0.0))
+                    
               {
                 const auto &rcr = rcr_map.at(bid);
 
-                // R1 = P(A_hat) - R1*(A_hat*U_hat) - Pc
-                // R2 = U_hat + 4(c_hat - c0) - W1_int
-
-                // \partialR1/\partialA_hat, \partialR1/\partialU_hat
-                jacobian_matrix.add(a_row,
-                                    a_row,
-                                    dPdA_hat - rcr.R1 * U_hat_cur);
-                jacobian_matrix.add(a_row, u_row, -rcr.R1 * A_hat);
-
-                // \partialR2/\partialA_hat, \partialR2/\partialU_hat
-                jacobian_matrix.add(u_row, a_row, 4.0 * dc_hat);
-                jacobian_matrix.add(u_row, u_row, 1.0);
-
-                // \partialR2/\partial(A_int, U_int)
-                for (unsigned int j = 0; j < fe->n_dofs_per_cell(); ++j)
+                if (rcr.C > 0.0)
                   {
-                    const double phi_A = fef[area_extractor].value(j, 0);
-                    const double phi_U = fef[velocity_extractor].value(j, 0);
-                    jacobian_matrix.add(u_row,
-                                        ldofs[j],
-                                        -(phi_U + 4.0 * dc_int * phi_A));
+                    // ---- Full RCR
+                    // -------------------------------------------------------
+                    // res_A = P(A_hat) - R1*(A_hat*U_hat) - Pc
+                    // res_U = U_hat + 4(c_hat - c0) - W1_int
+                    // dres_A/dA_hat = dP/dA_hat - R1*U_hat
+                    // dres_A/dU_hat = -R1*A_hat
+                    jacobian_matrix.add(a_row,
+                                        a_row,
+                                        dPdA_hat - rcr.R1 * U_hat_cur);
+                    jacobian_matrix.add(a_row, u_row, -rcr.R1 * A_hat);
+
+                    // dres_U/dA_hat = 4*dc_hat
+                    // dres_U/dU_hat = 1
+                    jacobian_matrix.add(u_row, a_row, 4.0 * dc_hat);
+                    jacobian_matrix.add(u_row, u_row, 1.0);
+
+                    // dres_U/d(A_int, U_int)
+                    for (unsigned int j = 0; j < fe->n_dofs_per_cell(); ++j)
+                      {
+                        const double phi_A = fef[area_extractor].value(j, 0);
+                        const double phi_U =
+                          fef[velocity_extractor].value(j, 0);
+                        jacobian_matrix.add(u_row,
+                                            ldofs[j],
+                                            -(phi_U + 4.0 * dc_int * phi_A));
+                      }
                   }
-              }
+                else
+                  {
+                    // Single R
+                    // -------------------------------------------------------
+                    // res_A = P(A_hat) - R2*(A_hat*U_hat) - P_out
+                    // res_U = U_hat + 4(c_hat - c0) - W1_int
+                    //
+                    // dres_A/dA_hat = dP/dA_hat - R2*U_hat   (same form as RCR
+                    // with R2) dres_A/dU_hat = -R2*A_hat               (R2
+                    // replaces R1) Pc term drops out (no capacitor, no time
+                    // derivative)
+                    jacobian_matrix.add(a_row,
+                                        a_row,
+                                        dPdA_hat - rcr.R2 * U_hat_cur);
+                    jacobian_matrix.add(a_row, u_row, -rcr.R2 * A_hat);
+
+                    // dres_U/dA_hat = 4*dc_hat
+                    // dres_U/dU_hat = 1
+                    // (identical to RCR — res_U has no R dependence)
+                    jacobian_matrix.add(u_row, a_row, 4.0 * dc_hat);
+                    jacobian_matrix.add(u_row, u_row, 1.0);
+
+                    // dres_U/d(A_int, U_int)
+                    for (unsigned int j = 0; j < fe->n_dofs_per_cell(); ++j)
+                      {
+                        const double phi_A = fef[area_extractor].value(j, 0);
+                        const double phi_U =
+                          fef[velocity_extractor].value(j, 0);
+                        jacobian_matrix.add(u_row,
+                                            ldofs[j],
+                                            -(phi_U + 4.0 * dc_int * phi_A));
+                      }
+                }
+              }         
             else // Reflection
               {
                 const double Rt = par["Rt"];
@@ -2125,13 +2175,13 @@ BloodFlowSystem<dim, spacedim>::output_csv(const double          t,
     assemble_jacobian_trace_junction_block(y);
 
 
-    // ---- Negate: ∂F/∂y = −∂R/∂y -------------------------------------------
+    // ---- Negate: dF/dy = −dR/dy -------------------------------------------
     // Residual is F = M*ydot − R_cell (cell) and F = −R_trace (trace)
-    // so ∂F/∂y = −∂R/∂y for both blocks.
+    // so dF/dy = −dR/dy for both blocks.
     jacobian_matrix *= -1.0;
 
-    // ---- Add alpha*M_K to cell-block (∂F/∂ydot term)
-    // --------------------------- J_IDA = ∂F/∂y + alpha · ∂F/∂ẏ = −∂R/∂y +
+    // ---- Add alpha*M_K to cell-block (dF/dydot term)
+    // --------------------------- J_IDA = dF/dy + alpha · dF/dẏ = −dR/dy +
     // alpha · M_block M_block is M_K on cell rows, zero on trace rows.
 
     const unsigned int n_dofs = fe->n_dofs_per_cell();
@@ -2196,7 +2246,7 @@ BloodFlowSystem<dim, spacedim>::output_csv(const double          t,
             Q_accumulated[bid] += A_vals[q] * U_vals[q] * JxW[q];
         }
 
-    // ---- 2. Update Windkessel capacitor pressure ----------------------------
+    // ---- 2. Update Windkessel capacitor pressure with 2 resistors ----------------------------
     std::map<unsigned int, double> Pc_new_map;
     for (const auto &[bid, Pc_old] : terminal_Pc_storage)
       {
@@ -2429,6 +2479,7 @@ BloodFlowSystem<dim, spacedim>::output_csv(const double          t,
             // Load mesh and VTK data
             dealii::GridIn<dim, spacedim> grid_in;
             grid_in.attach_triangulation(triangulation);
+            std::cout << "Reading VTK file: " << vtk_file_path << std::endl;
             std::ifstream mesh_file(vtk_file_path);
             grid_in.read_vtk(mesh_file);
 
@@ -2491,7 +2542,7 @@ BloodFlowSystem<dim, spacedim>::output_csv(const double          t,
                     rcr.C     = point_C[v];
                     rcr.P_out = point_P_out[v];
 
-                    if (rcr.R1 > 0.0)
+                    if (rcr.R2 > 0.0)
                       rcr_map[bid] = rcr;
                   }
 
@@ -2501,35 +2552,80 @@ BloodFlowSystem<dim, spacedim>::output_csv(const double          t,
           {
             triangulation.refine_global(1);
           }
-
+        
         setup_system();
+      
         initialize_terminal_capacitors();
         compute_theoretical_peak(theoretical_peak);
         // Build per-cell mass inverses (replaces global mass matrix)
         build_per_cell_mass_inv();
         compute_initial_solution(solution, ida_parameters.initial_time);
         time = ida_parameters.initial_time;
-        open_csv_files();
-        // ---- Ddbugging: vessel properties and wave speeds
-        // ----------------------
-        std::cout << "\n--- Vessel diagnostics ---\n";
-        for (const auto &[vid, vpp] : vessel_map)
-          {
-            const double c0 = compute_wave_speed(vpp.a_d, vid);
-            const double tau =
-              (rcr_map.count(vid) ? rcr_map.at(vid).R2 * rcr_map.at(vid).C :
-                                    0.0);
-            std::cout << "  Vessel " << vid << "  L=" << vpp.L << "  c0=" << c0
-                      << "  a_d=" << vpp.a_d << "  E=" << vpp.E
-                      << "  tau_RC=" << tau << "\n";
-          }
-        for (const auto &[bid, rcr] : rcr_map)
-          std::cout << "  BC " << bid << "  R1=" << rcr.R1 << "  R2=" << rcr.R2
-                    << "  C=" << rcr.C << "  tau=" << rcr.R2 * rcr.C << "\n";
-        std::cout << "--------------------------\n\n";
 
+        auto check_jacobian_fd = [this](const Vector<double> &y0) {
+          const double t     = time;
+          const double eps   = 1e-7;
+          const double alpha = 0.0;
+
+          Vector<double> ydot0(n_total_dofs);
+          ydot0 = 0.0;
+
+          // Assemble Jacobian
+         
+          assemble_jacobian(t, y0, ydot0, alpha);
+          std::cout << "J(7,4)=" << jacobian_matrix.el(7, 4) << "\n"
+                    << "J(7,5)=" << jacobian_matrix.el(7, 5) << "\n"
+                    << "J(7,6)=" << jacobian_matrix.el(7, 6) << "\n";
+          // Random direction
+          Vector<double> v(n_total_dofs);
+
+          std::srand(0);
+          for (unsigned int i = 0; i < n_total_dofs; ++i)
+            v[i] = 2.0 * std::rand() / double(RAND_MAX) - 1.0;
+
+          // y+eps*v and y-eps*v
+          Vector<double> yp(y0);
+          Vector<double> ym(y0);
+
+          yp.add(eps, v);
+          ym.add(-eps, v);
+          // Residuals
+          Vector<double> Fp(n_total_dofs);
+          Vector<double> Fm(n_total_dofs);
+
+          assemble_residual(t, yp, ydot0, Fp);
+          assemble_residual(t, ym, ydot0, Fm);
+
+          // Central FD approximation:
+          // (F(y+eps*v)-F(y-eps*v))/(2 eps)
+          Vector<double> fd(Fp);
+          fd -= Fm;
+          fd /= (2.0 * eps);
+
+          // J*v
+          Vector<double> Jv(n_total_dofs);
+          jacobian_matrix.vmult(Jv, v);
+
+          // Difference
+          Vector<double> diff(Jv);
+          diff -= fd;
+
+          const double abs_err = diff.l2_norm();
+          const double rel_err = abs_err / std::max(1.0, fd.l2_norm());
+
+          std::cout << "\n=====================================\n";
+          std::cout << "Central FD Jacobian check\n";
+          std::cout << "eps        = " << eps << "\n";
+          std::cout << "||Jv-FD||  = " << abs_err << "\n";
+          std::cout << "||FD||     = " << fd.l2_norm() << "\n";
+          std::cout << "relative   = " << rel_err << "\n";
+          std::cout << "=====================================\n";
+        };
+        check_jacobian_fd(solution);
+        open_csv_files();
+        
         std::cout << "\n--- Inflow waveform check ---\n";
-        for (double tt : {0.0, 0.1, 0.2, 0.25, 0.3, 0.4, 0.55, 1.1})
+        for (double tt : {0.0, 0.14, 0.28, 0.46, 0.68, 0.827})
           {
             inflow_function.set_time(tt);
             const double Q = inflow_function.value(Point<1>(tt));
@@ -2541,6 +2637,8 @@ BloodFlowSystem<dim, spacedim>::output_csv(const double          t,
 
         // ---- IDA setup
         // -----------------------------------------------------------
+        ida_parameters.ic_type =
+          SUNDIALS::IDA<Vector<double>>::AdditionalData::use_y_diff;
         SUNDIALS::IDA<Vector<double>> ida(ida_parameters);
 
         // vectoor allocation
@@ -2563,7 +2661,7 @@ BloodFlowSystem<dim, spacedim>::output_csv(const double          t,
           return 0;
         };
 
-        // Jacobian J = ∂F/∂y + α · ∂F/∂ẏ
+        // Jacobian J = dF/dy + alpha · dF/dẏ
         ida.setup_jacobian = [this](const double          t,
                                     const Vector<double> &y,
                                     const Vector<double> &ydot,
@@ -2602,46 +2700,47 @@ BloodFlowSystem<dim, spacedim>::output_csv(const double          t,
 
         // ---- Compute consistent initial ydot
         // ------------------------------------
+        
         solution_dot = 0.0;
-        {
-          Vector<double> F0(n_total_dofs);
-          assemble_cell_residuals(ida_parameters.initial_time, solution, F0);
-          assemble_trace_interior_equations(solution, F0);
-          assemble_trace_boundary_equations(ida_parameters.initial_time,
-                                            solution,
-                                            F0);
-          assemble_trace_junction_equations(solution, F0);
-          std::cout << "  Initial F0 (spatial RHS) norm: " << F0.l2_norm()
-                    << "\n";
+        // {
+        //   Vector<double> F0(n_total_dofs);
+        //   assemble_cell_residuals(ida_parameters.initial_time, solution, F0);
+        //   assemble_trace_interior_equations(solution, F0);
+        //   assemble_trace_boundary_equations(ida_parameters.initial_time,
+        //                                     solution,
+        //                                     F0);
+        //   assemble_trace_junction_equations(solution, F0);
+        //   std::cout << "  Initial F0 (spatial RHS) norm: " << F0.l2_norm()
+        //             << "\n";
 
-          const unsigned int n_dpc = fe->n_dofs_per_cell();
-          Vector<double>     loc_F(n_dpc), loc_ydot(n_dpc);
-          for (const auto &cell : dof_handler.active_cell_iterators())
-            {
-              std::vector<types::global_dof_index> ldofs(n_dpc);
-              cell->get_dof_indices(ldofs);
-              for (unsigned int i = 0; i < n_dpc; ++i)
-                loc_F(i) = F0[ldofs[i]];
+        //   const unsigned int n_dpc = fe->n_dofs_per_cell();
+        //   Vector<double>     loc_F(n_dpc), loc_ydot(n_dpc);
+        //   for (const auto &cell : dof_handler.active_cell_iterators())
+        //     {
+        //       std::vector<types::global_dof_index> ldofs(n_dpc);
+        //       cell->get_dof_indices(ldofs);
+        //       for (unsigned int i = 0; i < n_dpc; ++i)
+        //         loc_F(i) = F0[ldofs[i]];
 
-              per_cell_mass_inv.at(cell->id()).vmult(loc_ydot, loc_F);
-              for (unsigned int i = 0; i < n_dpc; ++i)
-                solution_dot[ldofs[i]] = loc_ydot(i);
-            }
+        //       per_cell_mass_inv.at(cell->id()).vmult(loc_ydot, loc_F);
+        //       for (unsigned int i = 0; i < n_dpc; ++i)
+        //         solution_dot[ldofs[i]] = loc_ydot(i);
+        //     }
 
-          Vector<double> res_check(n_total_dofs);
-          assemble_residual(ida_parameters.initial_time,
-                            solution,
-                            solution_dot,
-                            res_check);
-          std::cout << "  Initial DAE residual norm:     "
-                    << res_check.l2_norm() << "\n";
-        }
+        //   Vector<double> res_check(n_total_dofs);
+        //   assemble_residual(ida_parameters.initial_time,
+        //                     solution,
+        //                     solution_dot,
+        //                     res_check);
+        //   std::cout << "  Initial DAE residual norm:     "
+        //             << res_check.l2_norm() << "\n";
+        // }
 
         // ---- Solve
         // ---------------------------------------------------------------
         time = ida_parameters.initial_time;
         ida.solve_dae(solution, solution_dot);
-
+      
         compute_pressure(solution, pressure);
         compute_errors(cycle);
       }

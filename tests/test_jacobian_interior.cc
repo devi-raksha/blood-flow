@@ -1,25 +1,24 @@
 // ---------------------------------------------------------------------
 //
-// Copyright (C) 2024 by Luca Heltai
+// Test trace-interior residual vs trace-interior Jacobian block.
 //
-// This file is part of the bare-dealii-app application, based on the
-// deal.II library.
+// Assembles only assemble_trace_interior_equations and
+// assemble_jacobian_trace_interior_block, then checks every entry
+// (any row, any column) with central finite differences.
 //
-// The bare-dealii-app application is free software; you can use it,
-// redistribute it, and/or modify it under the terms of the Apache-2.0 License
-// WITH LLVM-exception as published by the Free Software Foundation; either
-// version 3.0 of the License, or (at your option) any later version.
-// The full text of the license can be found in the file LICENSE.md
-// at the top level of the bare-dealii-app distribution.
 //
+// Output:
+//   L2_error       — ||J_an - J_fd||_F over the full n_total × n_total matrix
+//   worst_row      — global row index with the largest per-row L2 error
+//   row_L2_error   — ||J_an[worst_row,:] - J_fd[worst_row,:]||_2
 // ---------------------------------------------------------------------
 
-// Test constant functions
-
-#include <deal.II/grid/grid_generator.h>
 #include <deal.II/grid/grid_in.h>
 
 #include <deal.II/lac/vector.h>
+
+#include <cmath>
+#include <iomanip>
 
 #include "blood_flow_system.h"
 #include "tests.h"
@@ -33,7 +32,7 @@ test()
   BloodFlowSystem<1, 3> problem;
   problem.initialize_params(PRM_DIR "constant.prm");
 
-  // Load mesh and physics from the VTK path
+  // ── same setup as the equilibrium test ───────────────────────────────────
   dealii::GridIn<1, 3> grid_in;
   grid_in.attach_triangulation(problem.triangulation);
   std::ifstream mesh_file(problem.vtk_file_path);
@@ -63,13 +62,12 @@ test()
                              "P_out",
                              problem.point_P_out);
 
-  // Set material IDs and boundary IDs
   {
-    unsigned int cell_idx = 0;
+    unsigned int idx = 0;
     for (auto &cell : problem.triangulation.active_cell_iterators())
       {
         cell->set_material_id(
-          static_cast<unsigned int>(problem.cell_vessel_ids[cell_idx]));
+          static_cast<unsigned int>(problem.cell_vessel_ids[idx]));
         for (unsigned int f = 0; f < GeometryInfo<1>::faces_per_cell; ++f)
           if (cell->face(f)->at_boundary())
             {
@@ -77,11 +75,10 @@ test()
               cell->face(f)->set_boundary_id(
                 static_cast<types::boundary_id>(problem.point_boundary_id[v]));
             }
-        ++cell_idx;
+        ++idx;
       }
   }
 
-  // Populate rcr_map
   for (const auto &cell : problem.triangulation.active_cell_iterators())
     for (unsigned int f = 0; f < GeometryInfo<1>::faces_per_cell; ++f)
       if (cell->face(f)->at_boundary())
@@ -93,30 +90,72 @@ test()
           rcr.R2    = problem.point_R2[v];
           rcr.C     = problem.point_C[v];
           rcr.P_out = problem.point_P_out[v];
-          if (rcr.R1 > 0.0)
+          if (rcr.R2 > 0.0)
             problem.rcr_map[bid] = rcr;
         }
 
   problem.triangulation.refine_global(problem.n_global_refinements);
-
   problem.setup_system();
   problem.initialize_terminal_capacitors();
   problem.build_per_cell_mass_inv();
   problem.compute_initial_solution(problem.solution, problem.time);
 
-  Vector<double> residual(problem.solution.size());
-  Vector<double> ydot(problem.solution.size()); // zero ydot
-  ydot = 0.0;
-  problem.assemble_residual(problem.time, problem.solution, ydot, residual);
-  deallog << "n_active_cells = " << problem.triangulation.n_active_cells()
+  // ── assemble only the trace-interior Jacobian block ─────────────────────
+  const unsigned int n_cell  = problem.n_cell_dofs;
+  const unsigned int n_total = problem.n_total_dofs;
+
+  deallog << "n_cell=" << n_cell << "  n_total=" << n_total << std::endl;
+
+  problem.jacobian_matrix = 0.0;
+  problem.assemble_jacobian_trace_interior_block(problem.solution);
+
+  // ── central FD check ─────────────────────────────────────────────────────
+  const double eps = 1e-8;
+
+  Vector<double> yp(n_total), ym(n_total), Fp(n_total), Fm(n_total);
+  Vector<double> ej(n_total), Jcol(n_total);
+
+  Vector<double> row_sq(n_total);
+  double         l2_sq = 0.0;
+
+  for (unsigned int j = 0; j < n_total; ++j)
+    {
+      const double h = eps ; //* (1.0 + std::abs(problem.solution[j]));
+
+      yp = problem.solution;
+      yp[j] += h;
+      ym = problem.solution;
+      ym[j] -= h;
+
+      Fp.reinit(n_total);
+      problem.assemble_trace_interior_equations(yp, Fp);
+      Fm.reinit(n_total);
+      problem.assemble_trace_interior_equations(ym, Fm);
+
+      ej    = 0.0;
+      ej[j] = 1.0;
+      problem.jacobian_matrix.vmult(Jcol, ej);
+
+      for (unsigned int i = 0; i < n_total; ++i)
+        {
+          const double fd  = (Fp[i] - Fm[i]) / (2.0 * h);
+          const double err = Jcol[i] - fd;
+          row_sq[i] += err * err;
+          l2_sq += err * err;
+        }
+    }
+
+  unsigned int worst_row = 0;
+  for (unsigned int i = 1; i < n_total; ++i)
+    if (row_sq[i] > row_sq[worst_row])
+      worst_row = i;
+
+  const double l2_err       = std::sqrt(l2_sq);
+  const double worst_row_l2 = std::sqrt(row_sq[worst_row]);
+
+  deallog << "L2_error=" << std::scientific << std::setprecision(4) << l2_err
+          << "  worst_row=" << worst_row << "  row_L2_error=" << worst_row_l2
           << std::endl;
-  deallog << "Residual L2 norm = " << residual.l2_norm() << std::endl;
-
-  AssertThrow(residual.l2_norm() < 1e-10,
-              ExcMessage(
-                "assemble_implicit_function() FAILED equilibrium test."));
-
-  deallog << "assemble_residual() PASSED." << std::endl;
 }
 
 int
