@@ -177,6 +177,8 @@ public:
   build_per_cell_mass_inv();
   void
   compute_initial_solution(Vector<double> &dst, const double t);
+  void
+  initialize_trace_unknowns(Vector<double> &sol, const double t);
 
   void
   output_results(const Vector<double> &y,
@@ -369,6 +371,12 @@ private:
   mutable std::ofstream csv_aorta_mid_;
   mutable std::ofstream csv_junction_;
   mutable std::ofstream csv_iliac_mid_;
+
+  std::vector<std::pair<std::string, unsigned int>>
+    monitored_vessels_; // (name, vessel_id)
+  std::vector<Point<spacedim>>
+    monitor_targets_; // physical coordinates of monitoring locations
+  mutable std::vector<std::ofstream> csv_streams_; // opened in open_csv_files()
 
   // -----------------------------------------------------------------------
   // Internal helpers — geometry
