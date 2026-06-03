@@ -1,5 +1,0 @@
-
-DEAL::Selected numerical flux: HLL_SYMPY
-DEAL::rhs_l2 7.11236e-15
-DEAL::Jv_l2 5.64418
-DEAL::Jv_sum -1.00000

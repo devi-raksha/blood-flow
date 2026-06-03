@@ -1,5 +1,7 @@
 
-DEAL::Selected numerical flux: HLL
-DEAL::Residual = 5.03410e-15
-DEAL::J*ones = -1.00000 (it should be: -integral(mu, 0,1))
-DEAL::mu = 1.00000
+DEAL::||residual|| = 2.14638e-14  (should be ~0 at equilibrium)
+DEAL::J·ones (sum)  = -9.89638e+08
+DEAL::expected      = 0.00000  (= Σ_cells (eta/a_d) · |K|)
+DEAL::mu            = 0.00000
+DEAL::xi            = 0.00000
+DEAL::rho           = 1060.00
