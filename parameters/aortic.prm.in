@@ -18,11 +18,11 @@ subsection BloodFlowSystem<1, 3>
   set Theta (penalty parameter)    = 0.001
   set Theta Boundary (stability parameter) = 0
   set Use direct solver            = true
-  set Use junction mesh            = false
+  set Use junction mesh            = true
   set Verbosity (console depth)    = 1
   set Numerical flux type          = HLL
   set Outlet boundary condition type = RCR
-  set Vtk file path for mesh input         = /home/rakshad/blood-flow/parameters/single_vessel.vtk
+  set Vtk file path for mesh input         = @SOURCE_DIR@/parameters/aortic.vtk
  subsection IDA parameters
     set Final time                        = 1.1
     set Initial time                      = 0
@@ -33,8 +33,8 @@ subsection BloodFlowSystem<1, 3>
     end
     subsection Running parameters
       set Initial step size                      = 5e-05
-      set Maximum number of nonlinear iterations = 10
-      set Maximum order of BDF                   = 3
+      set Maximum number of nonlinear iterations = 15
+      set Maximum order of BDF                   = 2
       set Minimum step size                      = 1e-08
     end
   end

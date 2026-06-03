@@ -2,7 +2,7 @@ subsection BloodFlowSystem<1, 3>
   set Finite element degree                = 2
   set Number of global refinement          = 6
   set Number of refinement cycles          = 1
-  set Vtk file path for mesh input         = ../../blood-flow/notebooks/common_carotid_artery.vtk
+  set Vtk file path for mesh input         = @SOURCE_DIR@/notebooks/common_carotid_artery.vtk
   set Numerical flux type                  = HLL
   set Outlet boundary condition type       = RCR
   set Output filename                      = solution

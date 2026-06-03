@@ -21,6 +21,27 @@ DEAL_II_SETUP_TARGET(test_library)
 
 INCLUDE_DIRECTORIES(include)
 
+# Mirror parameters/ into the build tree so tests and examples always use
+# configured files.  Template files end in .prm.in and are expanded with the
+# source tree location baked in.
+set(SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
+file(GLOB_RECURSE PARAMETER_FILES CONFIGURE_DEPENDS
+  RELATIVE "${CMAKE_CURRENT_SOURCE_DIR}/parameters"
+  "${CMAKE_CURRENT_SOURCE_DIR}/parameters/*")
+foreach(parameter_file IN LISTS PARAMETER_FILES)
+  set(parameter_source "${CMAKE_CURRENT_SOURCE_DIR}/parameters/${parameter_file}")
+  set(parameter_destination "${CMAKE_CURRENT_BINARY_DIR}/parameters/${parameter_file}")
+  get_filename_component(parameter_destination_dir "${parameter_destination}" DIRECTORY)
+  file(MAKE_DIRECTORY "${parameter_destination_dir}")
+
+  if(parameter_file MATCHES "\\.prm\\.in$")
+    string(REGEX REPLACE "\\.in$" "" parameter_destination "${parameter_destination}")
+    configure_file("${parameter_source}" "${parameter_destination}" @ONLY)
+  else()
+    configure_file("${parameter_source}" "${parameter_destination}" COPYONLY)
+  endif()
+endforeach()
+
 # Create one executable per file in apps/
 file(GLOB APP_SOURCES apps/*.cc)
 foreach(app_src ${APP_SOURCES})
@@ -30,7 +51,7 @@ foreach(app_src ${APP_SOURCES})
   DEAL_II_SETUP_TARGET(${app_name})
 endforeach()
 
-ADD_DEFINITIONS(-DPRM_DIR="${CMAKE_CURRENT_SOURCE_DIR}/parameters/")
+ADD_DEFINITIONS(-DPRM_DIR="${CMAKE_CURRENT_BINARY_DIR}/parameters/")
 
 # Add tests
 ADD_SUBDIRECTORY(tests)

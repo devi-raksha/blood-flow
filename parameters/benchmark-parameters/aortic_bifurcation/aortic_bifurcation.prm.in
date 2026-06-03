@@ -2,7 +2,7 @@ subsection BloodFlowSystem<1, 3>
   set Finite element degree                = 2
   set Number of global refinement          = 5
   set Number of refinement cycles          = 1
-  set Vtk file path for mesh input         = ../../blood-flow/notebooks/bifurcation_network.vtk 
+  set Vtk file path for mesh input         = @SOURCE_DIR@/notebooks/bifurcation_network.vtk 
   set Numerical flux type                  = HLL
   set Outlet boundary condition type       = RCR
   set Output directory                     = 
