@@ -1,0 +1,43 @@
+subsection BloodFlowSystem<1, 3>
+  set Finite element degree                = 1
+  set Number of global refinement          = 5
+  set Number of refinement cycles          = 1
+  set Vtk file path for mesh input         = ../../blood-flow/notebooks/37_vessel_network.vtk 
+  set Numerical flux type                  = HLL
+  set Outlet boundary condition type       = RCR
+  set Output directory                     = 
+  set Output filename                      = solution
+  set Problem constants                    = 1.0
+  set Theta Boundary (stability parameter) = 0.5
+  set Theta (penalty parameter)            = 0.5
+  set Use Riemann Invariants               = true
+  set Use direct solver                    = true
+  set Use junction mesh                    = true
+  set Verbosity (console depth)            = 0
+  subsection IDA parameters
+    set Final time                        = 0.1
+    set Initial time                      = 0
+    set Time interval between each output = 0.005
+    subsection Error control
+      set Absolute error tolerance = 1e-05 
+      set Relative error tolerance = 1e-05
+    end
+    subsection Running parameters
+      set Initial step size                      = 1e-04
+      set Maximum number of nonlinear iterations = 15
+      set Maximum order of BDF                   = 2
+      set Minimum step size                      = 1e-07
+    end
+  end
+end
+subsection Blood Flow Parameters
+  set Density (rho)                                   = 1050
+  set Profile constant for friction term (xi)         = 9
+  set Reflection coefficient at outflow boundary (Rt) = 0
+  set Tube law exponent (m)                           = 0.5
+  set Viscosity coefficient (mu)                      = 0.0025
+end
+subsection Functions
+  
+set Inflow function = (3.1199+7.7982*sin(2*3.1415926*t/0.827+0.5769)+4.1228*sin(4*3.1415926*t/0.827-0.8738)-1.0611*sin(6*3.1415926*t/0.827+0.7240)+0.7605*sin(8*3.1415926*t/0.827-0.6387)-0.9148*sin(10*3.1415926*t/0.827+1.1598)+0.4924*sin(12*3.1415926*t/0.827-1.0905)-0.5580*sin(14*3.1415926*t/0.827+1.042)+0.3280*sin(16*3.1415926*t/0.827-0.5570)-0.3941*sin(18*3.1415926*t/0.827+1.2685)+0.2833*sin(20*3.1415926*t/0.827+0.6702)+0.2272*sin(22*3.1415926*t/0.827-1.4983)+0.2249*sin(24*3.1415926*t/0.827+0.9924)+0.2589*sin(26*3.1415926*t/0.827-1.5616)-0.1460*sin(28*3.1415926*t/0.827-1.3106)+0.2141*sin(30*3.1415926*t/0.827-1.1306)-0.1253*sin(32*3.1415926*t/0.827+0.1552)+0.1321*sin(34*3.1415926*t/0.827-1.5595)-0.1399*sin(36*3.1415926*t/0.827+0.4223)-0.0324*sin(38*3.1415926*t/0.827+0.7811)-0.1211*sin(40*3.1415926*t/0.827+1.0729))/1000/60
+end 
