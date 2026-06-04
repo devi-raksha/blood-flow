@@ -1,0 +1,4 @@
+
+DEAL::Trace residual BEFORE initialize_trace_unknowns: 1.00000e-06
+DEAL::Trace residual AFTER initialize_trace_unknowns:  2.16185e-13
+DEAL::initialize_trace_unknowns PASSED.
