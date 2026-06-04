@@ -1,3 +1,4 @@
 
-DEAL::Selected numerical flux: HLL
-DEAL::L: length of the domain = 1.00000
+DEAL::L (mass matrix):   0.241370
+DEAL::L (cell measures): 0.241370
+DEAL::Mass matrix length integration PASSED.

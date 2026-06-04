@@ -1,3 +1,3 @@
 
-DEAL::Selected numerical flux: HLL
-DEAL::L: length of the domain = 1.00000
+DEAL::n_active_cells = 16
+DEAL::L: total domain length = 0.241370

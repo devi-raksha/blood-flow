@@ -10,7 +10,6 @@ end
 
 subsection Functions
    set Exact solution = x + 1; 2 - x
-   set Initial condition = x + 1; 2 - x
    set RHS expression = 1 - 2*x; (m*E*((x + 1)/a0)^m + rho*(x + 1)*(-mu*(x - 2) + x - 2))/(rho*(x + 1))
 end
 

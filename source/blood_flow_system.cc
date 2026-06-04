@@ -2779,7 +2779,7 @@ BloodFlowSystem<dim, spacedim>::build_per_cell_mass_inv()
           compute_pressure(sol, pressure);
           compute_theoretical_peak(theoretical_peak);
           output_results(sol, pressure, theoretical_peak, step_number);
-          output_csv(t, sol);
+          //output_csv(t, sol);
         };
 
         // ---- Compute consistent initial ydot

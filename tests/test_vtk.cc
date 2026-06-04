@@ -2,16 +2,19 @@
 // Test: Read 1D vascular network from VTK and detect topology
 // -----------------------------------------------------------------------------
 
-#include <deal.II/base/logstream.h>
 #include <deal.II/base/geometry_info.h>
-#include <deal.II/grid/tria.h>
+#include <deal.II/base/logstream.h>
 
 #include <deal.II/grid/grid_in.h>
+#include <deal.II/grid/tria.h>
+
+#include <filesystem>
+#include <fstream>
+#include <map>
+
 #include "blood_flow_system.h"
 #include "tests.h"
 #include "vtk_utils.h"
-#include <fstream>
-#include <map>
 
 using namespace dealii;
 
@@ -22,14 +25,11 @@ void test(const std::string &filename)
   DoFHandler<dim, spacedim> dof_handler(triangulation);
           Vector<double>            output_vector;
            std::vector<std::string>  data_names;
-  deallog << "Reading file: " << filename << std::endl;
   
   // -----------------------------
   // Read VTK
   // -----------------------------
   //VTKWrappers::read_tria(filename, triangulation);
-
-
 
  VTKUtils::read_vtk(filename,
            dof_handler,
@@ -105,7 +105,7 @@ int main()
  deallog.depth_console(10);
   try
   {
-    test<1,3>("/home/rakshad/blood-flow/notebooks/bifurcation_physics.vtk");
+    test<1, 3>("../../../../notebooks/bifurcation_physics.vtk"); 
   }
   catch (std::exception &e)
   {
