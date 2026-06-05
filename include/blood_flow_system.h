@@ -360,24 +360,15 @@ private:
   mutable TimerOutput computing_timer;
 
   // CSV timeseries output
-  void
-  output_csv(const double          t,
-             const Vector<double> &y);
+  std::ofstream                                         csv_P_, csv_Q_;
+  std::vector<std::pair<unsigned int, Point<spacedim>>> probe_targets_;
 
   void
   open_csv_files();
-
-  // One stream per monitoring location
-  mutable std::ofstream csv_aorta_mid_;
-  mutable std::ofstream csv_junction_;
-  mutable std::ofstream csv_iliac_mid_;
-
-  std::vector<std::pair<std::string, unsigned int>>
-    monitored_vessels_; // (name, vessel_id)
-  std::vector<Point<spacedim>>
-    monitor_targets_; // physical coordinates of monitoring locations
-  mutable std::vector<std::ofstream> csv_streams_; // opened in open_csv_files()
-
+  void
+  write_csv_row(const double t, const Vector<double> &sol);
+  void
+  close_csv_files();
   // -----------------------------------------------------------------------
   // Internal helpers — geometry
   // -----------------------------------------------------------------------

@@ -774,42 +774,168 @@ BloodFlowSystem<dim, spacedim>::build_per_cell_mass_inv()
     }
 }
 
-// uncomment for aortic_bifurction test case
+// ============================================================================
+// CSV probe output for 37-artery benchmark validation
+// (Boileau et al. 2015 / Alastruey et al. 2011)
+//
+// Outputs P [kPa] and Q [ml/s] at the midpoint of 8 selected vessels.
+//
+// Add these members to blood_flow_system.h:
+//
+//   std::ofstream csv_P_, csv_Q_;
+//   std::vector<std::pair<unsigned int, Point<spacedim>>> probe_targets_;
+//   // (vessel_id, coarse_midpoint) for each probe
+//
+//   void open_csv_files();
+//   void write_csv_row(const double t, const Vector<double> &sol);
+//   void close_csv_files();
+// ============================================================================
 
-// template <int dim, int spacedim>
-// void
-// BloodFlowSystem<dim, spacedim>::open_csv_files()
-// {
-//   const std::string dir =
-//     output_directory + (output_directory.empty() ? "" : "/");
+// ---------- Probe definitions -----------------------------------------------
+// vessel_id from the 37-artery VTK, label for CSV header
+struct ProbeSpec
+{
+  unsigned int vessel_id;
+  const char  *label;
+  double       mid_x, mid_y, mid_z; // coarse-mesh midpoint (from VTK)
+};
 
-//   // Open and write headers
-//   auto open = [&](std::ofstream &f, const std::string &name) {
-//     f.open(dir + name);
-//     f << "time_s,pressure_kPa,flow_rate_ml_s,delta_radius_mm\n";
-//   };
+static const std::vector<ProbeSpec> PROBES_37 = {
+  {9, "AorticArchII", -0.106500, -0.108000, 0.0},
+  {16, "ThoracicAortaII", 0.000000, -0.384000, 0.0},
+  {10, "LSubclavianI", -0.456450, -0.142050, 0.0},
+  {28, "RIliacFemoralII", 0.624900, -1.668300, 0.0},
+  {13, "LUlnar", -1.435950, -0.314550, 0.0},
+  {33, "RAnteriorTibial", 1.275000, -2.560650, 0.0},
+  {6, "RUlnar", 1.303950, -0.302550, 0.0},
+  {20, "Splenic", 0.271800, -0.670200, 0.0},
+};
 
-//   open(csv_aorta_mid_, "HDG-IDA_AortaMid.csv");
-//   open(csv_junction_, "HDG-IDA_Junction.csv");
-//   open(csv_iliac_mid_, "HDG-IDA_IliacMid.csv");
-// }
+// ---------- open_csv_files --------------------------------------------------
+template <int dim, int spacedim>
+void
+BloodFlowSystem<dim, spacedim>::open_csv_files()
+{
+  const std::string dir =
+    output_directory + (output_directory.empty() ? "" : "/");
 
-// template<int dim, int spacedim> void
-// BloodFlowSystem<dim, spacedim>::open_csv_files()
-// {
-//   const std::string dir =
-//     output_directory + (output_directory.empty() ? "" : "/");
+  // Build header
+  std::string hdr = "time_s";
+  for (const auto &p : PROBES_37)
+    hdr += std::string(",") + p.label;
+  hdr += "\n";
 
-//   // Open and write headers
-//   auto open = [&](std::ofstream &f, const std::string &name) {
-//     f.open(dir + name);
-//     f << "time_s,pressure_kPa,flow_rate_ml_s,delta_radius_mm\n";
-//   };
+  csv_P_.open(dir + "HDG_IDA_P.csv");
+  csv_P_ << hdr;
 
-//   open(csv_aorta_mid_, "HDG-IDA_AortaMid.csv");
-//   open(csv_junction_, "HDG-IDA_Junction.csv");
-//   open(csv_iliac_mid_, "HDG-IDA_IliacMid.csv");
-// }
+  csv_Q_.open(dir + "HDG_IDA_Q.csv");
+  csv_Q_ << hdr;
+
+  // Build probe_targets_: for each probe, find the refined cell whose
+  // midpoint is closest to the coarse midpoint AND has the right material_id.
+  probe_targets_.clear();
+  for (const auto &spec : PROBES_37)
+    {
+      Point<spacedim> target;
+      target[0] = spec.mid_x;
+      target[1] = spec.mid_y;
+      if (spacedim > 2)
+        target[2] = spec.mid_z;
+
+      probe_targets_.emplace_back(spec.vessel_id, target);
+    }
+}
+
+// ---------- write_csv_row ---------------------------------------------------
+// Call this at each output timestep after the solution is updated.
+template <int dim, int spacedim>
+void
+BloodFlowSystem<dim, spacedim>::write_csv_row(const double          t,
+                                              const Vector<double> &sol)
+{
+  csv_P_ << std::scientific << std::setprecision(8) << t;
+  csv_Q_ << std::scientific << std::setprecision(8) << t;
+
+  const unsigned int dofs_per_cell = fe->n_dofs_per_cell();
+
+  for (const auto &[target_vid, target_pt] : probe_targets_)
+    {
+      // Find the refined cell closest to target_pt with matching material_id
+      double best_dist = std::numeric_limits<double>::max();
+      typename DoFHandler<dim, spacedim>::active_cell_iterator best_cell;
+      bool                                                     found = false;
+
+      for (const auto &cell : dof_handler.active_cell_iterators())
+        {
+          if (cell->material_id() != target_vid)
+            continue;
+
+          const Point<spacedim> mid = cell->center();
+          const double          d   = mid.distance(target_pt);
+          if (d < best_dist)
+            {
+              best_dist = d;
+              best_cell = cell;
+              found     = true;
+            }
+        }
+
+      if (!found)
+        {
+          csv_P_ << ",NaN";
+          csv_Q_ << ",NaN";
+          continue;
+        }
+
+      // Evaluate (A, U) at cell midpoint using DG shape functions
+      // For DGQ1: midpoint is at reference coordinate xi = 0.5
+      const Point<dim> xi_mid = (dim == 1) ? Point<dim>(0.5) : Point<dim>();
+
+      std::vector<types::global_dof_index> ldofs(dofs_per_cell);
+      best_cell->get_dof_indices(ldofs);
+
+      // Evaluate each shape function at xi_mid
+      double A_val = 0.0, U_val = 0.0;
+      for (unsigned int i = 0; i < dofs_per_cell; ++i)
+        {
+          const double       phi  = fe->shape_value(i, xi_mid);
+          const unsigned int comp = fe->system_to_component_index(i).first;
+          if (comp == 0) // area
+            A_val += sol[ldofs[i]] * phi;
+          else // velocity
+            U_val += sol[ldofs[i]] * phi;
+        }
+
+      // Compute pressure [Pa] and convert to [kPa]
+      const unsigned int vid   = best_cell->material_id();
+      const double       P_Pa  = compute_pressure_value(A_val, vid);
+      const double       P_kPa = P_Pa * 1.0e-3;
+
+      // Compute flow rate Q = A * U [m³/s] and convert to [ml/s]
+      // 1 m³/s = 1e6 ml/s
+      const double Q_m3s  = A_val * U_val;
+      const double Q_mlps = Q_m3s * 1.0e6;
+
+      csv_P_ << "," << P_kPa;
+      csv_Q_ << "," << Q_mlps;
+    }
+
+  csv_P_ << "\n";
+  csv_Q_ << "\n";
+  csv_P_.flush();
+  csv_Q_.flush();
+}
+
+// ---------- close_csv_files -------------------------------------------------
+template <int dim, int spacedim>
+void
+BloodFlowSystem<dim, spacedim>::close_csv_files()
+{
+  if (csv_P_.is_open())
+    csv_P_.close();
+  if (csv_Q_.is_open())
+    csv_Q_.close();
+}
 
   // ============================================================================
   // HLL flux (residual)
@@ -2651,7 +2777,16 @@ BloodFlowSystem<dim, spacedim>::build_per_cell_mass_inv()
           }
 
         setup_system();
-
+        for (const auto &[vid, vp] : vessel_map)
+          {
+            const double beta =
+              (4.0 / 3.0) * std::sqrt(numbers::PI) * vp.E * vp.h_wall;
+            const double c0 =
+              std::sqrt(beta / (2.0 * par["rho"] * vp.a_d)) * std::pow(vp.a_d, 0.25);
+            std::cout << "Vessel " << vid << ": c0 = " << c0
+                      << " m/s, E = " << vp.E << ", h = " << vp.h_wall << "\n";
+          }
+        open_csv_files();
         initialize_terminal_capacitors();
         compute_theoretical_peak(theoretical_peak);
         // Build per-cell mass inverses (replaces global mass matrix)
@@ -2779,7 +2914,7 @@ BloodFlowSystem<dim, spacedim>::build_per_cell_mass_inv()
           compute_pressure(sol, pressure);
           compute_theoretical_peak(theoretical_peak);
           output_results(sol, pressure, theoretical_peak, step_number);
-          //output_csv(t, sol);
+          write_csv_row(t, solution);
         };
 
         // ---- Compute consistent initial ydot
@@ -2824,7 +2959,7 @@ BloodFlowSystem<dim, spacedim>::build_per_cell_mass_inv()
         // ---------------------------------------------------------------
         time = ida_parameters.initial_time;
         ida.solve_dae(solution, solution_dot);
-
+        close_csv_files();
         compute_pressure(solution, pressure);
         compute_errors(cycle);
       }
