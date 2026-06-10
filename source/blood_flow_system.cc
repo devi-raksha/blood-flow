@@ -109,6 +109,8 @@ BloodFlowSystem<dim, spacedim>::initialize_params(const std::string &filename)
 
   if (numerical_flux_type_str == "HLL")
     numerical_flux_type = NumericalFluxType::HLL;
+    else if (numerical_flux_type_str == "HLL_HDG")
+    numerical_flux_type = NumericalFluxType::HLL_HDG;
   else if (numerical_flux_type_str == "LAX_FRIEDRICHS")
     numerical_flux_type = NumericalFluxType::LAX_FRIEDRICHS;
   else
@@ -409,9 +411,39 @@ BloodFlowSystem<dim, spacedim>::setup_system()
       vp.a_d          = cell_a_d[vid];
       vp.L            = cell_L[vid];
       vp.r_d          = cell_r_d[vid];
+      vp.r_in  = (cell_r_in.size() > vid) ? cell_r_in[vid] : 0.0;
+      vp.r_out = (cell_r_out.size() > vid) ? cell_r_out[vid] : 0.0;
+
       vessel_map[vid] = vp;
     }
 
+  
+  // ---- vessel arc-length bounds ---------------------------------------
+  vessel_s_bounds.clear();
+
+  for (const auto &cell : dof_handler.active_cell_iterators())
+    {
+      const unsigned int vid = cell->material_id();
+
+      const Tensor<1, spacedim> d_hat = compute_directional_vector(cell);
+
+      const double s0 = cell->vertex(0) * d_hat;
+      const double s1 = cell->vertex(1) * d_hat;
+
+      const double smin_cell = std::min(s0, s1);
+      const double smax_cell = std::max(s0, s1);
+
+      if (!vessel_s_bounds.count(vid))
+        vessel_s_bounds[vid] = std::make_pair(smin_cell, smax_cell);
+      else
+        {
+          vessel_s_bounds[vid].first =
+            std::min(vessel_s_bounds[vid].first, smin_cell);
+
+          vessel_s_bounds[vid].second =
+            std::max(vessel_s_bounds[vid].second, smax_cell);
+        }
+    }
   // ---- FE space (cell unknowns only) ---------------------------------------
   if (!fe)
     fe = std::make_unique<FESystem<dim, spacedim>>(
@@ -451,9 +483,6 @@ BloodFlowSystem<dim, spacedim>::setup_system()
     AssertThrow(!terminal_boundary_ids.empty(),
                 ExcMessage("No terminal boundaries found."));
 
-  // AssertThrow(!terminal_boundary_ids.empty(),
-  //             ExcMessage(
-  //               "No terminal boundaries found. Check RCR IDs vs mesh IDs."));
 }
 
 // ============================================================================
@@ -503,27 +532,26 @@ BloodFlowSystem<dim, spacedim>::compute_initial_solution(Vector<double> &dst,
   // ---- cell block -----------------------------------------------------------
   for (const auto &cell : dof_handler.active_cell_iterators())
     {
-      const unsigned int vid = cell->material_id();
-      const auto        &vpp = vessel_map.at(vid);
-
+      // const unsigned int vid = cell->material_id();
+      // const auto        &vpp = vessel_map.at(vid);
+      const double a_d_local = compute_a_d_local(cell);
       std::vector<types::global_dof_index> ldofs(fe->n_dofs_per_cell());
       cell->get_dof_indices(ldofs);
 
       for (unsigned int i = 0; i < fe->n_dofs_per_cell(); ++i)
         {
           const unsigned int comp = fe->system_to_component_index(i).first;
-          dst[ldofs[i]]           = (comp == 0) ? vpp.a_d : 0.0;
+          dst[ldofs[i]]           = (comp == 0) ? a_d_local : 0.0;
         }
     }
 
-  // ---- trace block: diastolic area, zero velocity -------------------------
   // ---- trace block --------------------------------------------------------
   std::set<std::pair<CellId, unsigned int>> visited;
   for (const auto &cell : dof_handler.active_cell_iterators())
     {
-      const unsigned int vid = cell->material_id();
-      const auto        &vpp = vessel_map.at(vid);
-
+      // const unsigned int vid = cell->material_id();
+      // const auto        &vpp = vessel_map.at(vid);
+      
       for (unsigned int f = 0; f < GeometryInfo<dim>::faces_per_cell; ++f)
         {
           const auto key = canonical_face_key(cell, f);
@@ -536,31 +564,33 @@ BloodFlowSystem<dim, spacedim>::compute_initial_solution(Vector<double> &dst,
           if (cell->face(f)->at_boundary() && !is_junction_face(cell->id(), f))
             {
               const types::boundary_id bid = cell->face(f)->boundary_id();
+              const double ad_local = compute_a_d_at_face(cell, f);
               if (bid == 0) // inflow: A_hat*U_hat = Q_in(0)
                 {
-                  dst[td.a_hat_dof] = vpp.a_d;
+                  dst[td.a_hat_dof] = ad_local;
                   dst[td.u_hat_dof] = 0.0; // consistent velocity
                 }
               else // RCR or reflection outlet: already consistent with U=0
                 {
-                  dst[td.a_hat_dof] = vpp.a_d;
+                  dst[td.a_hat_dof] = ad_local;
                   dst[td.u_hat_dof] = 0.0;
                 }
             }
           else if (!cell->face(f)->at_boundary() &&
                    !is_junction_face(cell->id(), f))
             {
+              const double ad_local = compute_a_d_local(cell);
               // Interior: average area, zero velocity (flux = A*U*bn = 0 ✓)
               const unsigned int vid_nb = cell->neighbor(f)->material_id();
-              dst[td.a_hat_dof] = 0.5 * (vpp.a_d + vessel_map.at(vid_nb).a_d);
+              dst[td.a_hat_dof] =
+                0.5 * (ad_local + compute_a_d_at_face(cell->neighbor(f), f));
               dst[td.u_hat_dof] = 0.0;
             }
           else
             {
-              // Junction: each vessel uses its own diastolic area, zero
-              // velocity Total-head residual will be corrected by Newton polish
-              // in run()
-              dst[td.a_hat_dof] = vpp.a_d;
+              const double ad_local = compute_a_d_at_face(cell, f);
+              // Junction: each vessel uses its own diastolic area
+              dst[td.a_hat_dof] = ad_local;
               dst[td.u_hat_dof] = 0.0;
             }
         }
@@ -581,7 +611,7 @@ BloodFlowSystem<dim, spacedim>::initialize_trace_unknowns(Vector<double> &sol,
          ExcDimensionMismatch(sol.size(), n_total_dofs));
 
   const double tol      = 1.0e-9; // ||F_trace||_inf convergence threshold
-  const int    max_iter = 20;
+  const int    max_iter = 50;
 
   std::cout << "\n=== initialize_trace_unknowns (Newton) ===\n";
 
@@ -800,15 +830,30 @@ struct ProbeSpec
   double       mid_x, mid_y, mid_z; // coarse-mesh midpoint (from VTK)
 };
 
+// static const std::vector<ProbeSpec> PROBES_37 = {
+//   {9, "AorticArchII", -0.106500, -0.108000, 0.0},
+//   {16, "ThoracicAortaII", 0.000000, -0.384000, 0.0},
+//   {10, "LSubclavianI", -0.456450, -0.142050, 0.0},
+//   {28, "RIliacFemoralII", 0.624900, -1.668300, 0.0},
+//   {13, "LUlnar", -1.435950, -0.314550, 0.0},
+//   {33, "RAnteriorTibial", 1.275000, -2.560650, 0.0},
+//   {6, "RUlnar", 1.303950, -0.302550, 0.0},
+//   {20, "Splenic", 0.271800, -0.670200, 0.0},
+// };
+
 static const std::vector<ProbeSpec> PROBES_37 = {
-  {9, "AorticArchII", -0.106500, -0.108000, 0.0},
-  {16, "ThoracicAortaII", 0.000000, -0.384000, 0.0},
-  {10, "LSubclavianI", -0.456450, -0.142050, 0.0},
-  {28, "RIliacFemoralII", 0.624900, -1.668300, 0.0},
-  {13, "LUlnar", -1.435950, -0.314550, 0.0},
-  {33, "RAnteriorTibial", 1.275000, -2.560650, 0.0},
-  {6, "RUlnar", 1.303950, -0.302550, 0.0},
-  {20, "Splenic", 0.271800, -0.670200, 0.0},
+  {0, "AorticArchI", 0.000000, -0.037207, 0.0},
+  {35, "ThoAortaIII", 0.013168, -0.158469, 0.0},
+  {54, "AbdomAortaV", 0.117062, -0.377010, 0.0},
+  {4, "RightCCA", 0.065320, -0.127091, 0.0},
+  {51, "RightRenal", 0.092285, -0.322537, 0.0},
+  {55, "RightCommonIliac", 0.153520, -0.423788, 0.0},
+  {15, "RightICA", 0.166650, -0.160293, 0.0},
+  {9, "RightRadial", 0.434901, -0.451982, 0.0},
+  {58, "RightInternalIliac", 0.212420, -0.463480, 0.0},
+  {13, "RightPostInteross", 0.438728, -0.462092, 0.0},
+  {61, "RightFemoralII", 0.379985, -0.665805, 0.0},
+  {63, "RightAntTibial", 0.776402, -0.905581, 0.0},
 };
 
 // ---------- open_csv_files --------------------------------------------------
@@ -908,11 +953,12 @@ BloodFlowSystem<dim, spacedim>::write_csv_row(const double          t,
 
       // Compute pressure [Pa] and convert to [kPa]
       const unsigned int vid   = best_cell->material_id();
-      const double       P_Pa  = compute_pressure_value(A_val, vid);
+      // const double       P_Pa  = compute_pressure_value(A_val, vid);
+      const double       P_Pa  = compute_pressure_value(A_val, vid, compute_a_d_local(best_cell));
       const double       P_kPa = P_Pa * 1.0e-3;
-
-      // Compute flow rate Q = A * U [m³/s] and convert to [ml/s]
+     // Compute flow rate Q = A * U [m³/s] and convert to [ml/s]
       // 1 m³/s = 1e6 ml/s
+      
       const double Q_m3s  = A_val * U_val;
       const double Q_mlps = Q_m3s * 1.0e6;
 
@@ -949,24 +995,29 @@ BloodFlowSystem<dim, spacedim>::close_csv_files()
     const double       A_R,
     const double       U_R,
     const unsigned int vid_L,
-    const unsigned int vid_R) const
+    const unsigned int vid_R,
+  const double ad_L,
+  const double ad_R) const
   {
-    const double c_L   = compute_wave_speed(A_L, vid_L);
-    const double c_R   = compute_wave_speed(A_R, vid_R);
-    const double U_bar = 0.5 * (U_L + U_R);
-    const double c_bar = 0.5 * (c_L + c_R);
-    const double s_L   = U_bar - c_bar;
-    const double s_R   = U_bar + c_bar;
+    const double c_L   = compute_wave_speed(A_L, vid_L, ad_L);
+    const double c_R   = compute_wave_speed(A_R, vid_R, ad_R);
+    // const double U_bar = 0.5 * (U_L + U_R);
+    // const double c_bar = 0.5 * (c_L + c_R);
+    // const double s_L   = U_bar - c_bar;
+    // const double s_R   = U_bar + c_bar;
+    const double s_L = std::min(U_L - c_L, U_R - c_R);
+
+    const double s_R = std::max(U_L + c_L, U_R + c_R);
 
     const double FAL = scalar_area_flux(bn_L, A_L, U_L);
     const double FUL = scalar_momentum_flux(bn_L,
                                             U_L,
-                                            compute_pressure_value(A_L, vid_L),
+                                            compute_pressure_value(A_L, vid_L, ad_L),
                                             par["rho"]);
     const double FAR = scalar_area_flux(bn_R, A_R, U_R);
     const double FUR = scalar_momentum_flux(bn_R,
                                             U_R,
-                                            compute_pressure_value(A_R, vid_R),
+                                            compute_pressure_value(A_R, vid_R, ad_R),
                                             par["rho"]);
 
     if (s_L >= 0.0)
@@ -995,14 +1046,19 @@ BloodFlowSystem<dim, spacedim>::close_csv_files()
     const double       dA_R,
     const double       dU_R,
     const unsigned int vid_L,
-    const unsigned int vid_R) const
+    const unsigned int vid_R,
+    const double       ad_L,
+    const double       ad_R) const
   {
-    const double c_L   = compute_wave_speed(A_L, vid_L);
-    const double c_R   = compute_wave_speed(A_R, vid_R);
-    const double U_bar = 0.5 * (U_L + U_R);
-    const double c_bar = 0.5 * (c_L + c_R);
-    const double s_L   = U_bar - c_bar;
-    const double s_R   = U_bar + c_bar;
+    const double c_L   = compute_wave_speed(A_L, vid_L, ad_L);
+    const double c_R   = compute_wave_speed(A_R, vid_R, ad_R);
+    // const double U_bar = 0.5 * (U_L + U_R);
+    // const double c_bar = 0.5 * (c_L + c_R);
+    // const double s_L   = U_bar - c_bar;
+    // const double s_R   = U_bar + c_bar;
+    const double s_L = std::min(U_L - c_L, U_R - c_R);
+
+    const double s_R = std::max(U_L + c_L, U_R + c_R);
 
     const double c2L_over_AL = c_L * c_L / A_L;
     const double c2R_over_AR = c_R * c_R / A_R;
@@ -1024,32 +1080,113 @@ BloodFlowSystem<dim, spacedim>::close_csv_files()
              (s_R * FUL_j - s_L * FUR_j + s_R * s_L * (dU_R - dU_L)) * inv}};
   }
 
+  // HLL-HDG flux based on Paper "Hybridisable discontinuous Galerkin
+  // formulation of compressible flows "
+
+  template <int dim, int spacedim>
+  std::array<double, 2>
+  BloodFlowSystem<dim, spacedim>::hll_hdg_flux(const double bn_L,
+                                           const double /*bn_R*/,
+                                           const double A_L,
+                                           const double U_L, // interior U_e
+                                           const double A_R,
+                                           const double U_R, // trace U_b
+                                           const unsigned int /*vid_L*/,
+                                           const unsigned int vid_R,
+                                           const double /*ad_L*/,
+                                           const double ad_R) const
+  {
+    // Stabilization from TRACE state only (eq. 37 of Vila-Perez et al.)
+    const double c_b    = compute_wave_speed(A_R, vid_R, ad_R);
+    const double s_plus = std::max(0.0, U_R * bn_L + c_b); // s⁺ at trace
+
+    // Physical flux at TRACE (F(U_b)·n)
+    const double FA_b = scalar_area_flux(bn_L, A_R, U_R);
+    const double FU_b = scalar_momentum_flux(
+      bn_L, U_R, compute_pressure_value(A_R, vid_R, ad_R), par["rho"]);
+
+    // Stabilization term: s⁺(U_e - U_b)
+    const double FA = FA_b + s_plus * (A_L - A_R);
+    const double FU = FU_b + s_plus * (U_L - U_R);
+
+    return {{FA, FU}};
+  }
+
+  template <int dim, int spacedim>
+  std::array<double, 2>
+  BloodFlowSystem<dim, spacedim>::hll_hdg_flux_jac(
+    const double bn_L,
+    const double /*bn_R*/,
+    const double A_L,
+    const double U_L,
+    const double A_R,
+    const double U_R,
+    const double dA_L,
+    const double dU_L, // perturbation direction
+    const double dA_R,
+    const double dU_R,
+    const unsigned int /*vid_L*/,
+    const unsigned int vid_R,
+    const double /*ad_L*/,
+    const double ad_R) const
+  {
+    const double c_b    = compute_wave_speed(A_R, vid_R, ad_R);
+    const double dc_b   = compute_wave_speed_derivative(A_R, vid_R, ad_R);
+    const double s_plus = std::max(0.0, U_R * bn_L + c_b);
+
+    // dF(U_b)·n / dU_b  (trace perturbation dA_R, dU_R)
+    const double c2_over_A_b = c_b * c_b / A_R;
+    const double dFA_b       = scalar_area_flux_jac(bn_L, A_R, U_R, dA_R, dU_R);
+    const double dFU_b =
+      scalar_momentum_flux_jac(bn_L, c2_over_A_b, U_R, dA_R, dU_R);
+
+    if (s_plus <= 0.0)
+      {
+        // Pure upwind from trace — only trace terms survive
+        return {{dFA_b, dFU_b}};
+      }
+
+    // d(s⁺)/d(A_R) = dc_b/dA_R * dA_R (if U_R*bn + c_b > 0)
+    const double ds_plus_dAR = dc_b * dA_R;
+    const double ds_plus_dUR = bn_L * dU_R;
+    const double ds_plus     = ds_plus_dAR + ds_plus_dUR;
+
+    const double dFA = dFA_b                     // dF(U_b)/d(U_b) * dU_b
+                       + ds_plus * (A_L - A_R)   // d(s⁺)/d(U_b) * (U_e - U_b)
+                       + s_plus * (dA_L - dA_R); // s⁺ * d(U_e - U_b)
+    const double dFU = dFU_b + ds_plus * (U_L - U_R) + s_plus * (dU_L - dU_R);
+
+    return {{dFA, dFU}};
+  }
+
   // ============================================================================
   // Lax–Friedrichs flux (residual)
   // ============================================================================
   template <int dim, int spacedim>
-  std::array<double, 2> BloodFlowSystem<dim, spacedim>::lf_flux(
-    const double       bn_L,
-    const double       bn_R,
-    const double       A_L,
-    const double       U_L,
-    const double       A_R,
-    const double       U_R,
-    const unsigned int vid_L,
-    const unsigned int vid_R) const
+  std::array<double, 2>
+  BloodFlowSystem<dim, spacedim>::lf_flux(const double       bn_L,
+                                          const double       bn_R,
+                                          const double       A_L,
+                                          const double       U_L,
+                                          const double       A_R,
+                                          const double       U_R,
+                                          const unsigned int vid_L,
+                                          const unsigned int vid_R,
+                                          const double       ad_L,
+                                          const double       ad_R) const
   {
     const double FAL = scalar_area_flux(bn_L, A_L, U_L);
     const double FUL = scalar_momentum_flux(bn_L,
                                             U_L,
-                                            compute_pressure_value(A_L, vid_L),
+                                            compute_pressure_value(A_L, vid_L, ad_L),
                                             par["rho"]);
     const double FAR = scalar_area_flux(bn_R, A_R, U_R);
     const double FUR = scalar_momentum_flux(bn_R,
                                             U_R,
-                                            compute_pressure_value(A_R, vid_R),
+                                            compute_pressure_value(A_R, vid_R, ad_R),
                                             par["rho"]);
     const double alpha =
-      theta * compute_LF_penalty(A_L, A_R, U_L, U_R, bn_L, bn_R, vid_L, vid_R);
+      theta * compute_LF_penalty(A_L, A_R, U_L, U_R, bn_L, bn_R, vid_L, vid_R, ad_L, ad_R);
 
     return {{0.5 * (FAL + FAR) - 0.5 * alpha * (A_R - A_L),
              0.5 * (FUL + FUR) - 0.5 * alpha * (U_R - U_L)}};
@@ -1071,10 +1208,12 @@ BloodFlowSystem<dim, spacedim>::close_csv_files()
     const double       dA_R,
     const double       dU_R,
     const unsigned int vid_L,
-    const unsigned int vid_R) const
+    const unsigned int vid_R,
+    const double       ad_L,
+    const double       ad_R) const
   {
-    const double c2L = compute_wave_speed(A_L, vid_L);
-    const double c2R = compute_wave_speed(A_R, vid_R);
+    const double c2L = compute_wave_speed(A_L, vid_L, ad_L);
+    const double c2R = compute_wave_speed(A_R, vid_R, ad_R);
 
     const double FAL_j = scalar_area_flux_jac(bn_L, A_L, U_L, dA_L, dU_L);
     const double FUL_j =
@@ -1083,7 +1222,7 @@ BloodFlowSystem<dim, spacedim>::close_csv_files()
     const double FUR_j =
       scalar_momentum_flux_jac(bn_R, c2R * c2R / A_R, U_R, dA_R, dU_R);
     const double alpha =
-      theta * compute_LF_penalty(A_L, A_R, U_L, U_R, bn_L, bn_R, vid_L, vid_R);
+      theta * compute_LF_penalty(A_L, A_R, U_L, U_R, bn_L, bn_R, vid_L, vid_R, ad_L, ad_R);
 
     return {{0.5 * (FAL_j + FAR_j) - 0.5 * alpha * (dA_R - dA_L),
              0.5 * (FUL_j + FUR_j) - 0.5 * alpha * (dU_R - dU_L)}};
@@ -1160,7 +1299,8 @@ BloodFlowSystem<dim, spacedim>::close_csv_files()
           {
             const double              A = std::max(A_h[q], 1e-10);
             const double              U = U_h[q];
-            const double              P = compute_pressure_value(A, vid);
+            const double                P = compute_pressure_value(A, vid , compute_a_d_local(cell));
+            //const double              P = compute_pressure_value(A, vid);
             const Tensor<1, spacedim> b = compute_directional_vector(cell);
 
             const double rhs_A =
@@ -1193,15 +1333,23 @@ BloodFlowSystem<dim, spacedim>::close_csv_files()
               }
           }
 
+        const double ad_local = compute_a_d_local(cell);
         // ---- Face flux: interior cell value vs. global face trace
-        // -------------
+        
         for (unsigned int f = 0; f < GeometryInfo<dim>::faces_per_cell; ++f)
           {
             fef.reinit(cell, f);
-
+            const double ad_face = compute_a_d_at_face(cell, f);
             const auto &normals = fef.get_normal_vectors();
             const auto &JxW     = fef.get_JxW_values();
-
+            // if (is_junction_face(cell->id(), f) && cell->material_id() == 0)
+            //   {
+            //     double A_h = 0, U_h = 0;
+            //     get_face_trace(y, cell, f, A_h, U_h);
+            //     std::cout << "JUNCTION FACE cell=" << cell->id() << " f=" << f
+            //               << " vid=" << cell->material_id() << " A_hat=" << A_h
+            //               << " U_hat=" << U_h << "\n";
+            //   }
             // Interior cell values at the face quadrature point
             std::vector<double> Ah_q(fef.n_quadrature_points);
             std::vector<double> Uh_q(fef.n_quadrature_points);
@@ -1222,10 +1370,10 @@ BloodFlowSystem<dim, spacedim>::close_csv_files()
 
                 // numerical_flux designed for left/right states.
                 // In current implementation there is no physical neighbour cell
-                // on the other side;
+                // on the other side so we are ;
 
                 const auto [FA, FU] =
-                  numerical_flux(bn, bn, A_in, U_in, A_hat, U_hat, vid, vid);
+                  numerical_flux(bn, bn, A_in, U_in, A_hat, U_hat, vid, vid, ad_local, ad_face);
 
                 for (unsigned int i = 0; i < n_dofs; ++i)
                   {
@@ -1303,7 +1451,9 @@ BloodFlowSystem<dim, spacedim>::close_csv_files()
 
             const unsigned int vid_L = cell->material_id();
             const unsigned int vid_R = nb->material_id();
-
+            const double       ad_L  = compute_a_d_local(cell);
+            const double       ad_R  = compute_a_d_local(nb);
+            const double       ad_face = compute_a_d_at_face(cell, f);
             // Interior cell values at face — use y_cell, not y
             fef.reinit(cell, f);
             const double bn_L =
@@ -1336,12 +1486,12 @@ BloodFlowSystem<dim, spacedim>::close_csv_files()
             // The trace acts as the exterior state, therefore use
             // opposite orientation on the trace side.
             const auto [FA_L, FU_L] =
-              numerical_flux(bn_L, bn_L, A_L, U_L, A_hat, U_hat, vid_L, vid_R);
+              numerical_flux(bn_L, bn_L, A_L, U_L, A_hat, U_hat, vid_L, vid_R, ad_L, ad_face);
 
             // Right HDG type flux residuals (face integrals with interior state
             // from right cell)
             const auto [FA_R, FU_R] =
-              numerical_flux(bn_R, bn_R, A_R, U_R, A_hat, U_hat, vid_R, vid_L);
+              numerical_flux(bn_R, bn_R, A_R, U_R, A_hat, U_hat, vid_R, vid_L, ad_R, ad_face);
 
             // Trace dofs
             const FaceTraceDof &td = face_dof_map.at(key);
@@ -1416,18 +1566,19 @@ BloodFlowSystem<dim, spacedim>::close_csv_files()
 
             const double A_int = std::max(A_int_v[0], 1e-10);
             const double U_int = U_int_v[0];
-            const double c0    = compute_wave_speed(vpp.a_d, vid);
-            const double c_int = compute_wave_speed(A_int, vid);
+            const double a_d_local = compute_a_d_at_face(cell, f);
+            const double c0    = compute_wave_speed(a_d_local, vid, a_d_local);
+            const double c_int = compute_wave_speed(A_int, vid, a_d_local);
 
             // Current face trace (from trace block of y)
             double A_hat_cur = 0.0, U_hat_cur = 0.0;
             get_face_trace(y, cell, f, A_hat_cur, U_hat_cur);
             const double A_hat = std::max(A_hat_cur, 1e-10);
-            const double c_hat = compute_wave_speed(A_hat, vid);
+            const double c_hat = compute_wave_speed(A_hat, vid, a_d_local);
 
             double res_A = 0.0, res_U = 0.0;
 
-            if (bid == 0) // inflow
+                if (bid == 0) // inflow
               {
                 inflow_function.set_time(t);
                 const double Q_in   = inflow_function.value(Point<1>(0.0));
@@ -1435,6 +1586,7 @@ BloodFlowSystem<dim, spacedim>::close_csv_files()
 
                 res_A = A_hat_cur * U_hat_cur - Q_in;
                 res_U = (U_hat_cur - 4.0 * (c_hat - c0)) - W2_int;
+    
               }
             else if (outlet_type == "RCR" && rcr_map.count(bid) &&
                      (rcr_map.at(bid).R1 > 0.0 || rcr_map.at(bid).R2 > 0.0))
@@ -1446,11 +1598,11 @@ BloodFlowSystem<dim, spacedim>::close_csv_files()
                   {
                     const double Pc = terminal_Pc_storage.at(bid);
                     res_A =
-                      compute_pressure_value(A_hat, vid) - (rcr.R1 * Q + Pc);
+                      compute_pressure_value(A_hat, vid, a_d_local) - (rcr.R1 * Q + Pc);
                   }
                 else
                   { // single R: P = R2*Q + P_out
-                    res_A = compute_pressure_value(A_hat, vid) -
+                    res_A = compute_pressure_value(A_hat, vid, a_d_local) -
                             (rcr.R2 * Q + rcr.P_out);
                   }
                 const double W1_int = U_int + 4.0 * (c_int - c0);
@@ -1478,7 +1630,7 @@ BloodFlowSystem<dim, spacedim>::close_csv_files()
   // assemble_trace_junction_equations
   //
   // At a K-way junction the 2K trace unknowns {A_hat_i, U_hat_i} for
-  // i = 0 … K−1 must satisfy:
+  // i = 0 … K−1 must satisfy: ( here K>=2 , K=2 , 2 way junction otherwise K>2  multi-way junction)
   //
   //   (a) Mass conservation  (1 equation):
   //         sum_i [ s_i * A_hat_i * U_hat_i ] = 0
@@ -1551,10 +1703,11 @@ BloodFlowSystem<dim, spacedim>::close_csv_files()
             A_int[i] = std::max(Av[0], A_min);
             U_int[i] = Uv[0];
             s[i]  = hf.orientation; // +1 if junction is at face 1 (right end)
-            c0[i] = compute_wave_speed(vpp.a_d, vid);
+            const double a_d_face = compute_a_d_at_face(hf.cell, hf.face_no);
+            c0[i] = compute_wave_speed(a_d_face, vid, a_d_face);
 
             // Outgoing Riemann invariant from cell i toward the junction
-            const double c_i = compute_wave_speed(A_int[i], vid);
+            const double c_i = compute_wave_speed(A_int[i], vid, a_d_face);
             W[i] = U_int[i] + static_cast<double>(s[i]) * 4.0 * (c_i - c0[i]);
 
             // Trace DOF indices and current trace values (from trace block of
@@ -1566,7 +1719,7 @@ BloodFlowSystem<dim, spacedim>::close_csv_files()
 
             A_hat[i] = std::max(y[a_idx[i]], A_min);
             U_hat[i] = y[u_idx[i]];
-            c_hat[i] = compute_wave_speed(A_hat[i], vid);
+            c_hat[i] = compute_wave_speed(A_hat[i], vid, a_d_face);
           }
 
         // (a) Mass conservation -> row a_idx[0]
@@ -1579,18 +1732,21 @@ BloodFlowSystem<dim, spacedim>::close_csv_files()
 
         // (b) Total-head continuity: H_0 − H_i = 0 -> rows u_idx[0..K−2]
         {
+          const double a_d0 = compute_a_d_at_face(J.half_faces[0].cell, J.half_faces[0].face_no);
           const double H0 =
             0.5 * U_hat[0] * U_hat[0] +
             compute_pressure_value(A_hat[0],
-                                   J.half_faces[0].cell->material_id()) /
+                                   J.half_faces[0].cell->material_id(), a_d0) /
               rho;
 
           for (unsigned int i = 1; i < K; ++i)
             {
+              const double a_di = compute_a_d_at_face(J.half_faces[i].cell,
+                                                      J.half_faces[i].face_no);
               const double Hi =
                 0.5 * U_hat[i] * U_hat[i] +
                 compute_pressure_value(A_hat[i],
-                                       J.half_faces[i].cell->material_id()) /
+                                       J.half_faces[i].cell->material_id(), a_di) /
                   rho;
               F[u_idx[i - 1]] = H0 - Hi;
             }
@@ -1645,7 +1801,6 @@ BloodFlowSystem<dim, spacedim>::close_csv_files()
     assemble_trace_interior_equations(y, residual);
     assemble_trace_boundary_equations(t, y, residual);
     assemble_trace_junction_equations(y, residual);
-
     // ---- Apply M_K^-1 to cell rows ------------------------------------------
     // The cell block of F currently holds  F_cell(y).
     const unsigned int n_dofs = fe->n_dofs_per_cell();
@@ -1714,9 +1869,9 @@ BloodFlowSystem<dim, spacedim>::close_csv_files()
         const unsigned int n_dofs = fe->n_dofs_per_cell();
 
         fev.reinit(cell);
-        // JxW captured HERE — after reinit, not before the loop
+        
         const auto &JxW = fev.get_JxW_values();
-
+        const double ad_local = compute_a_d_local(cell);
         std::vector<types::global_dof_index> ldofs(n_dofs);
         cell->get_dof_indices(ldofs);
 
@@ -1726,13 +1881,13 @@ BloodFlowSystem<dim, spacedim>::close_csv_files()
         fev[velocity_extractor].get_function_values(y_cell, U_h);
 
         FullMatrix<double> cell_matrix(n_dofs, n_dofs);
-
-        // ---- Block (1,1) volume → cell_matrix -------------------------------
+   
+        // ---- Block (1,1) volume - cell_matrix -------------------------------
         for (unsigned int q = 0; q < fev.n_quadrature_points; ++q)
           {
             const double A    = std::max(A_h[q], 1e-10);
             const double U    = U_h[q];
-            const double dpdA = compute_pressure_derivative(A, vid);
+            const double dpdA = compute_pressure_derivative(A, vid, ad_local);
             const double c2_A = A / rho * dpdA;
 
             for (unsigned int i = 0; i < n_dofs; ++i)
@@ -1764,17 +1919,14 @@ BloodFlowSystem<dim, spacedim>::close_csv_files()
           }
 
         // ---- Block (1,1) face + Block (1,2) ---------------------------------
-        // Face cell-cell → cell_matrix (so M^{-1} is applied via single
-        // scatter) Cross block (1,2) → jacobian_matrix directly (trace cols,
-        // M^{-1} applied
-        //   by the M^{-1} loop which reads all nonzero cols from
-        //   jacobian_matrix)
+        // Face cell-cell -> cell_matrix 
+        
         for (unsigned int f = 0; f < GeometryInfo<dim>::faces_per_cell; ++f)
           {
             fef.reinit(cell, f);
             const auto &normals = fef.get_normal_vectors();
             const auto &JxW_f   = fef.get_JxW_values();
-
+            const double ad_face = compute_a_d_at_face(cell, f);
             std::vector<double> Ah_q(fef.n_quadrature_points);
             std::vector<double> Uh_q(fef.n_quadrature_points);
             fef[area_extractor].get_function_values(y_cell, Ah_q);
@@ -1795,76 +1947,80 @@ BloodFlowSystem<dim, spacedim>::close_csv_files()
                 const double bn =
                   compute_tangent_normal_product(cell, normals[q]);
 
-                // (1,1) face → cell_matrix
-                for (unsigned int j = 0; j < n_dofs; ++j)
-                  {
-                    const double dA = fef[area_extractor].value(j, q);
-                    const double dU = fef[velocity_extractor].value(j, q);
-
-                    const auto [dFA, dFU] = numerical_flux_jac(bn,
-                                                               bn,
-                                                               A_in,
-                                                               U_in,
-                                                               A_hat,
-                                                               U_hat,
-                                                               dA,
-                                                               dU,
-                                                               0.0,
-                                                               0.0,
-                                                               vid,
-                                                               vid);
-
-                    for (unsigned int i = 0; i < n_dofs; ++i)
+                    // (1,1) face -> cell_matrix
+                    for (unsigned int j = 0; j < n_dofs; ++j)
                       {
-                        const unsigned int comp =
-                          fe->system_to_component_index(i).first;
-                        const double phi = fef.shape_value(i, q);
-                        cell_matrix(i, j) -=
-                          (comp == 0 ? dFA : dFU) * phi * JxW_f[q];
+                        const double dA = fef[area_extractor].value(j, q);
+                        const double dU = fef[velocity_extractor].value(j, q);
+
+                        const auto [dFA, dFU] = numerical_flux_jac(bn,
+                                                                   bn,
+                                                                   A_in,
+                                                                   U_in,
+                                                                   A_hat,
+                                                                   U_hat,
+                                                                   dA,
+                                                                   dU,
+                                                                   0.0,
+                                                                   0.0,
+                                                                   vid,
+                                                                   vid,
+                                                                   ad_local,
+                                                                   ad_face);
+
+                        for (unsigned int i = 0; i < n_dofs; ++i)
+                          {
+                            const unsigned int comp =
+                              fe->system_to_component_index(i).first;
+                            const double phi = fef.shape_value(i, q);
+                            cell_matrix(i, j) -=
+                              (comp == 0 ? dFA : dFU) * phi * JxW_f[q];
+                          }
                       }
-                  }
 
-                // (1,2) → jacobian_matrix (trace cols)
-                for (const auto trace_col : {td.a_hat_dof, td.u_hat_dof})
-                  {
-                    const bool   is_a   = (trace_col == td.a_hat_dof);
-                    const double dA_hat = is_a ? 1.0 : 0.0;
-                    const double dU_hat = is_a ? 0.0 : 1.0;
-
-                    const auto [dFA, dFU] = numerical_flux_jac(bn,
-                                                               bn,
-                                                               A_in,
-                                                               U_in,
-                                                               A_hat,
-                                                               U_hat,
-                                                               0.0,
-                                                               0.0,
-                                                               dA_hat,
-                                                               dU_hat,
-                                                               vid,
-                                                               vid);
-
-                    for (unsigned int i = 0; i < n_dofs; ++i)
+                    // (1,2) -> jacobian_matrix (trace cols)
+                    for (const auto trace_col : {td.a_hat_dof, td.u_hat_dof})
                       {
-                        const unsigned int comp =
-                          fe->system_to_component_index(i).first;
-                        const double phi = fef.shape_value(i, q);
-                        jacobian_matrix.add(ldofs[i],
-                                            trace_col,
-                                            -(comp == 0 ? dFA : dFU) * phi *
-                                              JxW_f[q]);
+                        const bool   is_a   = (trace_col == td.a_hat_dof);
+                        const double dA_hat = is_a ? 1.0 : 0.0;
+                        const double dU_hat = is_a ? 0.0 : 1.0;
+
+                        const auto [dFA, dFU] = numerical_flux_jac(bn,
+                                                                   bn,
+                                                                   A_in,
+                                                                   U_in,
+                                                                   A_hat,
+                                                                   U_hat,
+                                                                   0.0,
+                                                                   0.0,
+                                                                   dA_hat,
+                                                                   dU_hat,
+                                                                   vid,
+                                                                   vid,
+                                                                   ad_local,
+                                                                   ad_face);
+
+                        for (unsigned int i = 0; i < n_dofs; ++i)
+                          {
+                            const unsigned int comp =
+                              fe->system_to_component_index(i).first;
+                            const double phi = fef.shape_value(i, q);
+                            jacobian_matrix.add(ldofs[i],
+                                                trace_col,
+                                                -(comp == 0 ? dFA : dFU) * phi *
+                                                  JxW_f[q]);
+                          }
                       }
                   }
               }
-          }
+        // Single scatter: volume + face cell-cell -> jacobian_matrix
 
-        // Single scatter: volume + face cell-cell → jacobian_matrix
-        // after face loop so M^{-1} sees the complete block
         for (unsigned int i = 0; i < n_dofs; ++i)
           for (unsigned int j = 0; j < n_dofs; ++j)
             jacobian_matrix.add(ldofs[i], ldofs[j], cell_matrix(i, j));
       }
   }
+
   // ============================================================================
   // assemble_jacobian_trace_interior_block
   //
@@ -1917,7 +2073,9 @@ BloodFlowSystem<dim, spacedim>::close_csv_files()
             const unsigned int nb_f  = cell->neighbor_of_neighbor(f);
             const unsigned int vid_L = cell->material_id();
             const unsigned int vid_R = nb->material_id();
-
+            const double ad_L = compute_a_d_local(cell);
+            const double ad_R = compute_a_d_local(nb);
+            const double       ad_face = compute_a_d_at_face(cell, f);
             // ---- Left cell: state and normal --------------------------------
             fef.reinit(cell, f);
             const double bn_L =
@@ -1981,7 +2139,8 @@ BloodFlowSystem<dim, spacedim>::close_csv_files()
                                      0.0,
                                      0.0, // trace DOF fixed here
                                      vid_L,
-                                     vid_R);
+                                     vid_R,
+                                    ad_L, ad_face);
 
                 jacobian_matrix.add(a_row, ldofs_L[j], dFA);
                 jacobian_matrix.add(u_row, ldofs_L[j], dFU);
@@ -2010,7 +2169,8 @@ BloodFlowSystem<dim, spacedim>::close_csv_files()
                                      0.0,
                                      0.0, // trace DOF fixed here
                                      vid_R,
-                                     vid_L);
+                                     vid_L,
+                                    ad_R, ad_face);
 
                 jacobian_matrix.add(a_row, ldofs_R[j], dFA);
                 jacobian_matrix.add(u_row, ldofs_R[j], dFU);
@@ -2041,7 +2201,8 @@ BloodFlowSystem<dim, spacedim>::close_csv_files()
                                      dA_hat_trial,
                                      dU_hat_trial,
                                      vid_L,
-                                     vid_R);
+                                     vid_R,
+                                    ad_L, ad_face);
 
                 // Right flux: exterior trial = (dA_hat_trial, dU_hat_trial)
                 const auto [dFA_R, dFU_R] =
@@ -2056,7 +2217,8 @@ BloodFlowSystem<dim, spacedim>::close_csv_files()
                                      dA_hat_trial,
                                      dU_hat_trial,
                                      vid_R,
-                                     vid_L);
+                                     vid_L,
+                                    ad_R, ad_face);
 
                 jacobian_matrix.add(a_row, col, dFA_L + dFA_R);
                 jacobian_matrix.add(u_row, col, dFU_L + dFU_R);
@@ -2106,15 +2268,16 @@ BloodFlowSystem<dim, spacedim>::close_csv_files()
             fef[velocity_extractor].get_function_values(y_cell, U_int_v);
 
             const double A_int = std::max(A_int_v[0], 1e-10);
+            const double a_d_local = compute_a_d_at_face(cell, f);
             // const double U_int  = U_int_v[0];
             // const double c0     = compute_wave_speed(vpp.a_d, vid);
-            const double dc_int = compute_wave_speed_derivative(A_int, vid);
+            const double dc_int = compute_wave_speed_derivative(A_int, vid, a_d_local);
 
             double A_hat_cur = 0.0, U_hat_cur = 0.0;
             get_face_trace(y, cell, f, A_hat_cur, U_hat_cur);
             const double A_hat    = std::max(A_hat_cur, 1e-10);
-            const double dc_hat   = compute_wave_speed_derivative(A_hat, vid);
-            const double dPdA_hat = compute_pressure_derivative(A_hat, vid);
+            const double dc_hat   = compute_wave_speed_derivative(A_hat, vid, a_d_local);
+            const double dPdA_hat = compute_pressure_derivative(A_hat, vid, a_d_local);
 
             const auto                    key   = canonical_face_key(cell, f);
             const auto                   &td    = face_dof_map.at(key);
@@ -2130,7 +2293,7 @@ BloodFlowSystem<dim, spacedim>::close_csv_files()
                 // R2 = U_hat - 4(c_hat - c0) - W2_int
                 // where W2_int = U_int - 4(c_int - c0)
 
-                // \partialR1/\partialA_hat, \partialR1/\partialU_hat
+                // \partialR1/ \partialA_hat, \partialR1/ \partialU_hat
                 jacobian_matrix.add(a_row, a_row, U_hat_cur);
                 jacobian_matrix.add(a_row, u_row, A_hat);
 
@@ -2298,8 +2461,15 @@ BloodFlowSystem<dim, spacedim>::close_csv_files()
             A_int[i]    = std::max(Av[0], A_min);
             U_int[i]    = Uv[0];
             orient[i]   = hf.orientation;
-            c0[i]       = compute_wave_speed(vessel_map.at(vid).a_d, vid);
-            dc_int_v[i] = compute_wave_speed_derivative(A_int[i], vid);
+            
+              const double a_d_face = compute_a_d_at_face(hf.cell, hf.face_no);
+              c0[i] = compute_wave_speed(a_d_face, vid, a_d_face);
+              dc_int_v[i] =
+                compute_wave_speed_derivative(A_int[i], vid, a_d_face);
+            
+
+            // c0[i]       = compute_wave_speed(vessel_map.at(vid).a_d, vid);
+            // dc_int_v[i] = compute_wave_speed_derivative(A_int[i], vid);
 
             const auto  key = canonical_face_key(hf.cell, hf.face_no);
             const auto &td  = face_dof_map.at(key);
@@ -2308,9 +2478,10 @@ BloodFlowSystem<dim, spacedim>::close_csv_files()
 
             A_hat[i]    = std::max(y[a_row[i]], A_min);
             U_hat[i]    = y[u_row[i]];
-            c_hat_v[i]  = compute_wave_speed(A_hat[i], vid);
-            dc_hat_v[i] = compute_wave_speed_derivative(A_hat[i], vid);
-            dP_hat[i]   = compute_pressure_derivative(A_hat[i], vid);
+            
+            c_hat_v[i]  = compute_wave_speed(A_hat[i], vid, a_d_face);
+            dc_hat_v[i] = compute_wave_speed_derivative(A_hat[i], vid, a_d_face);
+            dP_hat[i]   = compute_pressure_derivative(A_hat[i], vid, a_d_face);
 
             cell_dofs[i].resize(fe->n_dofs_per_cell());
             hf.cell->get_dof_indices(cell_dofs[i]);
@@ -2507,7 +2678,10 @@ BloodFlowSystem<dim, spacedim>::close_csv_files()
           if (fe->system_to_component_index(i).first == 0)
             {
               const double A = y[ldofs[i]];
-              p[ldofs[i]]    = compute_pressure_value(A, cell->material_id());
+              // p[ldofs[i]]    = compute_pressure_value(A, cell->material_id());
+              p[ldofs[i]] = compute_pressure_value(A,
+                                                   cell->material_id(),
+                                                   compute_a_d_local(cell));
             }
       }
   }
@@ -2691,8 +2865,8 @@ BloodFlowSystem<dim, spacedim>::close_csv_files()
   template <int dim, int spacedim>
   void BloodFlowSystem<dim, spacedim>::run()
   {
-    std::cout << "=== Blood Flow HDG  (cell DOFs + global face traces) ===\n";
-
+    std::cout << "=== Blood Flow HDG, polynomial degree p = " << fe_degree
+              << " (cell DOFs + global face traces) ===\n";
     for (unsigned int cycle = 0; cycle < n_refinement_cycles; ++cycle)
       {
         std::cout << "\n--- Cycle " << cycle << " ---\n";
@@ -2717,6 +2891,25 @@ BloodFlowSystem<dim, spacedim>::close_csv_files()
             VTKUtils::read_cell_data(vtk_file_path, "p0", cell_p0);
             VTKUtils::read_cell_data(vtk_file_path, "L", cell_L);
             VTKUtils::read_cell_data(vtk_file_path, "r_d", cell_r_d);
+
+            // Tapered vessel radii; skip if absent.
+            try
+              {
+                VTKUtils::read_cell_data(vtk_file_path, "r_in", cell_r_in);
+              }
+            catch (...)
+              {
+                cell_r_in.reinit(0);
+              }
+            try
+              {
+                VTKUtils::read_cell_data(vtk_file_path, "r_out", cell_r_out);
+              }
+            catch (...)
+              {
+                cell_r_out.reinit(0);
+              }
+
 
             VTKUtils::read_vertex_data(vtk_file_path, "R1", point_R1);
             VTKUtils::read_vertex_data(vtk_file_path, "R2", point_R2);
@@ -2777,15 +2970,28 @@ BloodFlowSystem<dim, spacedim>::close_csv_files()
           }
 
         setup_system();
+
         for (const auto &[vid, vp] : vessel_map)
           {
             const double beta =
               (4.0 / 3.0) * std::sqrt(numbers::PI) * vp.E * vp.h_wall;
-            const double c0 =
-              std::sqrt(beta / (2.0 * par["rho"] * vp.a_d)) * std::pow(vp.a_d, 0.25);
-            std::cout << "Vessel " << vid << ": c0 = " << c0
-                      << " m/s, E = " << vp.E << ", h = " << vp.h_wall << "\n";
+
+            // c_in: wave speed evaluated at the inlet diastolic area
+            const double a_in =
+              (vp.r_in > 0.0) ? numbers::PI * vp.r_in * vp.r_in : vp.a_d;
+            const double c_in = std::sqrt(beta / (2.0 * par["rho"] * a_in)) *
+                                std::pow(a_in, 0.25);
+
+            // c_out: wave speed evaluated at the outlet diastolic area
+            const double a_out =
+              (vp.r_out > 0.0) ? numbers::PI * vp.r_out * vp.r_out : vp.a_d;
+            const double c_out = std::sqrt(beta / (2.0 * par["rho"] * a_out)) *
+                                 std::pow(a_out, 0.25);
+
+            std::cout << "Vessel " << vid << ": c_in = " << c_in << " m/s"
+                      << ", c_out = " << c_out << " m/s\n";
           }
+
         open_csv_files();
         initialize_terminal_capacitors();
         compute_theoretical_peak(theoretical_peak);
@@ -2842,14 +3048,56 @@ BloodFlowSystem<dim, spacedim>::close_csv_files()
 
           const double abs_err = diff.l2_norm();
           const double rel_err = abs_err / std::max(1.0, fd.l2_norm());
-
-          std::cout << "\n=====================================\n";
-          std::cout << "Central FD Jacobian check\n";
-          std::cout << "eps        = " << eps << "\n";
-          std::cout << "||Jv-FD||  = " << abs_err << "\n";
-          std::cout << "||FD||     = " << fd.l2_norm() << "\n";
-          std::cout << "relative   = " << rel_err << "\n";
-          std::cout << "=====================================\n";
+          double                  worst   = 0.0;
+          types::global_dof_index worst_i = 0;
+          for (types::global_dof_index i = 0; i < n_total_dofs; ++i)
+            {
+              const double d = std::abs(Jv[i] - fd[i]);
+              if (d > worst)
+                {
+                  worst   = d;
+                  worst_i = i;
+                }
+            }
+          std::cout << "worst row i=" << worst_i
+                    << (worst_i < n_cell_dofs ? " (CELL)" : " (TRACE)")
+                    << "  |Jv-fd|=" << worst << "  Jv=" << Jv[worst_i]
+                    << "  fd=" << fd[worst_i] << "\n";
+          // classify worst_i: which trace equation owns it?
+          for (const auto &cell : dof_handler.active_cell_iterators())
+            for (unsigned int f = 0; f < GeometryInfo<dim>::faces_per_cell; ++f)
+              {
+                const auto key = canonical_face_key(cell, f);
+                const auto it  = face_dof_map.find(key);
+                if (it == face_dof_map.end())
+                  continue;
+                if (it->second.a_hat_dof == worst_i ||
+                    it->second.u_hat_dof == worst_i)
+                  {
+                    const bool is_a = (it->second.a_hat_dof == worst_i);
+                    std::cout
+                      << "row " << worst_i << " is "
+                      << (is_a ? "A_hat" : "U_hat") << " of face (cell "
+                      << cell->id() << ", f=" << f
+                      << ")  vid=" << cell->material_id()
+                      << (cell->face(f)->at_boundary() ? "  BOUNDARY" : "")
+                      << (is_junction_face(cell->id(), f) ? "  JUNCTION" : "")
+                      << (!cell->face(f)->at_boundary() &&
+                              !is_junction_face(cell->id(), f) ?
+                            "  INTERIOR" :
+                            "")
+                      << "\n";
+                    goto done;
+                  }
+              }
+      done:;
+        std::cout << "\n=====================================\n";
+        std::cout << "Central FD Jacobian check\n";
+        std::cout << "eps        = " << eps << "\n";
+        std::cout << "||Jv-FD||  = " << abs_err << "\n";
+        std::cout << "||FD||     = " << fd.l2_norm() << "\n";
+        std::cout << "relative   = " << rel_err << "\n";
+        std::cout << "=====================================\n";
         };
         check_jacobian_fd(solution);
        // open_csv_files();
@@ -2858,6 +3106,8 @@ BloodFlowSystem<dim, spacedim>::close_csv_files()
         // -----------------------------------------------------------
         ida_parameters.ic_type =
           SUNDIALS::IDA<Vector<double>>::AdditionalData::use_y_diff;
+        // ida_parameters.ic_type =
+        //   SUNDIALS::IDA<Vector<double>>::AdditionalData::use_y_dot;
         SUNDIALS::IDA<Vector<double>> ida(ida_parameters);
 
         // vectoor allocation
@@ -2914,7 +3164,7 @@ BloodFlowSystem<dim, spacedim>::close_csv_files()
           compute_pressure(sol, pressure);
           compute_theoretical_peak(theoretical_peak);
           output_results(sol, pressure, theoretical_peak, step_number);
-          write_csv_row(t, solution);
+          write_csv_row(t, sol);               
         };
 
         // ---- Compute consistent initial ydot
@@ -2924,13 +3174,7 @@ BloodFlowSystem<dim, spacedim>::close_csv_files()
         // {
         //   Vector<double> F0(n_total_dofs);
         //   assemble_cell_residuals(ida_parameters.initial_time, solution, F0);
-        //   assemble_trace_interior_equations(solution, F0);
-        //   assemble_trace_boundary_equations(ida_parameters.initial_time,
-        //                                     solution,
-        //                                     F0);
-        //   assemble_trace_junction_equations(solution, F0);
-        //   std::cout << "  Initial F0 (spatial RHS) norm: " << F0.l2_norm()
-        //             << "\n";
+        //   //trace equations are zero at initial state, by doing initialize_trace_unknow() we don't need them 
 
         //   const unsigned int n_dpc = fe->n_dofs_per_cell();
         //   Vector<double>     loc_F(n_dpc), loc_ydot(n_dpc);
@@ -2940,19 +3184,18 @@ BloodFlowSystem<dim, spacedim>::close_csv_files()
         //       cell->get_dof_indices(ldofs);
         //       for (unsigned int i = 0; i < n_dpc; ++i)
         //         loc_F(i) = F0[ldofs[i]];
-
         //       per_cell_mass_inv.at(cell->id()).vmult(loc_ydot, loc_F);
         //       for (unsigned int i = 0; i < n_dpc; ++i)
         //         solution_dot[ldofs[i]] = loc_ydot(i);
         //     }
 
-        //   Vector<double> res_check(n_total_dofs);
-        //   assemble_residual(ida_parameters.initial_time,
-        //                     solution,
-        //                     solution_dot,
-        //                     res_check);
-        //   std::cout << "  Initial DAE residual norm:     "
-        //             << res_check.l2_norm() << "\n";
+        //   std::cout << "Initial ||ydot_cell||_inf = "
+        //             << *std::max_element(solution_dot.begin(),
+        //                                  solution_dot.begin() + n_cell_dofs,
+        //                                  [](double a, double b) {
+        //                                    return std::abs(a) < std::abs(b);
+        //                                  })
+        //             << "\n";
         // }
 
         // ---- Solve
