@@ -253,6 +253,47 @@ BloodFlowSystem<dim, spacedim>::build_face_dof_map()
             << std::endl;
 }
 
+// ==========================================================================
+// build rcr dof map : For every RCR terminal boundary, assign a global DOF index to the capacitor pressure Pc.
+// =========================================================================
+template <int dim, int spacedim>
+void
+BloodFlowSystem<dim, spacedim>::build_rcr_dof_map()
+{
+  rcr_pc_dof.clear();
+  n_trace_end = n_cell_dofs + n_trace_dofs;
+  n_rcr_dofs  = 0;
+
+  if (outlet_type == "RCR")
+    {
+      std::set<types::boundary_id> seen;
+      for (const auto &cell : dof_handler.active_cell_iterators())
+        for (unsigned int f = 0; f < GeometryInfo<dim>::faces_per_cell; ++f)
+          {
+            if (!cell->face(f)->at_boundary())
+              continue;
+            if (is_junction_face(cell->id(), f))
+              continue;
+            const types::boundary_id bid = cell->face(f)->boundary_id();
+            if (bid == 0)
+              continue; // inflow
+            if (!rcr_map.count(bid))
+              continue;
+            if (rcr_map.at(bid).C <= 0.0)
+              continue; // single-R: no capacitor unknown
+            if (!seen.insert(bid).second)
+              continue;
+
+            rcr_pc_dof[bid] = n_trace_end + n_rcr_dofs;
+            ++n_rcr_dofs;
+          }
+    }
+
+  n_total_dofs = n_trace_end + n_rcr_dofs;
+  std::cout << "RCR capacitor DOFs: n_rcr=" << n_rcr_dofs
+            << "  n_total=" << n_total_dofs << std::endl;
+}
+
 // ============================================================================
 // get_face_trace : it extracts trace values from global HDG solution
 // ============================================================================
@@ -383,6 +424,26 @@ BloodFlowSystem<dim, spacedim>::build_extended_sparsity_pattern()
           }
     }
 
+    // ---- (3) RCR capacitor DOFs: couple to their face traces ----------------
+  for (const auto &cell : dof_handler.active_cell_iterators())
+    for (unsigned int f = 0; f < GeometryInfo<dim>::faces_per_cell; ++f)
+      {
+        if (!cell->face(f)->at_boundary())
+          continue;
+        if (is_junction_face(cell->id(), f))
+          continue;
+        const auto pit = rcr_pc_dof.find(cell->face(f)->boundary_id());
+        if (pit == rcr_pc_dof.end())
+          continue;
+
+        const types::global_dof_index pc = pit->second;
+        const auto &td = face_dof_map.at(canonical_face_key(cell, f));
+
+        dsp.add(pc, pc);
+        dsp.add(pc, td.a_hat_dof); // dR_pc/dÂ
+        dsp.add(pc, td.u_hat_dof); // dR_pc/dÛ
+        dsp.add(td.a_hat_dof, pc); // res_A now depends on Pc
+      }
   sparsity_pattern.copy_from(dsp);
 }
 
@@ -456,7 +517,7 @@ BloodFlowSystem<dim, spacedim>::setup_system()
   all_junction_faces.clear();
   detect_junctions();
   build_face_dof_map();
-
+  build_rcr_dof_map();
   // ---- sparsity + matrices --------------------------------------------------
   build_extended_sparsity_pattern();
 
@@ -595,6 +656,19 @@ BloodFlowSystem<dim, spacedim>::compute_initial_solution(Vector<double> &dst,
             }
         }
     }
+
+  for (const auto &cell : dof_handler.active_cell_iterators())
+    for (unsigned int f = 0; f < GeometryInfo<dim>::faces_per_cell; ++f)
+      {
+        if (!cell->face(f)->at_boundary())
+          continue;
+        if (is_junction_face(cell->id(), f))
+          continue;
+        const auto pit = rcr_pc_dof.find(cell->face(f)->boundary_id());
+        if (pit == rcr_pc_dof.end())
+          continue;
+        dst[pit->second] = vessel_map.at(cell->material_id()).p_d;
+      }
 }
 
 // ============================================================================
@@ -623,10 +697,12 @@ BloodFlowSystem<dim, spacedim>::initialize_trace_unknowns(Vector<double> &sol,
     {
       // ── Step 1 ─ Assemble G(yhat) = F_trace(y_cell^0, yhat) ───────────────────
       Vector<double> G(n_total_dofs); // zero-initialised
+      Vector<double> zero_ydot(n_total_dofs);
       assemble_trace_interior_equations(sol, G);
       assemble_trace_boundary_equations(t, sol, G);
       assemble_trace_junction_equations(sol, G);
-      
+      assemble_rcr_capacitor_equations(sol, zero_ydot, G);
+
       // ── Convergence check ─────────────────────────────────────────────────
       double gnorm_inf = 0.0;
       double gnorm_l2  = 0.0;
@@ -666,12 +742,20 @@ BloodFlowSystem<dim, spacedim>::initialize_trace_unknowns(Vector<double> &sol,
         sol); // writes into jacobian_matrix
       assemble_jacobian_trace_boundary_block(t, sol);
       assemble_jacobian_trace_junction_block(sol);
+      assemble_jacobian_rcr_capacitor_block(sol);
       for (types::global_dof_index i = n_cell_dofs; i < n_total_dofs; ++i)
         {
+          const bool is_pc_row = (i >= n_trace_end);
           // Iterate over all columns with non-zero entries in this row
           for (auto it = jacobian_matrix.begin(i); it != jacobian_matrix.end(i);
                ++it)
-            newton_matrix.add(i, it->column(), it->value());
+            {
+              double val = it->value();
+              if (is_pc_row)
+                val = -val; // undo sign convention meant for
+                            // assemble_jacobian's global *=-1
+              newton_matrix.add(i, it->column(), val);
+            }
         }
 
       // Stamp cell diagonal with 1 so UMFPACK does not encounter zero pivots
@@ -711,11 +795,12 @@ BloodFlowSystem<dim, spacedim>::initialize_trace_unknowns(Vector<double> &sol,
 
   {
     Vector<double> F_final(n_total_dofs);
+    Vector<double> zero_ydot(n_total_dofs);
     assemble_trace_interior_equations(sol, F_final);
     assemble_trace_boundary_equations(t, sol, F_final);
     assemble_trace_junction_equations(sol, F_final);
-
-    double g_int = 0.0, g_bnd = 0.0, g_jnc = 0.0;
+    assemble_rcr_capacitor_equations(sol, zero_ydot, F_final);
+    double g_int = 0.0, g_bnd = 0.0, g_jnc = 0.0; 
 
     std::set<std::pair<CellId, unsigned int>> visited;
     for (const auto &cell : dof_handler.active_cell_iterators())
@@ -738,6 +823,10 @@ BloodFlowSystem<dim, spacedim>::initialize_trace_unknowns(Vector<double> &sol,
           else
             g_int = std::max(g_int, r);
         }
+        double g_pc = 0.0;
+    for (const auto &[bid, pc_dof] : rcr_pc_dof)
+      g_pc = std::max(g_pc, std::abs(F_final[pc_dof]));
+    std::cout << "    capacitor = " << g_pc << "\n";
 
     std::cout << "  Final ||F_trace||_inf by type:\n"
               << "    interior  = " << std::scientific << std::setprecision(4)
@@ -838,7 +927,7 @@ struct ProbeSpec
 //   {13, "LUlnar", -1.435950, -0.314550, 0.0},
 //   {33, "RAnteriorTibial", 1.275000, -2.560650, 0.0},
 //   {6, "RUlnar", 1.303950, -0.302550, 0.0},
-//   {20, "Splenic", 0.271800, -0.670200, 0.0},
+//   {20, "Splenic", 0.3820, -0.4347, 0.0},       // avg of vessel 20 and 21 midpoints
 // };
 
 static const std::vector<ProbeSpec> PROBES_37 = {
@@ -1079,6 +1168,95 @@ BloodFlowSystem<dim, spacedim>::close_csv_files()
     return {{(s_R * FAL_j - s_L * FAR_j + s_R * s_L * (dA_R - dA_L)) * inv,
              (s_R * FUL_j - s_L * FUR_j + s_R * s_L * (dU_R - dU_L)) * inv}};
   }
+
+  // template <int dim, int spacedim>
+  // std::array<double, 2>
+  // BloodFlowSystem<dim, spacedim>::hll_flux_jac(const double       bn_L,
+  //                                              const double       bn_R,
+  //                                              const double       A_L,
+  //                                              const double       U_L,
+  //                                              const double       A_R,
+  //                                              const double       U_R,
+  //                                              const double       dA_L,
+  //                                              const double       dU_L,
+  //                                              const double       dA_R,
+  //                                              const double       dU_R,
+  //                                              const unsigned int vid_L,
+  //                                              const unsigned int vid_R,
+  //                                              const double       ad_L,
+  //                                              const double       ad_R) const
+  // {
+  //   const double c_L = compute_wave_speed(A_L, vid_L, ad_L);
+  //   const double c_R = compute_wave_speed(A_R, vid_R, ad_R);
+
+  //   const double s_L = std::min(U_L - c_L, U_R - c_R);
+  //   const double s_R = std::max(U_L + c_L, U_R + c_R);
+
+  //   const double c2L_over_AL = c_L * c_L / A_L;
+  //   const double c2R_over_AR = c_R * c_R / A_R;
+
+  //   // Physical-flux Jacobians (unchanged)
+  //   const double FAL_j = scalar_area_flux_jac(bn_L, A_L, U_L, dA_L, dU_L);
+  //   const double FUL_j =
+  //     scalar_momentum_flux_jac(bn_L, c2L_over_AL, U_L, dA_L, dU_L);
+  //   const double FAR_j = scalar_area_flux_jac(bn_R, A_R, U_R, dA_R, dU_R);
+  //   const double FUR_j =
+  //     scalar_momentum_flux_jac(bn_R, c2R_over_AR, U_R, dA_R, dU_R);
+
+  //   // Supersonic branches: flux = one-sided physical flux, no s-dependence
+  //   if (s_L >= 0.0)
+  //     return {{FAL_j, FUL_j}};
+  //   if (s_R <= 0.0)
+  //     return {{FAR_j, FUR_j}};
+
+  //   // ---- Linearise the wave speeds (the previously-frozen part) ----
+  //   const double dc_L = compute_wave_speed_derivative(A_L, vid_L, ad_L) * dA_L;
+  //   const double dc_R = compute_wave_speed_derivative(A_R, vid_R, ad_R) * dA_R;
+
+  //   // s_L = min(U_L - c_L, U_R - c_R) : pick the branch that is actually the
+  //   // min
+  //   const double ds_L =
+  //     ((U_L - c_L) <= (U_R - c_R)) ? (dU_L - dc_L) : (dU_R - dc_R);
+
+  //   // s_R = max(U_L + c_L, U_R + c_R) : pick the branch that is actually the
+  //   // max
+  //   const double ds_R =
+  //     ((U_L + c_L) >= (U_R + c_R)) ? (dU_L + dc_L) : (dU_R + dc_R);
+
+  //   const double D   = s_R - s_L;
+  //   const double inv = 1.0 / D;
+  //   const double dD  = ds_R - ds_L;
+
+  //   // ---- Area component ----
+  //   {
+  //     // Physical fluxes F at current state (needed for ds_R*F_L - ds_L*F_R
+  //     // term)
+  //     const double FAL = scalar_area_flux(bn_L, A_L, U_L);
+  //     const double FAR = scalar_area_flux(bn_R, A_R, U_R);
+
+  //     const double N  = s_R * FAL - s_L * FAR + s_R * s_L * (A_R - A_L);
+  //     const double dN = ds_R * FAL + s_R * FAL_j - ds_L * FAR - s_L * FAR_j +
+  //                       (ds_R * s_L + s_R * ds_L) * (A_R - A_L) +
+  //                       s_R * s_L * (dA_R - dA_L);
+
+  //     const double dFA = (dN * D - N * dD) * inv * inv;
+
+  //     // ---- Momentum component ----
+  //     const double FUL = scalar_momentum_flux(
+  //       bn_L, U_L, compute_pressure_value(A_L, vid_L, ad_L), par["rho"]);
+  //     const double FUR = scalar_momentum_flux(
+  //       bn_R, U_R, compute_pressure_value(A_R, vid_R, ad_R), par["rho"]);
+
+  //     const double M  = s_R * FUL - s_L * FUR + s_R * s_L * (U_R - U_L);
+  //     const double dM = ds_R * FUL + s_R * FUL_j - ds_L * FUR - s_L * FUR_j +
+  //                       (ds_R * s_L + s_R * ds_L) * (U_R - U_L) +
+  //                       s_R * s_L * (dU_R - dU_L);
+
+  //     const double dFU = (dM * D - M * dD) * inv * inv;
+
+  //     return {{dFA, dFU}};
+  //   }
+  // }
 
   // HLL-HDG flux based on Paper "Hybridisable discontinuous Galerkin
   // formulation of compressible flows "
@@ -1578,7 +1756,7 @@ BloodFlowSystem<dim, spacedim>::close_csv_files()
 
             double res_A = 0.0, res_U = 0.0;
 
-                if (bid == 0) // inflow
+              if (bid == 0) // inflow
               {
                 inflow_function.set_time(t);
                 const double Q_in   = inflow_function.value(Point<1>(0.0));
@@ -1586,7 +1764,6 @@ BloodFlowSystem<dim, spacedim>::close_csv_files()
 
                 res_A = A_hat_cur * U_hat_cur - Q_in;
                 res_U = (U_hat_cur - 4.0 * (c_hat - c0)) - W2_int;
-    
               }
             else if (outlet_type == "RCR" && rcr_map.count(bid) &&
                      (rcr_map.at(bid).R1 > 0.0 || rcr_map.at(bid).R2 > 0.0))
@@ -1596,9 +1773,13 @@ BloodFlowSystem<dim, spacedim>::close_csv_files()
                 const double Q   = A_hat_cur * U_hat_cur;
                 if (rcr.C > 0.0)
                   {
-                    const double Pc = terminal_Pc_storage.at(bid);
-                    res_A =
-                      compute_pressure_value(A_hat, vid, a_d_local) - (rcr.R1 * Q + Pc);
+                    // const double Pc = terminal_Pc_storage.at(bid);
+                    // res_A =
+                    //   compute_pressure_value(A_hat, vid, a_d_local) - (rcr.R1 * Q + Pc);
+                    const double Pc =
+                      y[rcr_pc_dof.at(bid)]; 
+                    res_A = compute_pressure_value(A_hat, vid, a_d_local) -
+                            (rcr.R1 * Q + Pc);
                   }
                 else
                   { // single R: P = R2*Q + P_out
@@ -1620,10 +1801,51 @@ BloodFlowSystem<dim, spacedim>::close_csv_files()
 
             const FaceTraceDof &td =
               face_dof_map.at(canonical_face_key(cell, f));
-            F[td.a_hat_dof] = res_A;
+            F[td.a_hat_dof] = res_A; 
             F[td.u_hat_dof] = res_U;
           }
       }
+  }
+
+  // ============================================================================
+  // assemble_rcr_capacitance_equations
+  // For each RCR outlet, enforce the capacitance relation:
+  //   dP/dt = (P - R2*Q - P_out) / (R1*C)
+  // where P = P(A_hat) is the pressure at the outlet face (from trace state), Q = A_hat * U_hat
+  // ============================================================================
+  template <int dim, int spacedim>
+  void
+  BloodFlowSystem<dim, spacedim>::assemble_rcr_capacitor_equations(
+    const Vector<double> &y,
+    const Vector<double> &ydot,
+    Vector<double>       &F)
+  {
+    if (rcr_pc_dof.empty())
+      return;
+
+    for (const auto &cell : dof_handler.active_cell_iterators())
+      for (unsigned int f = 0; f < GeometryInfo<dim>::faces_per_cell; ++f)
+        {
+          if (!cell->face(f)->at_boundary())
+            continue;
+          if (is_junction_face(cell->id(), f))
+            continue;
+          const auto pit = rcr_pc_dof.find(cell->face(f)->boundary_id());
+          if (pit == rcr_pc_dof.end())
+            continue;
+
+          const types::global_dof_index pc_dof = pit->second;
+          const auto &rcr = rcr_map.at(cell->face(f)->boundary_id());
+
+          double A_hat = 0.0, U_hat = 0.0;
+          get_face_trace(y, cell, f, A_hat, U_hat);
+          const double Q      = A_hat * U_hat;
+          const double Pc     = y[pc_dof];
+          const double Pc_dot = ydot[pc_dof];
+
+          // C*Ṗc - Q + (Pc - P_out)/R2 = 0
+          F[pc_dof] = rcr.C * Pc_dot - Q + (Pc - rcr.P_out) / rcr.R2;
+        }
   }
 
   // ============================================================================
@@ -1768,7 +1990,7 @@ BloodFlowSystem<dim, spacedim>::close_csv_files()
           }
       }
   }
-
+  
   // ============================================================================
   // assemble_residual
   //
@@ -1791,7 +2013,6 @@ BloodFlowSystem<dim, spacedim>::close_csv_files()
     TimerOutput::Scope timer(computing_timer, "assemble_residual");
     deallog.push("assemble_residual");
     deallog << "t=" << t << std::endl;
-
     AssertDimension(y.size(), n_total_dofs);
     AssertDimension(ydot.size(), n_total_dofs);
     residual.reinit(n_total_dofs);
@@ -1822,11 +2043,13 @@ BloodFlowSystem<dim, spacedim>::close_csv_files()
             residual[ldofs[i]] = local_res(i) - local_F(i); // M ydot - R_cell
           }
       }
-    for (types::global_dof_index i = n_cell_dofs; i < n_total_dofs; ++i)
+    for (types::global_dof_index i = n_cell_dofs; i < n_trace_end; ++i)
       {
         residual[i] = -residual[i]; // algebraic constraint: F_trace = 0 ->
                                     // residual = -F_trace
       }
+    // RCR capacitor rows: differential, already in M*ydot - R form
+    assemble_rcr_capacitor_equations(y, ydot, residual);
     deallog.pop();
   }
 
@@ -2410,6 +2633,48 @@ BloodFlowSystem<dim, spacedim>::close_csv_files()
       }
   }
 
+//================================================
+// assemble_rcr_capacitor_equations in jacobian assembly
+// RCR capacitor equations are ODEs, so their Jacobian contributions are just
+// the derivatives of the residual w.r.t. the capacitor state DOFs (no coupling
+// to cell DOFs, no dependence on trace DOFs).
+//=========================================================
+  template <int dim, int spacedim>
+  void
+  BloodFlowSystem<dim, spacedim>::assemble_jacobian_rcr_capacitor_block(
+    const Vector<double> &y)
+  {
+    if (rcr_pc_dof.empty())
+      return;
+
+    for (const auto &cell : dof_handler.active_cell_iterators())
+      for (unsigned int f = 0; f < GeometryInfo<dim>::faces_per_cell; ++f)
+        {
+          if (!cell->face(f)->at_boundary())
+            continue;
+          if (is_junction_face(cell->id(), f))
+            continue;
+          const auto pit = rcr_pc_dof.find(cell->face(f)->boundary_id());
+          if (pit == rcr_pc_dof.end())
+            continue;
+
+          const types::global_dof_index pc_dof = pit->second;
+          const auto &rcr = rcr_map.at(cell->face(f)->boundary_id());
+          const auto &td  = face_dof_map.at(canonical_face_key(cell, f));
+
+          double A_hat = 0.0, U_hat = 0.0;
+          get_face_trace(y, cell, f, A_hat, U_hat);
+
+          // R_pc = A_hat*U_hat - (Pc - P_out)/R2
+          jacobian_matrix.add(pc_dof, td.a_hat_dof, U_hat);
+          jacobian_matrix.add(pc_dof, td.u_hat_dof, A_hat);
+          jacobian_matrix.add(pc_dof, pc_dof, -1.0 / rcr.R2);
+
+          // res_A = P(Â) - R1*Q - Pc  ->  d(res_A)/dPc = -1
+          jacobian_matrix.add(td.a_hat_dof, pc_dof, -1.0);
+        }
+  }
+
   // ============================================================================
   // assemble_jacobian_trace_junction_block
   //
@@ -2566,7 +2831,7 @@ BloodFlowSystem<dim, spacedim>::close_csv_files()
     assemble_jacobian_trace_interior_block(y);
     assemble_jacobian_trace_boundary_block(t, y);
     assemble_jacobian_trace_junction_block(y);
-
+    assemble_jacobian_rcr_capacitor_block(y);
 
     // ---- Negate: dF/dy = −dR/dy -------------------------------------------
     // Residual is F = M*ydot − R_cell (cell) and F = −R_trace (trace)
@@ -2590,71 +2855,13 @@ BloodFlowSystem<dim, spacedim>::close_csv_files()
           for (unsigned int j = 0; j < n_dofs; ++j)
             jacobian_matrix.add(ldofs[i], ldofs[j], alpha * M_K(i, j));
       }
-    deallog.pop();
-  }
 
-  // ============================================================================
-  // update_terminal_pressures
-  // ============================================================================
-  template <int dim, int spacedim>
-  void BloodFlowSystem<dim, spacedim>::update_terminal_pressures(
-    const double dt, const Vector<double> &y)
+    // alpha * C on capacitor diagonal (the dF/dẏ term for Pc rows)
+    for (const auto &[bid, pc_dof] : rcr_pc_dof)
   {
-    // ---- 1. Accumulate flow at each terminal boundary ----------------------
-    std::map<unsigned int, double> Q_accumulated;
-    for (const auto &[bid, Pc] : terminal_Pc_storage)
-      Q_accumulated[bid] = 0.0;
-
-    // Extract cell sub-vector (FEFaceValues needs size == dof_handler.n_dofs())
-    Vector<double> y_cell(n_cell_dofs);
-    for (types::global_dof_index i = 0; i < n_cell_dofs; ++i)
-      y_cell[i] = y[i];
-
-    const FEValuesExtractors::Scalar area_extractor(0);
-    const FEValuesExtractors::Scalar velocity_extractor(1);
-
-    const QGauss<dim - 1>       face_quad(fe->degree + 1);
-    FEFaceValues<dim, spacedim> fef(*fe,
-                                    face_quad,
-                                    update_values | update_JxW_values);
-
-    const unsigned int  n_q = face_quad.size();
-    std::vector<double> A_vals(n_q), U_vals(n_q);
-
-    for (const auto &cell : dof_handler.active_cell_iterators())
-      for (unsigned int f = 0; f < GeometryInfo<dim>::faces_per_cell; ++f)
-        {
-          if (!cell->face(f)->at_boundary())
-            continue;
-          const unsigned int bid = cell->face(f)->boundary_id();
-          if (!is_terminal_boundary(bid))
-            continue;
-
-          fef.reinit(cell, f);
-          fef[area_extractor].get_function_values(y_cell, A_vals);
-          fef[velocity_extractor].get_function_values(y_cell, U_vals);
-          const auto &JxW = fef.get_JxW_values();
-
-          for (unsigned int q = 0; q < n_q; ++q)
-            Q_accumulated[bid] += A_vals[q] * U_vals[q] * JxW[q];
-        }
-
-    // ---- 2. Update Windkessel capacitor pressure with 2 resistors
-    // ----------------------------
-    std::map<unsigned int, double> Pc_new_map;
-    for (const auto &[bid, Pc_old] : terminal_Pc_storage)
-      {
-        const auto  &rcr   = rcr_map.at(bid);
-        const double Q_tot = Q_accumulated[bid];
-        const double denom = 1.0 + dt / (rcr.C * rcr.R2);
-        Pc_new_map[bid]    = (Pc_old + (dt / rcr.C) * Q_tot +
-                              (dt / (rcr.C * rcr.R2)) * rcr.P_out) /
-                             denom;
-      }
-
-    // Write back separately
-    for (auto &[bid, Pc] : terminal_Pc_storage)
-      Pc = Pc_new_map[bid];
+      jacobian_matrix.add(pc_dof, pc_dof, alpha * rcr_map.at(bid).C);
+  }
+    deallog.pop();
   }
 
   // ============================================================================
@@ -3118,6 +3325,8 @@ BloodFlowSystem<dim, spacedim>::close_csv_files()
         ida.differential_components = [this]() -> IndexSet {
           IndexSet is(n_total_dofs);
           is.add_range(0, n_cell_dofs); // only cell DOFs carry d/dt
+          if (n_rcr_dofs > 0)
+            is.add_range(n_trace_end, n_total_dofs);
           return is;                    // trace DOFs are algebraic
         };
 
@@ -3158,13 +3367,12 @@ BloodFlowSystem<dim, spacedim>::close_csv_files()
                                  const unsigned int step_number) {
           const double dt =
             (time > 0.0) ? (t - time) : ida_parameters.initial_step_size;
-
           time = t;
-          update_terminal_pressures(dt, sol);
+          // update_terminal_pressures(dt, sol);
           compute_pressure(sol, pressure);
           compute_theoretical_peak(theoretical_peak);
           output_results(sol, pressure, theoretical_peak, step_number);
-          write_csv_row(t, sol);               
+          write_csv_row(t, sol);
         };
 
         // ---- Compute consistent initial ydot
