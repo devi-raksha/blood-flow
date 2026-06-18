@@ -264,7 +264,8 @@ BloodFlowSystem<dim, spacedim>::build_rcr_dof_map()
   n_trace_end = n_cell_dofs + n_trace_dofs;
   n_rcr_dofs  = 0;
 
-  if (outlet_type == "RCR")
+  // Reflection mode forces ALL outlets to reflection, so no Pc DOFs.
+  if (outlet_type != "Reflection")
     {
       std::set<types::boundary_id> seen;
       for (const auto &cell : dof_handler.active_cell_iterators())
@@ -274,13 +275,14 @@ BloodFlowSystem<dim, spacedim>::build_rcr_dof_map()
               continue;
             if (is_junction_face(cell->id(), f))
               continue;
+
             const types::boundary_id bid = cell->face(f)->boundary_id();
             if (bid == 0)
               continue; // inflow
             if (!rcr_map.count(bid))
-              continue;
-            if (rcr_map.at(bid).C <= 0.0)
-              continue; // single-R: no capacitor unknown
+              continue; // no data → reflection
+            if (rcr_map.at(bid).C <= 0)
+              continue; // single-R → no Pc DOF
             if (!seen.insert(bid).second)
               continue;
 
@@ -293,6 +295,7 @@ BloodFlowSystem<dim, spacedim>::build_rcr_dof_map()
   std::cout << "RCR capacitor DOFs: n_rcr=" << n_rcr_dofs
             << "  n_total=" << n_total_dofs << std::endl;
 }
+
 
 // ============================================================================
 // get_face_trace : it extracts trace values from global HDG solution
@@ -684,29 +687,26 @@ BloodFlowSystem<dim, spacedim>::initialize_trace_unknowns(Vector<double> &sol,
   Assert(sol.size() == n_total_dofs,
          ExcDimensionMismatch(sol.size(), n_total_dofs));
 
-  const double tol      = 1.0e-9; // ||F_trace||_inf convergence threshold
+  const double tol      = 1.0e-9;
   const int    max_iter = 50;
 
   std::cout << "\n=== initialize_trace_unknowns (Newton) ===\n";
 
-  // ── Private Newton matrix and solver ──────────────────────────────────────
   SparseMatrix<double> newton_matrix(sparsity_pattern);
   SparseDirectUMFPACK  newton_solver;
 
   for (int iter = 0; iter < max_iter; ++iter)
     {
-      // ── Step 1 ─ Assemble G(yhat) = F_trace(y_cell^0, yhat) ───────────────────
-      Vector<double> G(n_total_dofs); // zero-initialised
-      Vector<double> zero_ydot(n_total_dofs);
+      // ── Step 1 ─ Assemble G(yhat) = F_trace(y_cell^0, yhat) ─────────────
+      Vector<double> G(n_total_dofs);
       assemble_trace_interior_equations(sol, G);
       assemble_trace_boundary_equations(t, sol, G);
       assemble_trace_junction_equations(sol, G);
-      assemble_rcr_capacitor_equations(sol, zero_ydot, G);
 
-      // ── Convergence check ─────────────────────────────────────────────────
+      // ── Convergence check ──── CHANGED: loop only over trace, not Pc ─────
       double gnorm_inf = 0.0;
       double gnorm_l2  = 0.0;
-      for (types::global_dof_index i = n_cell_dofs; i < n_total_dofs; ++i)
+      for (types::global_dof_index i = n_cell_dofs; i < n_trace_end; ++i)
         {
           const double val = std::abs(G[i]);
           gnorm_inf        = std::max(gnorm_inf, val);
@@ -726,39 +726,28 @@ BloodFlowSystem<dim, spacedim>::initialize_trace_unknowns(Vector<double> &sol,
 
       if (iter == max_iter - 1)
         {
-          std::cerr
-            << "WARNING: initialize_trace_unknowns did not converge.\n"
-            << "         tol=" << tol << "  ||G||_inf=" << gnorm_inf
-            << "  after " << max_iter << " iterations.\n"
-            << "         The DAE integrator may still recover via its own\n"
-            << "         consistent-IC step, but check your initial data.\n";
+          std::cerr << "WARNING: initialize_trace_unknowns did not converge.\n"
+                    << "         tol=" << tol << "  ||G||_inf=" << gnorm_inf
+                    << "  after " << max_iter << " iterations.\n";
           break;
         }
 
-      // ── Step 2 ─ Assemble J_tt = dF_trace/dyhat ─────────────────────────────
+      // ── Step 2 ─ Assemble J_tt ──────────────────────────────────────────
       newton_matrix = 0.0;
 
-      assemble_jacobian_trace_interior_block(
-        sol); // writes into jacobian_matrix
+      assemble_jacobian_trace_interior_block(sol);
       assemble_jacobian_trace_boundary_block(t, sol);
       assemble_jacobian_trace_junction_block(sol);
-      assemble_jacobian_rcr_capacitor_block(sol);
-      for (types::global_dof_index i = n_cell_dofs; i < n_total_dofs; ++i)
+    
+      // No is_pc_row branch needed any more since we don't touch Pc rows.
+      for (types::global_dof_index i = n_cell_dofs; i < n_trace_end; ++i)
         {
-          const bool is_pc_row = (i >= n_trace_end);
-          // Iterate over all columns with non-zero entries in this row
           for (auto it = jacobian_matrix.begin(i); it != jacobian_matrix.end(i);
                ++it)
-            {
-              double val = it->value();
-              if (is_pc_row)
-                val = -val; // undo sign convention meant for
-                            // assemble_jacobian's global *=-1
-              newton_matrix.add(i, it->column(), val);
-            }
+            newton_matrix.add(i, it->column(), it->value());
         }
 
-      // Stamp cell diagonal with 1 so UMFPACK does not encounter zero pivots
+      // Stamp cell diagonal with 1
       for (const auto &cell : dof_handler.active_cell_iterators())
         {
           std::vector<types::global_dof_index> ldofs(fe->n_dofs_per_cell());
@@ -767,40 +756,36 @@ BloodFlowSystem<dim, spacedim>::initialize_trace_unknowns(Vector<double> &sol,
             newton_matrix.set(idx, idx, 1.0);
         }
 
-  
+     
+      for (const auto &[bid, pc_dof] : rcr_pc_dof)
+        newton_matrix.set(pc_dof, pc_dof, 1.0);
+
       jacobian_matrix = 0.0;
 
-      // ── Step 3 ─ Build Newton RHS: b = −G ─────────────────────────────────
-      //
-      //   newton_matrix · Δy = b
-      //
-      //   b[i] = −G[i]   for trace DOFs  (i ≥ n_cell_dofs)
-      //   b[i] = 0        for cell DOFs   (i <  n_cell_dofs)
-      //                   → identity rows give Δy_cell = 0
-      Vector<double> rhs(n_total_dofs); // zero-initialised
-      for (types::global_dof_index i = n_cell_dofs; i < n_total_dofs; ++i)
+      // ── Step 3 ─ Build Newton RHS: b = −G ───────────────────────────────
+      // CHANGED: only fill RHS for trace rows. Pc rows get 0 -> identity row
+      //          gives delta[pc]=0, so Pc stays at its seeded value.
+      Vector<double> rhs(n_total_dofs);
+      for (types::global_dof_index i = n_cell_dofs; i < n_trace_end; ++i)
         rhs[i] = -G[i];
 
-      // ── Step 4 ─ Solve and update trace DOFs ──────────────────────────────
+      // ── Step 4 ─ Solve and update trace DOFs ─────────────────────────────
       newton_solver.initialize(newton_matrix);
       Vector<double> delta(n_total_dofs);
       newton_solver.vmult(delta, rhs);
 
-      // Apply correction only to trace DOFs; cell DOFs are never changed.
-      for (types::global_dof_index i = n_cell_dofs; i < n_total_dofs; ++i)
+      // CHANGED: only apply correction to trace block (Pc delta is 0 anyway).
+      for (types::global_dof_index i = n_cell_dofs; i < n_trace_end; ++i)
         sol[i] += delta[i];
-    } // end Newton loop
+    }
 
   // ── Step 5 ─ Final per-type diagnostic ────────────────────────────────────
-
   {
     Vector<double> F_final(n_total_dofs);
-    Vector<double> zero_ydot(n_total_dofs);
     assemble_trace_interior_equations(sol, F_final);
     assemble_trace_boundary_equations(t, sol, F_final);
     assemble_trace_junction_equations(sol, F_final);
-    assemble_rcr_capacitor_equations(sol, zero_ydot, F_final);
-    double g_int = 0.0, g_bnd = 0.0, g_jnc = 0.0; 
+    double g_int = 0.0, g_bnd = 0.0, g_jnc = 0.0;
 
     std::set<std::pair<CellId, unsigned int>> visited;
     for (const auto &cell : dof_handler.active_cell_iterators())
@@ -823,10 +808,6 @@ BloodFlowSystem<dim, spacedim>::initialize_trace_unknowns(Vector<double> &sol,
           else
             g_int = std::max(g_int, r);
         }
-        double g_pc = 0.0;
-    for (const auto &[bid, pc_dof] : rcr_pc_dof)
-      g_pc = std::max(g_pc, std::abs(F_final[pc_dof]));
-    std::cout << "    capacitor = " << g_pc << "\n";
 
     std::cout << "  Final ||F_trace||_inf by type:\n"
               << "    interior  = " << std::scientific << std::setprecision(4)
@@ -1090,13 +1071,13 @@ BloodFlowSystem<dim, spacedim>::close_csv_files()
   {
     const double c_L   = compute_wave_speed(A_L, vid_L, ad_L);
     const double c_R   = compute_wave_speed(A_R, vid_R, ad_R);
-    // const double U_bar = 0.5 * (U_L + U_R);
-    // const double c_bar = 0.5 * (c_L + c_R);
-    // const double s_L   = U_bar - c_bar;
-    // const double s_R   = U_bar + c_bar;
-    const double s_L = std::min(U_L - c_L, U_R - c_R);
+    const double U_bar = 0.5 * (U_L + U_R);
+    const double c_bar = 0.5 * (c_L + c_R);
+    const double s_L   = U_bar - c_bar;
+    const double s_R   = U_bar + c_bar;
+    // const double s_L = std::min(U_L - c_L, U_R - c_R);
 
-    const double s_R = std::max(U_L + c_L, U_R + c_R);
+    // const double s_R = std::max(U_L + c_L, U_R + c_R);
 
     const double FAL = scalar_area_flux(bn_L, A_L, U_L);
     const double FUL = scalar_momentum_flux(bn_L,
@@ -1141,13 +1122,13 @@ BloodFlowSystem<dim, spacedim>::close_csv_files()
   {
     const double c_L   = compute_wave_speed(A_L, vid_L, ad_L);
     const double c_R   = compute_wave_speed(A_R, vid_R, ad_R);
-    // const double U_bar = 0.5 * (U_L + U_R);
-    // const double c_bar = 0.5 * (c_L + c_R);
-    // const double s_L   = U_bar - c_bar;
-    // const double s_R   = U_bar + c_bar;
-    const double s_L = std::min(U_L - c_L, U_R - c_R);
+    const double U_bar = 0.5 * (U_L + U_R);
+    const double c_bar = 0.5 * (c_L + c_R);
+    const double s_L   = U_bar - c_bar;
+    const double s_R   = U_bar + c_bar;
+    // const double s_L = std::min(U_L - c_L, U_R - c_R);
 
-    const double s_R = std::max(U_L + c_L, U_R + c_R);
+    // const double s_R = std::max(U_L + c_L, U_R + c_R);
 
     const double c2L_over_AL = c_L * c_L / A_L;
     const double c2R_over_AR = c_R * c_R / A_R;
@@ -1168,95 +1149,6 @@ BloodFlowSystem<dim, spacedim>::close_csv_files()
     return {{(s_R * FAL_j - s_L * FAR_j + s_R * s_L * (dA_R - dA_L)) * inv,
              (s_R * FUL_j - s_L * FUR_j + s_R * s_L * (dU_R - dU_L)) * inv}};
   }
-
-  // template <int dim, int spacedim>
-  // std::array<double, 2>
-  // BloodFlowSystem<dim, spacedim>::hll_flux_jac(const double       bn_L,
-  //                                              const double       bn_R,
-  //                                              const double       A_L,
-  //                                              const double       U_L,
-  //                                              const double       A_R,
-  //                                              const double       U_R,
-  //                                              const double       dA_L,
-  //                                              const double       dU_L,
-  //                                              const double       dA_R,
-  //                                              const double       dU_R,
-  //                                              const unsigned int vid_L,
-  //                                              const unsigned int vid_R,
-  //                                              const double       ad_L,
-  //                                              const double       ad_R) const
-  // {
-  //   const double c_L = compute_wave_speed(A_L, vid_L, ad_L);
-  //   const double c_R = compute_wave_speed(A_R, vid_R, ad_R);
-
-  //   const double s_L = std::min(U_L - c_L, U_R - c_R);
-  //   const double s_R = std::max(U_L + c_L, U_R + c_R);
-
-  //   const double c2L_over_AL = c_L * c_L / A_L;
-  //   const double c2R_over_AR = c_R * c_R / A_R;
-
-  //   // Physical-flux Jacobians (unchanged)
-  //   const double FAL_j = scalar_area_flux_jac(bn_L, A_L, U_L, dA_L, dU_L);
-  //   const double FUL_j =
-  //     scalar_momentum_flux_jac(bn_L, c2L_over_AL, U_L, dA_L, dU_L);
-  //   const double FAR_j = scalar_area_flux_jac(bn_R, A_R, U_R, dA_R, dU_R);
-  //   const double FUR_j =
-  //     scalar_momentum_flux_jac(bn_R, c2R_over_AR, U_R, dA_R, dU_R);
-
-  //   // Supersonic branches: flux = one-sided physical flux, no s-dependence
-  //   if (s_L >= 0.0)
-  //     return {{FAL_j, FUL_j}};
-  //   if (s_R <= 0.0)
-  //     return {{FAR_j, FUR_j}};
-
-  //   // ---- Linearise the wave speeds (the previously-frozen part) ----
-  //   const double dc_L = compute_wave_speed_derivative(A_L, vid_L, ad_L) * dA_L;
-  //   const double dc_R = compute_wave_speed_derivative(A_R, vid_R, ad_R) * dA_R;
-
-  //   // s_L = min(U_L - c_L, U_R - c_R) : pick the branch that is actually the
-  //   // min
-  //   const double ds_L =
-  //     ((U_L - c_L) <= (U_R - c_R)) ? (dU_L - dc_L) : (dU_R - dc_R);
-
-  //   // s_R = max(U_L + c_L, U_R + c_R) : pick the branch that is actually the
-  //   // max
-  //   const double ds_R =
-  //     ((U_L + c_L) >= (U_R + c_R)) ? (dU_L + dc_L) : (dU_R + dc_R);
-
-  //   const double D   = s_R - s_L;
-  //   const double inv = 1.0 / D;
-  //   const double dD  = ds_R - ds_L;
-
-  //   // ---- Area component ----
-  //   {
-  //     // Physical fluxes F at current state (needed for ds_R*F_L - ds_L*F_R
-  //     // term)
-  //     const double FAL = scalar_area_flux(bn_L, A_L, U_L);
-  //     const double FAR = scalar_area_flux(bn_R, A_R, U_R);
-
-  //     const double N  = s_R * FAL - s_L * FAR + s_R * s_L * (A_R - A_L);
-  //     const double dN = ds_R * FAL + s_R * FAL_j - ds_L * FAR - s_L * FAR_j +
-  //                       (ds_R * s_L + s_R * ds_L) * (A_R - A_L) +
-  //                       s_R * s_L * (dA_R - dA_L);
-
-  //     const double dFA = (dN * D - N * dD) * inv * inv;
-
-  //     // ---- Momentum component ----
-  //     const double FUL = scalar_momentum_flux(
-  //       bn_L, U_L, compute_pressure_value(A_L, vid_L, ad_L), par["rho"]);
-  //     const double FUR = scalar_momentum_flux(
-  //       bn_R, U_R, compute_pressure_value(A_R, vid_R, ad_R), par["rho"]);
-
-  //     const double M  = s_R * FUL - s_L * FUR + s_R * s_L * (U_R - U_L);
-  //     const double dM = ds_R * FUL + s_R * FUL_j - ds_L * FUR - s_L * FUR_j +
-  //                       (ds_R * s_L + s_R * ds_L) * (U_R - U_L) +
-  //                       s_R * s_L * (dU_R - dU_L);
-
-  //     const double dFU = (dM * D - M * dD) * inv * inv;
-
-  //     return {{dFA, dFU}};
-  //   }
-  // }
 
   // HLL-HDG flux based on Paper "Hybridisable discontinuous Galerkin
   // formulation of compressible flows "
@@ -3157,6 +3049,8 @@ BloodFlowSystem<dim, spacedim>::close_csv_files()
                 if (cell->face(f)->at_boundary())
                   {
                     const types::boundary_id bid = cell->face(f)->boundary_id();
+                    if (bid == 0)
+                      continue; // inflow
                     const unsigned int       v = cell->face(f)->vertex_index(0);
 
                     RCRPhysics rcr;
@@ -3368,7 +3262,66 @@ BloodFlowSystem<dim, spacedim>::close_csv_files()
           const double dt =
             (time > 0.0) ? (t - time) : ida_parameters.initial_step_size;
           time = t;
-          // update_terminal_pressures(dt, sol);
+          auto report_state = [this](double t, const Vector<double> &y) {
+            double Amin = 1e300, Umax = 0.0;
+            // initialize from the first active cell so neither is ever
+            // "invalid"
+            CellId worstA = dof_handler.begin_active()->id();
+            CellId worstU = worstA;
+
+            for (const auto &cell : dof_handler.active_cell_iterators())
+              {
+                std::vector<types::global_dof_index> dofs(
+                  fe->n_dofs_per_cell());
+                cell->get_dof_indices(dofs);
+                for (unsigned int i = 0; i < dofs.size(); ++i)
+                  {
+                    const unsigned int comp =
+                      fe->system_to_component_index(i).first;
+                    if (comp == 0)
+                      {
+                        if (y[dofs[i]] < Amin)
+                          {
+                            Amin   = y[dofs[i]];
+                            worstA = cell->id();
+                          }
+                      }
+                    else
+                      {
+                        if (std::abs(y[dofs[i]]) > Umax)
+                          {
+                            Umax   = std::abs(y[dofs[i]]);
+                            worstU = cell->id();
+                          }
+                      }
+                  }
+              }
+
+            double Pc_min = 0.0, Pc_max = 0.0;
+            if (!rcr_pc_dof.empty())
+              {
+                Pc_min = 1e300;
+                Pc_max = -1e300;
+                for (const auto &[bid, pc_dof] : rcr_pc_dof)
+                  {
+                    Pc_min = std::min(Pc_min, y[pc_dof]);
+                    Pc_max = std::max(Pc_max, y[pc_dof]);
+                  }
+              }
+
+            std::cout << "  [t=" << t << "]  min A=" << Amin << " ("
+                      << worstA.to_string() << ")"
+                      << "  max|U|=" << Umax << " (" << worstU.to_string()
+                      << ")"
+                      << "  Pc=[" << Pc_min << ", " << Pc_max << "]\n";
+
+            // the five newly-activated outlets
+            for (int b : {9, 10, 12, 24, 28})
+              if (rcr_pc_dof.count(b))
+                std::cout << "    bid" << b << " Pc=" << y[rcr_pc_dof.at(b)]
+                          << "\n";
+          };
+          report_state(t, sol);
           compute_pressure(sol, pressure);
           compute_theoretical_peak(theoretical_peak);
           output_results(sol, pressure, theoretical_peak, step_number);
@@ -3376,7 +3329,6 @@ BloodFlowSystem<dim, spacedim>::close_csv_files()
         };
 
         // ---- Compute consistent initial ydot
-        // ------------------------------------
 
         solution_dot = 0.0;
         // {

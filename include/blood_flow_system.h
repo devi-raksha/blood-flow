@@ -244,6 +244,8 @@ private:
     double R1, R2, C, P_out;
   };
   std::map<unsigned int, RCRPhysics>   rcr_map;
+  std::map<unsigned int, unsigned int> vid_to_rcr_vertex;     // key = vessel id
+   // key = vessel id
   std::map<types::boundary_id, double> terminal_Pc_storage;
   std::set<types::boundary_id>         terminal_boundary_ids;
 
