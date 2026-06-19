@@ -1848,7 +1848,7 @@ BloodFlowSystem<dim, spacedim>::close_csv_files()
         {
           const double a_d0 = compute_a_d_at_face(J.half_faces[0].cell, J.half_faces[0].face_no);
           const double H0 =
-            0.5 * U_hat[0] * U_hat[0] +
+            // 0.5 * U_hat[0] * U_hat[0] +
             compute_pressure_value(A_hat[0],
                                    J.half_faces[0].cell->material_id(), a_d0) /
               rho;
@@ -1858,7 +1858,7 @@ BloodFlowSystem<dim, spacedim>::close_csv_files()
               const double a_di = compute_a_d_at_face(J.half_faces[i].cell,
                                                       J.half_faces[i].face_no);
               const double Hi =
-                0.5 * U_hat[i] * U_hat[i] +
+                // 0.5 * U_hat[i] * U_hat[i] +
                 compute_pressure_value(A_hat[i],
                                        J.half_faces[i].cell->material_id(), a_di) /
                   rho;
@@ -2657,10 +2657,10 @@ BloodFlowSystem<dim, spacedim>::close_csv_files()
           {
             // \partialH_0/\partialA_hat_0 , \partialH_0/\partialU_hat_0
             jacobian_matrix.add(u_row[i - 1], a_row[0], dP_hat[0] / rho);
-            jacobian_matrix.add(u_row[i - 1], u_row[0], U_hat[0]);
+            //jacobian_matrix.add(u_row[i - 1], u_row[0], U_hat[0]);
             // \partial(-H_i)/\partialA_hat_i, \partial(-H_i)/\partialU_hat_i
             jacobian_matrix.add(u_row[i - 1], a_row[i], -dP_hat[i] / rho);
-            jacobian_matrix.add(u_row[i - 1], u_row[i], -U_hat[i]);
+           // jacobian_matrix.add(u_row[i - 1], u_row[i], -U_hat[i]);
           }
 
         // Compat row for vessel 0 -> u_row[K-1]
@@ -3071,28 +3071,6 @@ BloodFlowSystem<dim, spacedim>::close_csv_files()
           }
 
         setup_system();
-
-        for (const auto &[vid, vp] : vessel_map)
-          {
-            const double beta =
-              (4.0 / 3.0) * std::sqrt(numbers::PI) * vp.E * vp.h_wall;
-
-            // c_in: wave speed evaluated at the inlet diastolic area
-            const double a_in =
-              (vp.r_in > 0.0) ? numbers::PI * vp.r_in * vp.r_in : vp.a_d;
-            const double c_in = std::sqrt(beta / (2.0 * par["rho"] * a_in)) *
-                                std::pow(a_in, 0.25);
-
-            // c_out: wave speed evaluated at the outlet diastolic area
-            const double a_out =
-              (vp.r_out > 0.0) ? numbers::PI * vp.r_out * vp.r_out : vp.a_d;
-            const double c_out = std::sqrt(beta / (2.0 * par["rho"] * a_out)) *
-                                 std::pow(a_out, 0.25);
-
-            std::cout << "Vessel " << vid << ": c_in = " << c_in << " m/s"
-                      << ", c_out = " << c_out << " m/s\n";
-          }
-
         open_csv_files();
         initialize_terminal_capacitors();
         compute_theoretical_peak(theoretical_peak);
