@@ -120,7 +120,7 @@ test()
 
   for (unsigned int j = 0; j < n_total; ++j)
     {
-      const double h = eps ; //* (1.0 + std::abs(problem.solution[j]));
+      const double h = eps; //* (1.0 + std::abs(problem.solution[j]));
 
       yp = problem.solution;
       yp[j] += h;

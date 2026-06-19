@@ -19,22 +19,20 @@
 using namespace dealii;
 
 template <int dim, int spacedim>
-void test(const std::string &filename)
+void
+test(const std::string &filename)
 {
   Triangulation<dim, spacedim> triangulation;
-  DoFHandler<dim, spacedim> dof_handler(triangulation);
-          Vector<double>            output_vector;
-           std::vector<std::string>  data_names;
-  
+  DoFHandler<dim, spacedim>    dof_handler(triangulation);
+  Vector<double>               output_vector;
+  std::vector<std::string>     data_names;
+
   // -----------------------------
   // Read VTK
   // -----------------------------
-  //VTKWrappers::read_tria(filename, triangulation);
+  // VTKWrappers::read_tria(filename, triangulation);
 
- VTKUtils::read_vtk(filename,
-           dof_handler,
-          output_vector,
-          data_names);
+  VTKUtils::read_vtk(filename, dof_handler, output_vector, data_names);
 
   // -----------------------------
   // Basic checks
@@ -60,39 +58,40 @@ void test(const std::string &filename)
   deallog << "Vertex classification:" << std::endl;
 
   for (const auto &it : vertex_degree)
-{
-  const unsigned int vid = it.first;
-  const unsigned int deg = it.second;
-  
-  // Get the actual physical location of the vertex
-  Point<spacedim> pos = triangulation.get_vertices()[vid];
+    {
+      const unsigned int vid = it.first;
+      const unsigned int deg = it.second;
 
-  if (deg == 1)
-  {
-    // Point 0 is at x=0.0, Points 2 & 3 are at x=2.0
-    if (pos[0] < 0.5) 
-    {
-      deallog << "  Vertex " << vid << " @ (" << pos[0] << ") is the INFLOW" << std::endl;
+      // Get the actual physical location of the vertex
+      Point<spacedim> pos = triangulation.get_vertices()[vid];
+
+      if (deg == 1)
+        {
+          // Point 0 is at x=0.0, Points 2 & 3 are at x=2.0
+          if (pos[0] < 0.5)
+            {
+              deallog << "  Vertex " << vid << " @ (" << pos[0]
+                      << ") is the INFLOW" << std::endl;
+            }
+          else
+            {
+              deallog << "  Vertex " << vid << " @ (" << pos[0]
+                      << ") is an OUTLET" << std::endl;
+              n_terminals++; // Keep this for your AssertThrow count
+            }
+        }
+      else if (deg > 2)
+        {
+          deallog << "  Vertex " << vid << " is the JUNCTION" << std::endl;
+          n_junctions++;
+        }
     }
-    else 
-    {
-      deallog << "  Vertex " << vid << " @ (" << pos[0] << ") is an OUTLET" << std::endl;
-      n_terminals++; // Keep this for your AssertThrow count
-    }
-  }
-  else if (deg > 2)
-  {
-    deallog << "  Vertex " << vid << " is the JUNCTION" << std::endl;
-    n_junctions++;
-  }
-}
 
   // -----------------------------
   // Summary
   // -----------------------------
   deallog << "Total terminals: " << n_terminals << std::endl;
   deallog << "Total junctions: " << n_junctions << std::endl;
-
 }
 
 
@@ -100,18 +99,19 @@ void test(const std::string &filename)
 // MAIN
 // -----------------------------------------------------------------------------
 
-int main()
+int
+main()
 {
- deallog.depth_console(10);
+  deallog.depth_console(10);
   try
-  {
-    test<1, 3>("../../../../notebooks/bifurcation_physics.vtk"); 
-  }
+    {
+      test<1, 3>("../../../../notebooks/bifurcation_physics.vtk");
+    }
   catch (std::exception &e)
-  {
-    std::cerr << "Exception: " << e.what() << std::endl;
-    return 1;
-  }
+    {
+      std::cerr << "Exception: " << e.what() << std::endl;
+      return 1;
+    }
 
   return 0;
 }

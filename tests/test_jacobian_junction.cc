@@ -35,7 +35,7 @@ test()
   // ── same setup as the equilibrium test ───────────────────────────────────
   dealii::GridIn<1, 3> grid_in;
   grid_in.attach_triangulation(problem.triangulation);
-  
+
   std::ifstream mesh_file(problem.vtk_file_path);
   grid_in.read_vtk(mesh_file);
 
@@ -121,8 +121,9 @@ test()
 
   for (unsigned int j = 0; j < n_total; ++j)
     {
-      const double h = eps* (1.0 + std::abs(problem.solution[j]));
-     // deallog << j << " y=" << problem.solution[j] << " h=" << h << std::endl;
+      const double h = eps * (1.0 + std::abs(problem.solution[j]));
+      // deallog << j << " y=" << problem.solution[j] << " h=" << h <<
+      // std::endl;
       yp = problem.solution;
       yp[j] += h;
       ym = problem.solution;

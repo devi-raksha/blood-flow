@@ -23,7 +23,6 @@
 #  include <deal.II/grid/tria_iterator.h>
 
 #  include <vtkCellData.h>
-
 #  include <vtkDataArray.h>
 #  include <vtkPointData.h>
 #  include <vtkSmartPointer.h>

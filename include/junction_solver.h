@@ -92,7 +92,7 @@ public:
         const JunctionInfo<dim, spacedim> &junction,
         const Physics                     &phys) const
   {
-   // std::cout << "Entering junction solve" << std::endl;
+    // std::cout << "Entering junction solve" << std::endl;
     const unsigned int K = junction.faces.size();
     AssertDimension(X0.X.size(), 2 * K);
     AssertDimension(W_in.size(), K);
@@ -115,7 +115,8 @@ public:
         phys.compute_junction_residual(X, W_in, junction, R);
         const double residual_norm = R.l2_norm();
 
-        // std::cout << "Junction Newton iter " << it << " |R| = " << residual_norm
+        // std::cout << "Junction Newton iter " << it << " |R| = " <<
+        // residual_norm
         //           << std::endl;
 
 

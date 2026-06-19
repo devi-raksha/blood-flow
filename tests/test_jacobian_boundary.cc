@@ -2,9 +2,9 @@
 //
 // Test boundary residual vs boundary Jacobian block.
 //
-// Assembles only assemble_boundary_residuals and assemble_jacobian_boundary_block,
-// then checks every entry of the (cell,cell) and (cell,trace) blocks
-// with central finite differences.
+// Assembles only assemble_boundary_residuals and
+// assemble_jacobian_boundary_block, then checks every entry of the (cell,cell)
+// and (cell,trace) blocks with central finite differences.
 //
 // Output:
 //   L2_error       — ||J_an - J_fd||_F  over all (cell-row, any-col) entries
@@ -97,7 +97,8 @@ test()
   problem.build_per_cell_mass_inv();
   problem.compute_initial_solution(problem.solution, problem.time);
 
-  // ── assemble only the boundary Jacobian block ────────────────────────────────
+  // ── assemble only the boundary Jacobian block
+  // ────────────────────────────────
   const double       t       = problem.time;
   const unsigned int n_cell  = problem.n_cell_dofs;
   const unsigned int n_total = problem.n_total_dofs;
@@ -127,7 +128,7 @@ test()
       ym[j] -= h;
 
       Fp.reinit(n_total);
-      problem.assemble_trace_boundary_equations(t,yp, Fp);
+      problem.assemble_trace_boundary_equations(t, yp, Fp);
       Fm.reinit(n_total);
       problem.assemble_trace_boundary_equations(t, ym, Fm);
 

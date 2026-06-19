@@ -71,7 +71,7 @@ struct FaceTraceDof
 };
 
 // ---------------------------------------------------------------------------
-// Scratch / copy-data structures for cell and face integrals.  
+// Scratch / copy-data structures for cell and face integrals.
 // ---------------------------------------------------------------------------
 template <int dim, int spacedim>
 struct BloodFlowScratchData
@@ -161,9 +161,9 @@ public:
   // cell + trace equations.
   void
   assemble_residual(const double          t,
-                             const Vector<double> &y,
-                             const Vector<double> &ydot,
-                             Vector<double>       &residual);
+                    const Vector<double> &y,
+                    const Vector<double> &ydot,
+                    Vector<double>       &residual);
 
   // Jacobian ∂F/∂y — assembles all four blocks
   // (cell–cell, cell–trace, trace–cell, trace–trace).
@@ -171,9 +171,10 @@ public:
   assemble_jacobian(const double          t,
                     const Vector<double> &y,
                     const Vector<double> &ydot,
-                    double alpha);
+                    double                alpha);
 
-  // Builds per_cell_mass_inv: the local M_K^-1 for every cell K and also stores mass matrix.
+  // Builds per_cell_mass_inv: the local M_K^-1 for every cell K and also stores
+  // mass matrix.
   void
   build_per_cell_mass_inv();
   void
@@ -233,7 +234,7 @@ private:
   {
     double a0, r_d, a_d, E, h_wall, p_d, p0, L;
     // define inlet and outlet radii for tapered vessels.
-    //if r_in = r_out (or both zero), the vessel is treated as uniform.
+    // if r_in = r_out (or both zero), the vessel is treated as uniform.
     // and a_d is used as the default area for the pressure law.
     double r_in = 0.0, r_out = 0.0;
   };
@@ -250,7 +251,7 @@ private:
   // Raw VTK cell/point data arrays
   Vector<double> cell_vessel_ids, cell_a0, cell_r_d, cell_a_d, cell_E;
   Vector<double> cell_h_wall, cell_p_d, cell_p0, cell_L;
-  Vector<double> cell_r_in, cell_r_out; 
+  Vector<double> cell_r_in, cell_r_out;
   Vector<double> point_boundary_id, point_R1, point_R2, point_C, point_P_out;
 
   // -----------------------------------------------------------------------
@@ -287,11 +288,11 @@ private:
   // -----------------------------------------------------------------------
   // Junction detection
   //
-  // A junction is a mesh vertex touched by more than or equal to two cells having different vessel IDs.
-  // all_junction_faces holds (CellId, local_face_no) for every half-face
-  // that ends at a junction vertex — used to skip those faces in the
-  // ordinary boundary-condition assembly so they are handled exclusively
-  // by assemble_trace_junction_equations().
+  // A junction is a mesh vertex touched by more than or equal to two cells
+  // having different vessel IDs. all_junction_faces holds (CellId,
+  // local_face_no) for every half-face that ends at a junction vertex — used to
+  // skip those faces in the ordinary boundary-condition assembly so they are
+  // handled exclusively by assemble_trace_junction_equations().
   // -----------------------------------------------------------------------
   struct JunctionHalfFace
   {
@@ -338,17 +339,17 @@ private:
   // -----------------------------------------------------------------------
   // User parameters
   // -----------------------------------------------------------------------
-  unsigned int fe_degree            = 1;
-  std::string  constants            = "1.0";
-  std::string  output_filename      = "solution";
-  bool         use_direct_solver    = true;
-  bool         use_junction_mesh     = true;
+  unsigned int fe_degree              = 1;
+  std::string  constants              = "1.0";
+  std::string  output_filename        = "solution";
+  bool         use_direct_solver      = true;
+  bool         use_junction_mesh      = true;
   bool         use_riemann_invariants = true;
-  unsigned int n_refinement_cycles  = 1;
-  unsigned int n_global_refinements = 5;
-  std::string  vtk_file_path        = "mesh.vtk";
-  std::string  output_directory     = "";
-  unsigned int verbosity            = 0;
+  unsigned int n_refinement_cycles    = 1;
+  unsigned int n_global_refinements   = 5;
+  std::string  vtk_file_path          = "mesh.vtk";
+  std::string  output_directory       = "";
+  unsigned int verbosity              = 0;
   std::string  outlet_type;
   double       theta    = 0.5;
   double       theta_bd = 0.5;
@@ -438,7 +439,7 @@ private:
 
     const double r = vpp.r_in + xi_geometry * (vpp.r_out - vpp.r_in);
 
-    return numbers::PI * r * r; 
+    return numbers::PI * r * r;
   }
 
   double
@@ -579,263 +580,320 @@ private:
   }
 
 
-    // -----------------------------------------------------------------------
-    // Internal helpers — face-trace access
-    // -----------------------------------------------------------------------
+  // -----------------------------------------------------------------------
+  // Internal helpers — face-trace access
+  // -----------------------------------------------------------------------
 
-    // Return the canonical key for a face.  For interior faces the cell
-    // with the lexicographically smaller CellId is always the key owner.
-    std::pair<CellId, unsigned int> canonical_face_key(
-      const typename DoFHandler<dim, spacedim>::active_cell_iterator &cell,
-      const unsigned int face_no) const;
-    std::map<unsigned int, std::pair<double, double>> vessel_s_bounds;
-    // Read (A_hat, U_hat) from the trace block of y.
-    void get_face_trace(
-      const Vector<double>                                           &y,
-      const typename DoFHandler<dim, spacedim>::active_cell_iterator &cell,
-      unsigned int                                                    face_no,
-      double                                                         &A_hat,
-      double &U_hat) const;
+  // Return the canonical key for a face.  For interior faces the cell
+  // with the lexicographically smaller CellId is always the key owner.
+  std::pair<CellId, unsigned int>
+  canonical_face_key(
+    const typename DoFHandler<dim, spacedim>::active_cell_iterator &cell,
+    const unsigned int face_no) const;
+  std::map<unsigned int, std::pair<double, double>> vessel_s_bounds;
+  // Read (A_hat, U_hat) from the trace block of y.
+  void
+  get_face_trace(
+    const Vector<double>                                           &y,
+    const typename DoFHandler<dim, spacedim>::active_cell_iterator &cell,
+    unsigned int                                                    face_no,
+    double                                                         &A_hat,
+    double &U_hat) const;
 
-    // -----------------------------------------------------------------------
-    // Internal helpers — physical fluxes (scalar projections)
-    // -----------------------------------------------------------------------
+  // -----------------------------------------------------------------------
+  // Internal helpers — physical fluxes (scalar projections)
+  // -----------------------------------------------------------------------
 
-    double scalar_area_flux(const double bn, const double A, const double U)
-      const
-    {
-      return A * U * bn;
-    }
+  double
+  scalar_area_flux(const double bn, const double A, const double U) const
+  {
+    return A * U * bn;
+  }
 
-    double scalar_momentum_flux(const double bn,
-                                const double U,
-                                const double pressure,
-                                const double rho) const
-    {
-      return (0.5 * U * U + pressure / rho) * bn;
-    }
+  double
+  scalar_momentum_flux(const double bn,
+                       const double U,
+                       const double pressure,
+                       const double rho) const
+  {
+    return (0.5 * U * U + pressure / rho) * bn;
+  }
 
-    // Linearised (Jacobian) versions
-    double scalar_area_flux_jac(const double bn,
-                                const double A,
-                                const double U,
-                                const double dA,
-                                const double dU) const
-    {
-      return (A * dU + U * dA) * bn;
-    }
+  // Linearised (Jacobian) versions
+  double
+  scalar_area_flux_jac(const double bn,
+                       const double A,
+                       const double U,
+                       const double dA,
+                       const double dU) const
+  {
+    return (A * dU + U * dA) * bn;
+  }
 
-    double scalar_momentum_flux_jac(
-      const double bn,
-      const double c2_over_A, // 1/rho dp/da = c^2/A
-      const double U,
-      const double dA,
-      const double dU) const
-    {
-      return (c2_over_A * dA + U * dU) * bn;
-    }
+  double
+  scalar_momentum_flux_jac(const double bn,
+                           const double c2_over_A, // 1/rho dp/da = c^2/A
+                           const double U,
+                           const double dA,
+                           const double dU) const
+  {
+    return (c2_over_A * dA + U * dU) * bn;
+  }
 
-    double compute_LF_penalty(const double       A_L,
-                              const double       A_R,
-                              const double       U_L,
-                              const double       U_R,
-                              const double       bn_L,
-                              const double       bn_R,
-                              const unsigned int vid_L,
-                              const unsigned int vid_R,
-                              const double       a_d_L,
-                              const double       a_d_R) const
-    {
-      const double cL = compute_wave_speed(A_L, vid_L, a_d_L);
-      const double cR = compute_wave_speed(A_R, vid_R, a_d_R);
-      return std::max({std::abs((U_L - cL) * bn_L),
-                       std::abs((U_L + cL) * bn_L),
-                       std::abs((U_R - cR) * bn_R),
-                       std::abs((U_R + cR) * bn_R)});
-    }
+  double
+  compute_LF_penalty(const double       A_L,
+                     const double       A_R,
+                     const double       U_L,
+                     const double       U_R,
+                     const double       bn_L,
+                     const double       bn_R,
+                     const unsigned int vid_L,
+                     const unsigned int vid_R,
+                     const double       a_d_L,
+                     const double       a_d_R) const
+  {
+    const double cL = compute_wave_speed(A_L, vid_L, a_d_L);
+    const double cR = compute_wave_speed(A_R, vid_R, a_d_R);
+    return std::max({std::abs((U_L - cL) * bn_L),
+                     std::abs((U_L + cL) * bn_L),
+                     std::abs((U_R - cR) * bn_R),
+                     std::abs((U_R + cR) * bn_R)});
+  }
 
-    // -----------------------------------------------------------------------
-    // Internal helpers — numerical fluxes
-    // -----------------------------------------------------------------------
+  // -----------------------------------------------------------------------
+  // Internal helpers — numerical fluxes
+  // -----------------------------------------------------------------------
 
-    std::array<double, 2> hll_flux(double       bn_L,
-                                   double       bn_R,
-                                   double       A_L,
-                                   double       U_L,
-                                   double       A_R,
-                                   double       U_R,
-                                   unsigned int vid_L,
-                                   unsigned int vid_R,
-                                   double       a_d_L,
-                                   double       a_d_R) const;
+  std::array<double, 2>
+  hll_flux(double       bn_L,
+           double       bn_R,
+           double       A_L,
+           double       U_L,
+           double       A_R,
+           double       U_R,
+           unsigned int vid_L,
+           unsigned int vid_R,
+           double       a_d_L,
+           double       a_d_R) const;
 
-    std::array<double, 2>
-    hll_hdg_flux(double       bn_L,
-             double      /*bn_R*/,
-             double       A_L,
-             double       U_L,
-             double       A_R,
-             double       U_R,
-             unsigned int /*vid_L*/,
-             unsigned int vid_R,
-             double       /*a_d_L*/,
-             double       a_d_R) const;
+  std::array<double, 2>
+  hll_hdg_flux(double bn_L,
+               double /*bn_R*/,
+               double A_L,
+               double U_L,
+               double A_R,
+               double U_R,
+               unsigned int /*vid_L*/,
+               unsigned int vid_R,
+               double /*a_d_L*/,
+               double a_d_R) const;
 
 
-    std::array<double, 2> lf_flux(double       bn_L,
-                                  double       bn_R,
-                                  double       A_L,
-                                  double       U_L,
-                                  double       A_R,
-                                  double       U_R,
-                                  unsigned int vid_L,
-                                  unsigned int vid_R,
-                                  double       a_d_L,
-                                  double       a_d_R) const;
+  std::array<double, 2>
+  lf_flux(double       bn_L,
+          double       bn_R,
+          double       A_L,
+          double       U_L,
+          double       A_R,
+          double       U_R,
+          unsigned int vid_L,
+          unsigned int vid_R,
+          double       a_d_L,
+          double       a_d_R) const;
 
-    std::array<double, 2> numerical_flux(double       bn_L,
-                                         double       bn_R,
-                                         double       A_L,
-                                         double       U_L,
-                                         double       A_R,
-                                         double       U_R,
-                                         unsigned int vid_L,
-                                         unsigned int vid_R,
-                                         double       a_d_L,
-                                         double       a_d_R) const
-    {
-      if (numerical_flux_type == NumericalFluxType::HLL)
-        {
-          return hll_flux(
-            bn_L, bn_R, A_L, U_L, A_R, U_R, vid_L, vid_R, a_d_L, a_d_R);
-        }
-      else if (numerical_flux_type == NumericalFluxType::HLL_HDG)
-        {
-          return hll_hdg_flux(
-            bn_L, bn_R, A_L, U_L, A_R, U_R, vid_L, vid_R, a_d_L, a_d_R);
-        }
-      else
-        {
-          return lf_flux(
-            bn_L, bn_R, A_L, U_L, A_R, U_R, vid_L, vid_R, a_d_L, a_d_R);
-        }
-    }
-
-    std::array<double, 2> hll_flux_jac(double       bn_L,
-                                       double       bn_R,
-                                       double       A_L,
-                                       double       U_L,
-                                       double       A_R,
-                                       double       U_R,
-                                       double       dA_L,
-                                       double       dU_L,
-                                       double       dA_R,
-                                       double       dU_R,
-                                       unsigned int vid_L,
-                                       unsigned int vid_R,
-                                      const double a_d_L,
-                                      const double a_d_R) const;
-
-    std::array<double, 2>
-    hll_hdg_flux_jac(double       bn_L,
-                 double       /*bn_R*/,
+  std::array<double, 2>
+  numerical_flux(double       bn_L,
+                 double       bn_R,
                  double       A_L,
                  double       U_L,
                  double       A_R,
                  double       U_R,
-                 double       dA_L,
-                 double       dU_L,
-                 double       dA_R,
-                 double       dU_R,
-                 unsigned int /*vid_L*/,
+                 unsigned int vid_L,
                  unsigned int vid_R,
-                 const double /*a_d_L*/,
-                 const double a_d_R) const;
-
-
-
-    std::array<double, 2> lf_flux_jac(double       bn_L,
-                                      double       bn_R,
-                                      double       A_L,
-                                      double       U_L,
-                                      double       A_R,
-                                      double       U_R,
-                                      double       dA_L,
-                                      double       dU_L,
-                                      double       dA_R,
-                                      double       dU_R,
-                                      unsigned int vid_L,
-                                      unsigned int vid_R,
-                                      const double a_d_L,
-                                      const double a_d_R) const;
-
-    std::array<double, 2> numerical_flux_jac(double       bn_L,
-                                             double       bn_R,
-                                             double       A_L,
-                                             double       U_L,
-                                             double       A_R,
-                                             double       U_R,
-                                             double       dA_L,
-                                             double       dU_L,
-                                             double       dA_R,
-                                             double       dU_R,
-                                             unsigned int vid_L,
-                                             unsigned int vid_R,
-                                             const double a_d_L,
-                                             const double a_d_R) const
-    {
-      if (numerical_flux_type == NumericalFluxType::HLL)
+                 double       a_d_L,
+                 double       a_d_R) const
+  {
+    if (numerical_flux_type == NumericalFluxType::HLL)
       {
-        return hll_flux_jac(
-          bn_L, bn_R, A_L, U_L, A_R, U_R, dA_L, dU_L, dA_R, dU_R, vid_L, vid_R, a_d_L, a_d_R);
-        }
-     else if (numerical_flux_type == NumericalFluxType::HLL_HDG)
-       { return hll_hdg_flux_jac(
-          bn_L, bn_R, A_L, U_L, A_R, U_R, dA_L, dU_L, dA_R, dU_R, vid_L, vid_R, a_d_L, a_d_R);
-       }
-       else{
-      return lf_flux_jac(
-        bn_L, bn_R, A_L, U_L, A_R, U_R, dA_L, dU_L, dA_R, dU_R, vid_L, vid_R, a_d_L, a_d_R);
+        return hll_flux(
+          bn_L, bn_R, A_L, U_L, A_R, U_R, vid_L, vid_R, a_d_L, a_d_R);
       }
-    }
+    else if (numerical_flux_type == NumericalFluxType::HLL_HDG)
+      {
+        return hll_hdg_flux(
+          bn_L, bn_R, A_L, U_L, A_R, U_R, vid_L, vid_R, a_d_L, a_d_R);
+      }
+    else
+      {
+        return lf_flux(
+          bn_L, bn_R, A_L, U_L, A_R, U_R, vid_L, vid_R, a_d_L, a_d_R);
+      }
+  }
 
-    // -----------------------------------------------------------------------
-    // Assembly sub-routines
-    // -----------------------------------------------------------------------
+  std::array<double, 2>
+  hll_flux_jac(double       bn_L,
+               double       bn_R,
+               double       A_L,
+               double       U_L,
+               double       A_R,
+               double       U_R,
+               double       dA_L,
+               double       dU_L,
+               double       dA_R,
+               double       dU_R,
+               unsigned int vid_L,
+               unsigned int vid_R,
+               const double a_d_L,
+               const double a_d_R) const;
 
-    // Cell residuals: volume integrals + flux through face traces.
-    void assemble_cell_residuals(const double          t,
-                                 const Vector<double> &y,
-                                 Vector<double>       &F);
+  std::array<double, 2>
+  hll_hdg_flux_jac(double bn_L,
+                   double /*bn_R*/,
+                   double A_L,
+                   double U_L,
+                   double A_R,
+                   double U_R,
+                   double dA_L,
+                   double dU_L,
+                   double dA_R,
+                   double dU_R,
+                   unsigned int /*vid_L*/,
+                   unsigned int vid_R,
+                   const double /*a_d_L*/,
+                   const double a_d_R) const;
 
-    // Trace equations for interior faces (Riemann-invariant continuity).
-    void assemble_trace_interior_equations(const Vector<double> &y,
-                                           Vector<double>       &F);
 
-    // Trace equations for boundary faces (inflow Q / RCR / reflection).
-    void assemble_trace_boundary_equations(const double          t,
-                                           const Vector<double> &y,
-                                           Vector<double>       &F);
 
-    // Trace equations for junction faces (mass conservation +
-    // tottotalal-head continuity + Riemann compatibility per vessel).
-    void assemble_trace_junction_equations(const Vector<double> &y,
-                                           Vector<double>       &F);
+  std::array<double, 2>
+  lf_flux_jac(double       bn_L,
+              double       bn_R,
+              double       A_L,
+              double       U_L,
+              double       A_R,
+              double       U_R,
+              double       dA_L,
+              double       dU_L,
+              double       dA_R,
+              double       dU_R,
+              unsigned int vid_L,
+              unsigned int vid_R,
+              const double a_d_L,
+              const double a_d_R) const;
 
-    // Jacobian blocks
-    void assemble_jacobian_cell_block(const double t, const Vector<double> &y);
+  std::array<double, 2>
+  numerical_flux_jac(double       bn_L,
+                     double       bn_R,
+                     double       A_L,
+                     double       U_L,
+                     double       A_R,
+                     double       U_R,
+                     double       dA_L,
+                     double       dU_L,
+                     double       dA_R,
+                     double       dU_R,
+                     unsigned int vid_L,
+                     unsigned int vid_R,
+                     const double a_d_L,
+                     const double a_d_R) const
+  {
+    if (numerical_flux_type == NumericalFluxType::HLL)
+      {
+        return hll_flux_jac(bn_L,
+                            bn_R,
+                            A_L,
+                            U_L,
+                            A_R,
+                            U_R,
+                            dA_L,
+                            dU_L,
+                            dA_R,
+                            dU_R,
+                            vid_L,
+                            vid_R,
+                            a_d_L,
+                            a_d_R);
+      }
+    else if (numerical_flux_type == NumericalFluxType::HLL_HDG)
+      {
+        return hll_hdg_flux_jac(bn_L,
+                                bn_R,
+                                A_L,
+                                U_L,
+                                A_R,
+                                U_R,
+                                dA_L,
+                                dU_L,
+                                dA_R,
+                                dU_R,
+                                vid_L,
+                                vid_R,
+                                a_d_L,
+                                a_d_R);
+      }
+    else
+      {
+        return lf_flux_jac(bn_L,
+                           bn_R,
+                           A_L,
+                           U_L,
+                           A_R,
+                           U_R,
+                           dA_L,
+                           dU_L,
+                           dA_R,
+                           dU_R,
+                           vid_L,
+                           vid_R,
+                           a_d_L,
+                           a_d_R);
+      }
+  }
 
-    void assemble_jacobian_trace_interior_block(const Vector<double> &y);
+  // -----------------------------------------------------------------------
+  // Assembly sub-routines
+  // -----------------------------------------------------------------------
 
-    void assemble_jacobian_trace_boundary_block(const double          t,
-                                                const Vector<double> &y);
+  // Cell residuals: volume integrals + flux through face traces.
+  void
+  assemble_cell_residuals(const double          t,
+                          const Vector<double> &y,
+                          Vector<double>       &F);
 
-    void assemble_jacobian_trace_junction_block(const Vector<double> &y);
+  // Trace equations for interior faces (Riemann-invariant continuity).
+  void
+  assemble_trace_interior_equations(const Vector<double> &y, Vector<double> &F);
 
-    // Mass matrix - only acts on the cell block; trace block rows/cols = 0.
-    void build_extended_sparsity_pattern();
+  // Trace equations for boundary faces (inflow Q / RCR / reflection).
+  void
+  assemble_trace_boundary_equations(const double          t,
+                                    const Vector<double> &y,
+                                    Vector<double>       &F);
 
-    friend void test();
-  };
+  // Trace equations for junction faces (mass conservation +
+  // tottotalal-head continuity + Riemann compatibility per vessel).
+  void
+  assemble_trace_junction_equations(const Vector<double> &y, Vector<double> &F);
+
+  // Jacobian blocks
+  void
+  assemble_jacobian_cell_block(const double t, const Vector<double> &y);
+
+  void
+  assemble_jacobian_trace_interior_block(const Vector<double> &y);
+
+  void
+  assemble_jacobian_trace_boundary_block(const double          t,
+                                         const Vector<double> &y);
+
+  void
+  assemble_jacobian_trace_junction_block(const Vector<double> &y);
+
+  // Mass matrix - only acts on the cell block; trace block rows/cols = 0.
+  void
+  build_extended_sparsity_pattern();
+
+  friend void
+  test();
+};
 
 #endif // BLOOD_FLOW_SYSTEM_H
