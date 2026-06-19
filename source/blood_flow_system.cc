@@ -580,8 +580,7 @@ BloodFlowSystem<dim, spacedim>::compute_initial_solution(Vector<double> &dst,
                    !is_junction_face(cell->id(), f))
             {
               const double ad_local = compute_a_d_local(cell);
-              // Interior: average area, zero velocity (flux = A*U*bn = 0 ✓)
-              const unsigned int vid_nb = cell->neighbor(f)->material_id();
+              // Interior: average area, zero velocity (flux = A*U*bn = 0 )
               dst[td.a_hat_dof] =
                 0.5 * (ad_local + compute_a_d_at_face(cell->neighbor(f), f));
               dst[td.u_hat_dof] = 0.0;
@@ -1556,7 +1555,6 @@ BloodFlowSystem<dim, spacedim>::close_csv_files()
 
             const types::boundary_id bid = cell->face(f)->boundary_id();
             const unsigned int       vid = cell->material_id();
-            const auto              &vpp = vessel_map.at(vid);
 
             // Interior cell value at face — use y_cell, not y
             fef.reinit(cell, f);
@@ -1692,8 +1690,7 @@ BloodFlowSystem<dim, spacedim>::close_csv_files()
           {
             const auto        &hf  = J.half_faces[i];
             const unsigned int vid = hf.cell->material_id();
-            const auto        &vpp = vessel_map.at(vid);
-
+            
             // Interior cell value at the junction face — use y_cell
             fef.reinit(hf.cell, hf.face_no);
             std::vector<double> Av(1), Uv(1);
