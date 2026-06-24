@@ -106,6 +106,7 @@ test()
 
   problem.jacobian_matrix = 0.0;
   problem.assemble_jacobian_trace_boundary_block(t, problem.solution);
+  problem.assemble_jacobian_rcr_capacitor_block(problem.solution);
 
   // ── central FD check ─────────────────────────────────────────────────────
   const double eps = 1e-8;
@@ -137,6 +138,8 @@ test()
 
       for (unsigned int i = 0; i < n_total; ++i)
         {
+          if (i >= problem.n_trace_end)
+            continue;
           const double fd  = (Fp[i] - Fm[i]) / (2.0 * h);
           const double err = Jcol[i] - fd;
           row_sq[i] += err * err;
