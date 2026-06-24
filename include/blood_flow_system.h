@@ -383,10 +383,12 @@ private:
   mutable TimerOutput computing_timer;
 
 
-  // CSV timeseries output
-  std::ofstream                                         csv_P_, csv_Q_;
-  std::vector<std::pair<unsigned int, Point<spacedim>>> probe_targets_;
-
+  // CSV timeseries output for each vessel
+  std::map<unsigned int, std::ofstream> csv_vessel_;
+  std::vector<
+    std::pair<unsigned int,
+              typename DoFHandler<dim, spacedim>::active_cell_iterator>>
+    probe_targets_;
   void
   open_csv_files();
   void

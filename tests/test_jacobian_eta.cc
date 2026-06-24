@@ -118,8 +118,13 @@ test()
   problem.assemble_residual(t, problem.solution, ydot, residual);
   problem.assemble_jacobian(t, problem.solution, ydot, alpha);
 
-  deallog << "||residual|| = " << residual.l2_norm()
-          << "  (should be ~0 at equilibrium)" << std::endl;
+  double pc_sq = 0, rest_sq = 0;
+  for (unsigned int i = 0; i < residual.size(); ++i)
+    (i >= problem.n_trace_end ? pc_sq : rest_sq) += residual[i] * residual[i];
+  deallog << "rest residual=" << std::sqrt(rest_sq)
+          << "  pc=" << std::sqrt(pc_sq) << std::endl;
+  deallog << "||residual with Pc|| = " << residual.l2_norm()
+          << "  (should be ~0 at equilibrium when terminal pressure is Pc = P_out )" << std::endl;
 
   // ── J · ones, dot with ones ──────────────────────────────────────────────
   Vector<double> ones(problem.solution.size());

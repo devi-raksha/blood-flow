@@ -2,11 +2,9 @@
  * Blood Flow Simulation in 1D (dim=1, spacedim=3) using DG for cell
  * unknowns and global trace unknowns (A_hat, U_hat) on every face.
  *
- * Key architectural:
- *   - (A_hat, U_hat) on all faces (interior, boundary, junction) are
- *     explicit global DOFs appended after the cell block.
- *   - Junction coupling is written as residual equations for those DOFs;
- *     no nested local Newton solve is needed.
+ * Trace (A_hat, U_hat) now lives on `trace_dof_handler` with
+ *  FESystem(FE_FaceQ(trace_degree), 2). face_trace_dofs()
+ *  The global solution vector layout is:
  *   - Solution vector layout: [ cell block (DGQ) | trace block ]
  * --------------------------------------------------------------------------
  */
@@ -30,10 +28,14 @@
 #include <algorithm>
 #include <cmath>
 #include <iomanip>
+#include <sstream>
+#include <fstream>
 
 #include "vtk_utils.h"
 
-// Main class implementation
+// ==========================================================================
+// Constructors for scratch and copy data
+// =========================================================================
 template <int dim, int spacedim>
 BloodFlowSystem<dim, spacedim>::BloodFlowSystem()
   : par("Blood Flow Parameters",
@@ -63,6 +65,7 @@ BloodFlowSystem<dim, spacedim>::BloodFlowSystem()
   , computing_timer(std::cout, TimerOutput::summary, TimerOutput::wall_times)
 {
   add_parameter("Finite element degree", fe_degree);
+  //add_parameter("Trace finite element degree", trace_degree); 
   add_parameter("Problem constants", constants);
   add_parameter("Output filename", output_filename);
   add_parameter("Use direct solver", use_direct_solver);
@@ -508,6 +511,21 @@ BloodFlowSystem<dim, spacedim>::setup_system()
             std::max(vessel_s_bounds[vid].second, smax_cell);
         }
     }
+
+  std::cout << "\n=== vessel lengths: solver vs Table-1 ===\n";
+  std::cout << "  vid   L_solver[mm]\n";
+  for (const auto &[vid, b] : vessel_s_bounds)
+    std::cout << "  " << std::setw(3) << vid << "   " << std::setw(10)
+              << (b.second - b.first) * 1000.0 << "\n";
+  for (const auto &cell : dof_handler.active_cell_iterators())
+    if (cell->material_id() == 0)
+      {
+        const auto dh = compute_directional_vector(cell);
+        std::cout << "v0=" << cell->vertex(0) << "  v1=" << cell->vertex(1)
+                  << "  |v1-v0|=" << cell->vertex(0).distance(cell->vertex(1))
+                  << "  d_hat=" << dh << "  s0=" << (cell->vertex(0) * dh)
+                  << "  s1=" << (cell->vertex(1) * dh) << "\n";
+      }
   // ---- FE space (cell unknowns only) ---------------------------------------
   if (!fe)
     fe = std::make_unique<FESystem<dim, spacedim>>(
@@ -644,8 +662,8 @@ BloodFlowSystem<dim, spacedim>::compute_initial_solution(Vector<double> &dst,
                    !is_junction_face(cell->id(), f))
             {
               const double ad_local = compute_a_d_local(cell);
-              // Interior: average area, zero velocity (flux = A*U*bn = 0 ✓)
-              const unsigned int vid_nb = cell->neighbor(f)->material_id();
+              // Interior: average area, zero velocity (flux = A*U*bn = 0 )
+             
               dst[td.a_hat_dof] =
                 0.5 * (ad_local + compute_a_d_at_face(cell->neighbor(f), f));
               dst[td.u_hat_dof] = 0.0;
@@ -874,59 +892,9 @@ BloodFlowSystem<dim, spacedim>::build_per_cell_mass_inv()
     }
 }
 
-// ============================================================================
-// CSV probe output for 37-artery benchmark validation
-// (Boileau et al. 2015 / Alastruey et al. 2011)
-//
-// Outputs P [kPa] and Q [ml/s] at the midpoint of 8 selected vessels.
-//
-// Add these members to blood_flow_system.h:
-//
-//   std::ofstream csv_P_, csv_Q_;
-//   std::vector<std::pair<unsigned int, Point<spacedim>>> probe_targets_;
-//   // (vessel_id, coarse_midpoint) for each probe
-//
-//   void open_csv_files();
-//   void write_csv_row(const double t, const Vector<double> &sol);
-//   void close_csv_files();
-// ============================================================================
-
-// ---------- Probe definitions -----------------------------------------------
-// vessel_id from the 37-artery VTK, label for CSV header
-struct ProbeSpec
-{
-  unsigned int vessel_id;
-  const char  *label;
-  double       mid_x, mid_y, mid_z; // coarse-mesh midpoint (from VTK)
-};
-
-// static const std::vector<ProbeSpec> PROBES_37 = {
-//   {9, "AorticArchII", -0.106500, -0.108000, 0.0},
-//   {16, "ThoracicAortaII", 0.000000, -0.384000, 0.0},
-//   {10, "LSubclavianI", -0.456450, -0.142050, 0.0},
-//   {28, "RIliacFemoralII", 0.624900, -1.668300, 0.0},
-//   {13, "LUlnar", -1.435950, -0.314550, 0.0},
-//   {33, "RAnteriorTibial", 1.275000, -2.560650, 0.0},
-//   {6, "RUlnar", 1.303950, -0.302550, 0.0},
-//   {20, "Splenic", 0.3820, -0.4347, 0.0},       // avg of vessel 20 and 21 midpoints
-// };
-
-static const std::vector<ProbeSpec> PROBES_37 = {
-  {0, "AorticArchI", 0.000000, -0.037207, 0.0},
-  {35, "ThoAortaIII", 0.013168, -0.158469, 0.0},
-  {54, "AbdomAortaV", 0.117062, -0.377010, 0.0},
-  {4, "RightCCA", 0.065320, -0.127091, 0.0},
-  {51, "RightRenal", 0.092285, -0.322537, 0.0},
-  {55, "RightCommonIliac", 0.153520, -0.423788, 0.0},
-  {15, "RightICA", 0.166650, -0.160293, 0.0},
-  {9, "RightRadial", 0.434901, -0.451982, 0.0},
-  {58, "RightInternalIliac", 0.212420, -0.463480, 0.0},
-  {13, "RightPostInteross", 0.438728, -0.462092, 0.0},
-  {61, "RightFemoralII", 0.379985, -0.665805, 0.0},
-  {63, "RightAntTibial", 0.776402, -0.905581, 0.0},
-};
-
 // ---------- open_csv_files --------------------------------------------------
+// One CSV per vessel:  HDG_IDA_Vessel_<vid>.csv  (ascending vessel id).
+// Each file gets a row [time, P, Q, A, U] at the vessel's arc-length midpoint.
 template <int dim, int spacedim>
 void
 BloodFlowSystem<dim, spacedim>::open_csv_files()
@@ -934,59 +902,40 @@ BloodFlowSystem<dim, spacedim>::open_csv_files()
   const std::string dir =
     output_directory + (output_directory.empty() ? "" : "/");
 
-  // Build header
-  std::string hdr = "time_s";
-  for (const auto &p : PROBES_37)
-    hdr += std::string(",") + p.label;
-  hdr += "\n";
-
-  csv_P_.open(dir + "HDG_IDA_P.csv");
-  csv_P_ << hdr;
-
-  csv_Q_.open(dir + "HDG_IDA_Q.csv");
-  csv_Q_ << hdr;
-
-  // Build probe_targets_: for each probe, find the refined cell whose
-  // midpoint is closest to the coarse midpoint AND has the right material_id.
+  //handles re-entry on a new refinement cycle
+  close_csv_files();
+  csv_vessel_.clear();
   probe_targets_.clear();
-  for (const auto &spec : PROBES_37)
+
+  // 1. Distinct vessel ids present in the mesh. std::set => ascending order,
+  //    which gives ascending file numbering.
+  std::set<unsigned int> vessel_ids;
+  for (const auto &cell : dof_handler.active_cell_iterators())
+    vessel_ids.insert(cell->material_id());
+
+  const std::string hdr = "time_s,P_dynpcm2,Q_cm3ps,A_cm2,U_cmps\n";
+
+  // 2. For each vessel, locate the cell nearest its arc-length midpoint and
+  //   open that vessel's file.
+  for (const unsigned int vid : vessel_ids)
     {
-      Point<spacedim> target;
-      target[0] = spec.mid_x;
-      target[1] = spec.mid_y;
-      if (spacedim > 2)
-        target[2] = spec.mid_z;
+      double     s_mid = 0.0;
+      const auto it    = vessel_s_bounds.find(vid);
+      if (it != vessel_s_bounds.end())
+        s_mid = 0.5 * (it->second.first + it->second.second);
 
-      probe_targets_.emplace_back(spec.vessel_id, target);
-    }
-}
-
-// ---------- write_csv_row ---------------------------------------------------
-// Call this at each output timestep after the solution is updated.
-template <int dim, int spacedim>
-void
-BloodFlowSystem<dim, spacedim>::write_csv_row(const double          t,
-                                              const Vector<double> &sol)
-{
-  csv_P_ << std::scientific << std::setprecision(8) << t;
-  csv_Q_ << std::scientific << std::setprecision(8) << t;
-
-  const unsigned int dofs_per_cell = fe->n_dofs_per_cell();
-
-  for (const auto &[target_vid, target_pt] : probe_targets_)
-    {
-      // Find the refined cell closest to target_pt with matching material_id
       double best_dist = std::numeric_limits<double>::max();
       typename DoFHandler<dim, spacedim>::active_cell_iterator best_cell;
       bool                                                     found = false;
 
       for (const auto &cell : dof_handler.active_cell_iterators())
         {
-          if (cell->material_id() != target_vid)
+          if (cell->material_id() != vid)
             continue;
 
-          const Point<spacedim> mid = cell->center();
-          const double          d   = mid.distance(target_pt);
+          const Tensor<1, spacedim> d_hat = compute_directional_vector(cell);
+          const double              s     = cell->center() * d_hat;
+          const double              d     = std::abs(s - s_mid);
           if (d < best_dist)
             {
               best_dist = d;
@@ -996,50 +945,62 @@ BloodFlowSystem<dim, spacedim>::write_csv_row(const double          t,
         }
 
       if (!found)
-        {
-          csv_P_ << ",NaN";
-          csv_Q_ << ",NaN";
-          continue;
-        }
+        continue; 
 
-      // Evaluate (A, U) at cell midpoint using DG shape functions
-      // For DGQ1: midpoint is at reference coordinate xi = 0.5
-      const Point<dim> xi_mid = (dim == 1) ? Point<dim>(0.5) : Point<dim>();
+      probe_targets_.emplace_back(vid, best_cell);
 
+      std::ofstream &os = csv_vessel_[vid];
+      os.open(dir + "HDG_IDA_Vessel_" + std::to_string(vid) + ".csv");
+      os << hdr;
+    }
+}
+
+// ---------- write_csv_row ---------------------------------------------------
+// Call at each output timestep after the solution is updated.
+template <int dim, int spacedim>
+void
+BloodFlowSystem<dim, spacedim>::write_csv_row(const double          t,
+                                              const Vector<double> &sol)
+{
+  const unsigned int dofs_per_cell = fe->n_dofs_per_cell();
+
+  // Reference-cell midpoint (DGQ, dim==1 -> xi = 0.5).
+  const Point<dim> xi_mid = (dim == 1) ? Point<dim>(0.5) : Point<dim>();
+
+  for (const auto &[vid, cell] : probe_targets_)
+    {
+      std::ofstream &os = csv_vessel_.at(vid);
+
+      // Evaluate (A, U) at the cell midpoint via the DG shape functions.
       std::vector<types::global_dof_index> ldofs(dofs_per_cell);
-      best_cell->get_dof_indices(ldofs);
+      cell->get_dof_indices(ldofs);
 
-      // Evaluate each shape function at xi_mid
       double A_val = 0.0, U_val = 0.0;
       for (unsigned int i = 0; i < dofs_per_cell; ++i)
         {
           const double       phi  = fe->shape_value(i, xi_mid);
           const unsigned int comp = fe->system_to_component_index(i).first;
-          if (comp == 0) // area
-            A_val += sol[ldofs[i]] * phi;
-          else // velocity
-            U_val += sol[ldofs[i]] * phi;
+          if (comp == 0) // area 
+            A_val += sol[ldofs[i]] * phi ;
+          else // velocity 
+            U_val += sol[ldofs[i]] * phi ;
         }
 
-      // Compute pressure [Pa] and convert to [kPa]
-      const unsigned int vid   = best_cell->material_id();
-      // const double       P_Pa  = compute_pressure_value(A_val, vid);
-      const double       P_Pa  = compute_pressure_value(A_val, vid, compute_a_d_local(best_cell));
-      const double       P_kPa = P_Pa * 1.0e-3;
-     // Compute flow rate Q = A * U [m³/s] and convert to [ml/s]
-      // 1 m³/s = 1e6 ml/s
-      
-      const double Q_m3s  = A_val * U_val;
-      const double Q_mlps = Q_m3s * 1.0e6;
+      const double A_cm2 = A_val * 1.0e4;   //cm^2
+      const double U_cmps = U_val * 1.0e2;   //cmps
 
-      csv_P_ << "," << P_kPa;
-      csv_Q_ << "," << Q_mlps;
+        // Pressure [Pa] -> [dyn/cm^2].
+        const double P_Pa =
+          compute_pressure_value(A_val, vid, compute_a_d_local(cell));
+      const double P_dynpcm2 = P_Pa * 10.0;
+
+      // Flow rate Q = A*U [cm^3/s] = [ml/s]  (1 m^3/s = 1e6 ml/s).
+      const double Q_cm3ps = A_val * U_val * 1.0e6;
+
+      os << std::scientific << std::setprecision(8) << t << "," << P_dynpcm2
+         << "," << Q_cm3ps << "," << A_cm2 << "," << U_cmps << "\n";
+      os.flush();
     }
-
-  csv_P_ << "\n";
-  csv_Q_ << "\n";
-  csv_P_.flush();
-  csv_Q_.flush();
 }
 
 // ---------- close_csv_files -------------------------------------------------
@@ -1047,12 +1008,10 @@ template <int dim, int spacedim>
 void
 BloodFlowSystem<dim, spacedim>::close_csv_files()
 {
-  if (csv_P_.is_open())
-    csv_P_.close();
-  if (csv_Q_.is_open())
-    csv_Q_.close();
+  for (auto &kv : csv_vessel_)
+    if (kv.second.is_open())
+      kv.second.close();
 }
-
   // ============================================================================
   // HLL flux (residual)
   // ============================================================================
@@ -1626,7 +1585,7 @@ BloodFlowSystem<dim, spacedim>::close_csv_files()
 
             const types::boundary_id bid = cell->face(f)->boundary_id();
             const unsigned int       vid = cell->material_id();
-            const auto              &vpp = vessel_map.at(vid);
+            
 
             // Interior cell value at face — use y_cell, not y
             fef.reinit(cell, f);
@@ -1806,8 +1765,7 @@ BloodFlowSystem<dim, spacedim>::close_csv_files()
           {
             const auto        &hf  = J.half_faces[i];
             const unsigned int vid = hf.cell->material_id();
-            const auto        &vpp = vessel_map.at(vid);
-
+            
             // Interior cell value at the junction face — use y_cell
             fef.reinit(hf.cell, hf.face_no);
             std::vector<double> Av(1), Uv(1);
@@ -1848,7 +1806,7 @@ BloodFlowSystem<dim, spacedim>::close_csv_files()
         {
           const double a_d0 = compute_a_d_at_face(J.half_faces[0].cell, J.half_faces[0].face_no);
           const double H0 =
-            // 0.5 * U_hat[0] * U_hat[0] +
+           // 0.5 * U_hat[0] * U_hat[0] +
             compute_pressure_value(A_hat[0],
                                    J.half_faces[0].cell->material_id(), a_d0) /
               rho;
@@ -1858,7 +1816,7 @@ BloodFlowSystem<dim, spacedim>::close_csv_files()
               const double a_di = compute_a_d_at_face(J.half_faces[i].cell,
                                                       J.half_faces[i].face_no);
               const double Hi =
-                // 0.5 * U_hat[i] * U_hat[i] +
+            //    0.5 * U_hat[i] * U_hat[i] +
                 compute_pressure_value(A_hat[i],
                                        J.half_faces[i].cell->material_id(), a_di) /
                   rho;
@@ -2968,11 +2926,13 @@ BloodFlowSystem<dim, spacedim>::close_csv_files()
               << " (cell DOFs + global face traces) ===\n";
     for (unsigned int cycle = 0; cycle < n_refinement_cycles; ++cycle)
       {
-        std::cout << "\n--- Cycle " << cycle << " ---\n";
+        std::cout << "\n--- Refinement cycle " << cycle << " ---\n";
 
+        // ====================================================================
+        // 1. MESH + VTK DATA (only on the first refinement cycle)
+        // ====================================================================
         if (cycle == 0)
           {
-            // Load mesh and VTK data
             dealii::GridIn<dim, spacedim> grid_in;
             grid_in.attach_triangulation(triangulation);
             std::cout << "Reading VTK file: " << vtk_file_path << std::endl;
@@ -2991,7 +2951,7 @@ BloodFlowSystem<dim, spacedim>::close_csv_files()
             VTKUtils::read_cell_data(vtk_file_path, "L", cell_L);
             VTKUtils::read_cell_data(vtk_file_path, "r_d", cell_r_d);
 
-            // Tapered vessel radii; skip if absent.
+            // Tapered radii are optional.
             try
               {
                 VTKUtils::read_cell_data(vtk_file_path, "r_in", cell_r_in);
@@ -3009,7 +2969,6 @@ BloodFlowSystem<dim, spacedim>::close_csv_files()
                 cell_r_out.reinit(0);
               }
 
-
             VTKUtils::read_vertex_data(vtk_file_path, "R1", point_R1);
             VTKUtils::read_vertex_data(vtk_file_path, "R2", point_R2);
             VTKUtils::read_vertex_data(vtk_file_path, "C", point_C);
@@ -3018,30 +2977,28 @@ BloodFlowSystem<dim, spacedim>::close_csv_files()
                                        "boundary_id",
                                        point_boundary_id);
 
-            // Set material IDs and boundary IDs from VTK point data
+            // Material IDs + boundary IDs from VTK.
             {
               unsigned int cell_idx = 0;
               for (auto &cell : triangulation.active_cell_iterators())
                 {
                   cell->set_material_id(
                     static_cast<unsigned int>(cell_vessel_ids[cell_idx]));
-
                   for (unsigned int f = 0;
                        f < GeometryInfo<dim>::faces_per_cell;
                        ++f)
                     if (cell->face(f)->at_boundary())
                       {
-                        const unsigned int v_idx =
-                          cell->face(f)->vertex_index(0);
+                        const unsigned int v = cell->face(f)->vertex_index(0);
                         cell->face(f)->set_boundary_id(
                           static_cast<types::boundary_id>(
-                            point_boundary_id[v_idx]));
+                            point_boundary_id[v]));
                       }
                   ++cell_idx;
                 }
             }
 
-            // Populate RCR map from coarse mesh
+            // RCR map.
             rcr_map.clear();
             for (const auto &cell : triangulation.active_cell_iterators())
               for (unsigned int f = 0; f < GeometryInfo<dim>::faces_per_cell;
@@ -3051,14 +3008,12 @@ BloodFlowSystem<dim, spacedim>::close_csv_files()
                     const types::boundary_id bid = cell->face(f)->boundary_id();
                     if (bid == 0)
                       continue; // inflow
-                    const unsigned int       v = cell->face(f)->vertex_index(0);
-
-                    RCRPhysics rcr;
+                    const unsigned int v = cell->face(f)->vertex_index(0);
+                    RCRPhysics         rcr;
                     rcr.R1    = point_R1[v];
                     rcr.R2    = point_R2[v];
                     rcr.C     = point_C[v];
                     rcr.P_out = point_P_out[v];
-
                     if (rcr.R2 > 0.0)
                       rcr_map[bid] = rcr;
                   }
@@ -3070,11 +3025,13 @@ BloodFlowSystem<dim, spacedim>::close_csv_files()
             triangulation.refine_global(1);
           }
 
+        // ====================================================================
+        // 2. SYSTEM SETUP
+        // ====================================================================
         setup_system();
         open_csv_files();
         initialize_terminal_capacitors();
         compute_theoretical_peak(theoretical_peak);
-        // Build per-cell mass inverses (replaces global mass matrix)
         build_per_cell_mass_inv();
         compute_initial_solution(solution, ida_parameters.initial_time);
         initialize_trace_unknowns(solution, ida_parameters.initial_time);
@@ -3127,7 +3084,7 @@ BloodFlowSystem<dim, spacedim>::close_csv_files()
 
           const double abs_err = diff.l2_norm();
           const double rel_err = abs_err / std::max(1.0, fd.l2_norm());
-          double                  worst   = 0.0;
+          double       worst   = 0.0;
           types::global_dof_index worst_i = 0;
           for (types::global_dof_index i = 0; i < n_total_dofs; ++i)
             {
@@ -3169,37 +3126,32 @@ BloodFlowSystem<dim, spacedim>::close_csv_files()
                     goto done;
                   }
               }
-      done:;
-        std::cout << "\n=====================================\n";
-        std::cout << "Central FD Jacobian check\n";
-        std::cout << "eps        = " << eps << "\n";
-        std::cout << "||Jv-FD||  = " << abs_err << "\n";
-        std::cout << "||FD||     = " << fd.l2_norm() << "\n";
-        std::cout << "relative   = " << rel_err << "\n";
-        std::cout << "=====================================\n";
+        done:;
+          std::cout << "\n=====================================\n";
+          std::cout << "Central FD Jacobian check\n";
+          std::cout << "eps        = " << eps << "\n";
+          std::cout << "||Jv-FD||  = " << abs_err << "\n";
+          std::cout << "||FD||     = " << fd.l2_norm() << "\n";
+          std::cout << "relative   = " << rel_err << "\n";
+          std::cout << "=====================================\n";
         };
         check_jacobian_fd(solution);
-       // open_csv_files();
 
-        // ---- IDA setup
-        // -----------------------------------------------------------
+        // ---- IDA setup---- 
         ida_parameters.ic_type =
           SUNDIALS::IDA<Vector<double>>::AdditionalData::use_y_diff;
-        // ida_parameters.ic_type =
-        //   SUNDIALS::IDA<Vector<double>>::AdditionalData::use_y_dot;
         SUNDIALS::IDA<Vector<double>> ida(ida_parameters);
 
-        // vectoor allocation
         ida.reinit_vector = [this](Vector<double> &v) {
           v.reinit(n_total_dofs);
         };
 
         ida.differential_components = [this]() -> IndexSet {
           IndexSet is(n_total_dofs);
-          is.add_range(0, n_cell_dofs); // only cell DOFs carry d/dt
+          is.add_range(0, n_cell_dofs); // cell DOFs carry d/dt
           if (n_rcr_dofs > 0)
-            is.add_range(n_trace_end, n_total_dofs);
-          return is;                    // trace DOFs are algebraic
+            is.add_range(n_trace_end, n_total_dofs); // capacitor DOFs do too
+          return is;                                 // trace DOFs are algebraic
         };
 
         // Residual F(t, y, ydot) = 0
@@ -3232,113 +3184,22 @@ BloodFlowSystem<dim, spacedim>::close_csv_files()
           return 0;
         };
 
-        // Output at each accepted step
         ida.output_step = [this](const double          t,
-                                 const Vector<double> &sol,
-                                 const Vector<double> & /*ydot*/,
-                                 const unsigned int step_number) {
-          const double dt =
-            (time > 0.0) ? (t - time) : ida_parameters.initial_step_size;
+                                    const Vector<double> &sol,
+                                    const Vector<double> & /*ydot*/,
+                                    const unsigned int step_number) {
           time = t;
-          auto report_state = [this](double t, const Vector<double> &y) {
-            double Amin = 1e300, Umax = 0.0;
-            // initialize from the first active cell so neither is ever
-            // "invalid"
-            CellId worstA = dof_handler.begin_active()->id();
-            CellId worstU = worstA;
-
-            for (const auto &cell : dof_handler.active_cell_iterators())
-              {
-                std::vector<types::global_dof_index> dofs(
-                  fe->n_dofs_per_cell());
-                cell->get_dof_indices(dofs);
-                for (unsigned int i = 0; i < dofs.size(); ++i)
-                  {
-                    const unsigned int comp =
-                      fe->system_to_component_index(i).first;
-                    if (comp == 0)
-                      {
-                        if (y[dofs[i]] < Amin)
-                          {
-                            Amin   = y[dofs[i]];
-                            worstA = cell->id();
-                          }
-                      }
-                    else
-                      {
-                        if (std::abs(y[dofs[i]]) > Umax)
-                          {
-                            Umax   = std::abs(y[dofs[i]]);
-                            worstU = cell->id();
-                          }
-                      }
-                  }
-              }
-
-            double Pc_min = 0.0, Pc_max = 0.0;
-            if (!rcr_pc_dof.empty())
-              {
-                Pc_min = 1e300;
-                Pc_max = -1e300;
-                for (const auto &[bid, pc_dof] : rcr_pc_dof)
-                  {
-                    Pc_min = std::min(Pc_min, y[pc_dof]);
-                    Pc_max = std::max(Pc_max, y[pc_dof]);
-                  }
-              }
-
-            std::cout << "  [t=" << t << "]  min A=" << Amin << " ("
-                      << worstA.to_string() << ")"
-                      << "  max|U|=" << Umax << " (" << worstU.to_string()
-                      << ")"
-                      << "  Pc=[" << Pc_min << ", " << Pc_max << "]\n";
-
-            // the five newly-activated outlets
-            for (int b : {9, 10, 12, 24, 28})
-              if (rcr_pc_dof.count(b))
-                std::cout << "    bid" << b << " Pc=" << y[rcr_pc_dof.at(b)]
-                          << "\n";
-          };
-          report_state(t, sol);
           compute_pressure(sol, pressure);
           compute_theoretical_peak(theoretical_peak);
           output_results(sol, pressure, theoretical_peak, step_number);
           write_csv_row(t, sol);
         };
 
-        // ---- Compute consistent initial ydot
-
+        // ====================================================================
+        // 6. SOLVE
+        // ====================================================================
         solution_dot = 0.0;
-        // {
-        //   Vector<double> F0(n_total_dofs);
-        //   assemble_cell_residuals(ida_parameters.initial_time, solution, F0);
-        //   //trace equations are zero at initial state, by doing initialize_trace_unknow() we don't need them 
-
-        //   const unsigned int n_dpc = fe->n_dofs_per_cell();
-        //   Vector<double>     loc_F(n_dpc), loc_ydot(n_dpc);
-        //   for (const auto &cell : dof_handler.active_cell_iterators())
-        //     {
-        //       std::vector<types::global_dof_index> ldofs(n_dpc);
-        //       cell->get_dof_indices(ldofs);
-        //       for (unsigned int i = 0; i < n_dpc; ++i)
-        //         loc_F(i) = F0[ldofs[i]];
-        //       per_cell_mass_inv.at(cell->id()).vmult(loc_ydot, loc_F);
-        //       for (unsigned int i = 0; i < n_dpc; ++i)
-        //         solution_dot[ldofs[i]] = loc_ydot(i);
-        //     }
-
-        //   std::cout << "Initial ||ydot_cell||_inf = "
-        //             << *std::max_element(solution_dot.begin(),
-        //                                  solution_dot.begin() + n_cell_dofs,
-        //                                  [](double a, double b) {
-        //                                    return std::abs(a) < std::abs(b);
-        //                                  })
-        //             << "\n";
-        // }
-
-        // ---- Solve
-        // ---------------------------------------------------------------
-        time = ida_parameters.initial_time;
+        time         = ida_parameters.initial_time;
         ida.solve_dae(solution, solution_dot);
         close_csv_files();
         compute_pressure(solution, pressure);

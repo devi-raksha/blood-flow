@@ -15,7 +15,7 @@ subsection BloodFlowSystem<1, 3>
   set Use junction mesh                    = true
   set Verbosity (console depth)            = 0
   subsection IDA parameters
-    set Final time                        = 17.00
+    set Final time                        = 20.00
     set Initial time                      = 0
     set Time interval between each output = 0.001
     subsection Error control
@@ -32,7 +32,7 @@ subsection BloodFlowSystem<1, 3>
 end
 subsection Blood Flow Parameters
   set Density (rho)                                   = 1050
-  set Profile constant for friction term (xi)         = 9
+  set Profile constant for friction term (xi)         = 11
   set Reflection coefficient at outflow boundary (Rt) = 0
   set Tube law exponent (m)                           = 0.5
   set Viscosity coefficient (mu)                      = 0.0025
