@@ -1,5 +1,5 @@
 {
-  "equations": "implemented volume equations in source/metric_flow_system.cc",
+  "equations": "implemented volume equations in source/blood_flow_system.cc",
   "profiles": {
     "p1": {
       "area": "1.0*a0*(0.1*sin(2*PI*x)*cos(2*PI*t/5) + 1.0)",

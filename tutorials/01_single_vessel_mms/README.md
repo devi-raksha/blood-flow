@@ -16,7 +16,7 @@ quantities cannot currently be referenced by a user RHS function. In addition,
 the local checkout has not had a clean build-and-run of these templates.
 
 `tools/generate_mms_expressions.py` derives the mass and momentum sources from
-the equations in `source/metric_flow_system.cc` with SymPy. Its output uses
+the equations in `source/blood_flow_system.cc` with SymPy. Its output uses
 FunctionParser expression syntax and records this constant-map blocker rather
 than silently using a different pressure law. The templates retain zero RHS
 values as a safe parser-backed baseline until that source interface is made

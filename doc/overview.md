@@ -1,6 +1,6 @@
 # Overview
 
-This project solves a one-dimensional blood-flow model on a network of line segments embedded in three-dimensional space. The current application is `apps/metric_flow_x.cc`, which instantiates `MetricFlowSystem<1, 3>` and reads a deal.II parameter file before constructing the mesh and running IDA.
+This project solves a one-dimensional blood-flow model on a network of line segments embedded in three-dimensional space. The current application is `apps/blood_flow.cc`, which instantiates `BloodFlowSystem<1, 3>` and reads a deal.II parameter file before constructing the mesh and running IDA.
 
 ## Unknown layout
 

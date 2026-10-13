@@ -53,7 +53,7 @@ junction with K incident vessels, the implementation assembles exactly `2K` rows
 one conservation row, `K-1` total-head rows, and K compatibility rows. Here K is
 computed from the active graph (37 vessel segments overall); the equation and
 orientation details remain those implemented by
-`assemble_trace_junction_equations` in `source/metric_flow_system.cc`. This section
+`assemble_trace_junction_equations` in `source/blood_flow_system.cc`. This section
 records the source contract and does not introduce an alternate equation set.
 
 ## 8. Parameter configuration

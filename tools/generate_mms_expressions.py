@@ -122,7 +122,7 @@ def main(argv=None) -> int:
         names = PROFILES if args.profile == "all" else [args.profile]
         payload = {
             "schema": "blood-flow-mms-v1",
-            "equations": "implemented volume equations in source/metric_flow_system.cc",
+            "equations": "implemented volume equations in source/blood_flow_system.cc",
             "profiles": derive_all(names),
         }
     except RuntimeError as exc:
