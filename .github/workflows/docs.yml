@@ -21,7 +21,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - uses: actions/configure-pages@v5
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        if: github.repository == 'luca-heltai/metric-flow-x' && github.event_name == 'push' && github.ref == 'refs/heads/main'
 
       - uses: actions/setup-python@v6
         with:
@@ -39,12 +39,12 @@ jobs:
         run: ./scripts/build_doc.sh
 
       - uses: actions/upload-pages-artifact@v4
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        if: github.repository == 'luca-heltai/metric-flow-x' && github.event_name == 'push' && github.ref == 'refs/heads/main'
         with:
           path: build/docs/site
 
   deploy:
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: github.repository == 'luca-heltai/metric-flow-x' && github.event_name == 'push' && github.ref == 'refs/heads/main'
     needs: build
     runs-on: ubuntu-latest
     environment:
