@@ -7,6 +7,7 @@
 
 overview
 getting-started
+build-and-run
 math
 tutorials
 api
