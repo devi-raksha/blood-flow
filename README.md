@@ -80,6 +80,24 @@ target_link_libraries(application PRIVATE MetricFlowX::metric_flow_x)
 Headers are installed below `include/metric_flow_x/`, libraries below `lib/`,
 and the standalone executable below `bin/`.
 
+## Large network datasets
+
+The generated vascular-network datasets are distributed as a GitHub Release asset so they do not inflate the Git checkout. The archive is about 399 MB; its contents occupy about 555 MB when extracted.
+
+From the repository root, run:
+
+```bash
+bash scripts/download_datasets.sh
+```
+
+The script downloads `blood-flow-datasets-v0.1.0.tar.gz` from release `v0.1.0` and extracts the files into their expected `notebooks/` paths. The downloaded data paths are ignored by Git.
+
+To extract into another directory, pass it as the first argument:
+
+```bash
+bash scripts/download_datasets.sh /path/to/dataset-root
+```
+
 ## Testing
 
 ```bash
