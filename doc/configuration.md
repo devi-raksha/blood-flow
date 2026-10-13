@@ -12,6 +12,7 @@ The following entries are registered by `BloodFlowSystem` in `include/metric_flo
 | `Problem constants` | Constants parameter group used by the model. |
 | `Output filename` | Base name for generated visualization output. |
 | `Output directory` | Directory prefix for generated output; empty means the current working directory. |
+| `Output time interval` | Positive finite values set the interval between written outputs; zero writes at every IDA callback. Positive intervals must be representable at the configured time scale. |
 | `Use direct solver` | Select the direct PETSc/ MUMPS or Trilinos direct path; `false` selects GMRES+ILU. |
 | `Number of refinement cycles` | Number of solve/refinement cycles in `run()`. |
 | `Number of global refinement` | Initial global mesh refinement count. |

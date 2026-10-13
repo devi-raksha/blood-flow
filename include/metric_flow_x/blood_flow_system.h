@@ -755,6 +755,8 @@ namespace MetricFlowX
     double gamma = 1; // 0.5*gamma*(U^2) term in total pressure continuity at
                       // junctions chnage only for 56 arteries <= 0.8
     double time = 0.0;
+    // Positive values throttle file output; zero writes every IDA callback.
+    double time_interval = 0.0;
 
     NumericalFluxType numerical_flux_type     = NumericalFluxType::HLL;
     std::string       numerical_flux_type_str = "HLL";

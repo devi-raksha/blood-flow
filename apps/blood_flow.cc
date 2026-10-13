@@ -21,8 +21,11 @@
 
 #include <metric_flow_x/blood_flow_system.h> // header exposing BloodFlowSystem
 
+#include <algorithm>
+#include <cmath>
 #include <cstdlib>
 #include <iostream>
+#include <limits>
 #include <stdexcept> // for std::invalid_argument
 
 using namespace dealii;
@@ -240,15 +243,55 @@ namespace MetricFlowX
             return 0;
           };
 
-          ida.output_step = [&problem](const double      t,
-                                       const VectorType &sol,
-                                       const VectorType & /*ydot*/,
-                                       const unsigned int step_number) {
-            problem.time = t;
-            problem.compute_pressure(sol, problem.pressure_);
-            problem.output_results(sol, problem.pressure_, step_number);
-            problem.write_csv_row(t, sol);
-          };
+          const double initial_output_time =
+            problem.ida_parameters.initial_time;
+          const double final_output_time = problem.ida_parameters.final_time;
+          double       next_output_time  = initial_output_time;
+          unsigned int output_number     = 0;
+          ida.output_step =
+            [&problem,
+             initial_output_time,
+             final_output_time,
+             &next_output_time,
+             &output_number](const double      t,
+                             const VectorType &sol,
+                             const VectorType & /*ydot*/,
+                             const unsigned int /*step_number*/) {
+              problem.time = t;
+
+              const double tolerance =
+                16.0 * std::numeric_limits<double>::epsilon() *
+                std::max(std::abs(t), std::abs(next_output_time));
+              const double final_time_tolerance =
+                16.0 * std::numeric_limits<double>::epsilon() *
+                std::max(std::abs(t), std::abs(final_output_time));
+              const bool output_due =
+                problem.time_interval == 0.0 || t >= next_output_time ||
+                next_output_time - t <= tolerance || t >= final_output_time ||
+                final_output_time - t <= final_time_tolerance;
+              if (!output_due)
+                return;
+
+              problem.compute_pressure(sol, problem.pressure_);
+              problem.output_results(sol, problem.pressure_, output_number++);
+              problem.write_csv_row(t, sol);
+
+              if (problem.time_interval > 0.0)
+                {
+                  const long double elapsed =
+                    (static_cast<long double>(t + tolerance) -
+                     initial_output_time) /
+                    problem.time_interval;
+                  const long double intervals = std::floor(elapsed) + 1.0L;
+                  next_output_time            = static_cast<double>(
+                    static_cast<long double>(initial_output_time) +
+                    intervals * problem.time_interval);
+                  if (next_output_time <= t)
+                    next_output_time =
+                      std::nextafter(t,
+                                     std::numeric_limits<double>::infinity());
+                }
+            };
 
           problem.solution_dot = 0.0;
           problem.time         = problem.ida_parameters.initial_time;
