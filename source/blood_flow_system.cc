@@ -106,6 +106,11 @@ namespace MetricFlowX
     add_parameter("Gamma (Total pressure factor)", gamma);
     add_parameter("Verbosity (console depth)", verbosity);
     add_parameter("Output directory", output_directory);
+    add_parameter(
+      "Output time interval",
+      time_interval,
+      "Positive value sets the interval between written outputs; zero writes "
+      "at every IDA callback.");
     add_parameter("Numerical flux type", numerical_flux_type_str);
     add_parameter("Use Riemann Invariants", use_riemann_invariants);
     add_parameter("Use junction mesh", use_junction_mesh);
@@ -133,6 +138,17 @@ namespace MetricFlowX
                                   ParameterHandler::Short,
                                   this->prm,
                                   ParameterHandler::Short);
+
+    AssertThrow(std::isfinite(time_interval) && time_interval >= 0.0,
+                ExcMessage("Output time interval must be finite and "
+                           "non-negative."));
+    if (time_interval > 0.0)
+      AssertThrow(ida_parameters.initial_time + time_interval >
+                      ida_parameters.initial_time &&
+                    ida_parameters.final_time - time_interval <
+                      ida_parameters.final_time,
+                  ExcMessage("Output time interval is too small to be "
+                             "represented at the simulation time scale."));
 
     // deallog is written by rank 0 only; every other rank stays silent so that
     // the console is readable and the log file is not written K times over.

@@ -4,8 +4,8 @@ The top-level directories have the following roles:
 
 | Path | Contents |
 |---|---|
-| `apps/` | Application entry points. The current target is `metric_flow_x` from `metric_flow_x.cc`. |
-| `include/` | Public headers, including the `MetricFlowSystem` declaration and numerical data structures. |
+| `apps/` | Application entry points. The current target is `blood_flow` from `blood_flow.cc`. |
+| `include/` | Public headers under `metric_flow_x/`, including `BloodFlowSystem` and its supporting data structures. |
 | `source/` | C++ implementations for assembly, fluxes, IDA callbacks, output, constants, and VTK utilities. |
 | `parameters/` | Source parameter files/templates, VTK meshes, notebooks, and reference assets. |
 | `build/` | CMake build tree (generated or local); configured parameter copies are under `build/parameters/`. |
@@ -15,4 +15,4 @@ The top-level directories have the following roles:
 | `latex/` | Repository TeX manuscript sources. This documentation task does not modify them. |
 | `NumData/`, `notebooks/` | Additional data and exploratory/reference material; |
 
-CMake uses `file(GLOB ...)` for the current source and application lists, so adding a matching `.cc` file changes the build target set after reconfiguration. `tests/CMakeLists.txt` delegates test registration to deal.II's `DEAL_II_PICKUP_TESTS()` macro.
+CMake lists the library sources and application target explicitly. `tests/CMakeLists.txt` delegates test registration to deal.II's `DEAL_II_PICKUP_TESTS()` macro.

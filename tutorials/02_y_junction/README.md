@@ -56,7 +56,7 @@ Let vessel 0 be the first half-face and vessels 1 and 2 the other half-faces;
 Here the implementation defines `H_i = (gamma/2) Uhat_i^2 + p(Ahat_i)/rho`,
 `W_i = U_i + s_i 4(c_i - c0_i)`, and evaluates `c` with the source tube
 law. This is a transcription of `assemble_trace_junction_equations` in
-`source/metric_flow_system.cc`; it is not a replacement equation set.
+`source/blood_flow_system.cc`; it is not a replacement equation set.
 
 ## 8. Parameter configuration
 

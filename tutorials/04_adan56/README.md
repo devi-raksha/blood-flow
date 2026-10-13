@@ -60,7 +60,7 @@ The source assembles the network junction equations for each junction from the
 active graph. This tutorial records the source contract for the 77-segment
 network; it does not introduce an alternate equation set or claim mathematical
 verification. Equation and orientation details remain those implemented by
-`assemble_trace_junction_equations` in `source/metric_flow_system.cc`.
+`assemble_trace_junction_equations` in `source/blood_flow_system.cc`.
 
 ## 8. Parameter configuration
 

@@ -52,3 +52,11 @@ doc/api/
 =*
 # Local Pi runtime state
 .atl/
+
+# Large vascular-network datasets downloaded from GitHub Releases
+/notebooks/Networks-by-svv/trees/
+/notebooks/binary_tree_2047.vtk
+/notebooks/binary_tree_255.vtk
+/notebooks/graphExport.xml
+/notebooks/vascular_tree_physics.vtk
+/notebooks/very_large_vascular_tree_physics.vtk

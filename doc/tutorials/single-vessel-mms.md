@@ -3,7 +3,7 @@
 ## Problem solved
 
 This tutorial prepares a one-vessel manufactured-solution (MMS) convergence
-study for the current `MetricFlowSystem<1, 3>` implementation. The checked-in
+study for the current `BloodFlowSystem<1, 3>` implementation. The checked-in
 assets contain three exact-solution/RHS profiles (`p1`, `p2`, and `p3`), three
 polynomial degrees, a one-cell single-vessel VTK input, and an immutable TXT
 reference report. The purpose of this page is to make those inputs and their
@@ -14,7 +14,7 @@ The reference tables below are parsed from `convergence.txt`.
 ## Mathematical model and active assumptions
 
 The source-backed generator derives sources from the volume equations assembled
-in [`source/metric_flow_system.cc`](../../source/metric_flow_system.cc):
+in [`source/blood_flow_system.cc`](../../source/blood_flow_system.cc):
 
 \[
   A_t + (A U)_x = f_A,

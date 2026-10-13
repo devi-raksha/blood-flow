@@ -11,6 +11,6 @@ Selected entries can be cited from MyST using the keys in the bibliography, for 
 
 Repository-specific implementation references:
 
-- The executable entry point is `apps/metric_flow_x.cc`.
-- The model and IDA callbacks are implemented in `source/metric_flow_system.cc` and declared in `include/metric_flow_system.h`.
+- The executable entry point is `apps/blood_flow.cc`.
+- The model and IDA callbacks are implemented in `source/blood_flow_system.cc` and declared in `include/metric_flow_x/blood_flow_system.h`.
 - The repository's explanatory equations are in [Mathematics](math.md); the TeX manuscript remains under `latex/`.
