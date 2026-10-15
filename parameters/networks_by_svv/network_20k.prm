@@ -16,7 +16,7 @@ subsection BloodFlowSystem<1, 3>
   set Use junction mesh                    = true
   set Verbosity (console depth)            = 1
   subsection IDA parameters
-    set Final time                        = 5
+    set Final time                        = 2
     set Initial time                      = 0
     set Time interval between each output = 0.001
     subsection Error control

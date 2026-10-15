@@ -77,83 +77,117 @@ namespace MetricFlowX
           problem.time = problem.ida_parameters.initial_time;
 
           auto check_jacobian_fd = [&problem](const VectorType &y0) {
-            const double t     = problem.time;
-            const double eps   = 1e-7;
-            const double alpha = 0.0;
+            using Comp          = typename Problem::Component;
+            const MPI_Comm comm = problem.mpi_communicator_;
+            const double   t    = problem.time;
+            const double   eps  = 1e-6; // relative perturbation
 
-            VectorType ydot0(problem.locally_owned_dofs_,
-                             problem.mpi_communicator_);
+            VectorType ydot0(problem.locally_owned_dofs_, comm);
             ydot0 = 0.0;
+            problem.assemble_jacobian(t, y0, ydot0, /*alpha=*/0.0);
 
-            problem.assemble_jacobian(t, y0, ydot0, alpha);
+            // Global max |y| over a block: used as a floor for unknowns that
+            // are (close to) zero, e.g. the velocities at rest at t = 0.
+            auto block_max = [&](const IndexSet &set) {
+              double m = 0.0;
+              for (const auto i : set)
+                m = std::max(m, std::abs(y0(i)));
+              return Utilities::MPI::max(m, comm);
+            };
 
-            VectorType v(problem.locally_owned_dofs_,
-                         problem.mpi_communicator_);
+            struct ColBlock
+            {
+              std::string     name;
+              const IndexSet *set;
+              double          floor;
+            };
+            const IndexSet &sA  = problem.component_dofs(Comp::area);
+            const IndexSet &sU  = problem.component_dofs(Comp::velocity);
+            const IndexSet &sAh = problem.component_dofs(Comp::area_trace);
+            const IndexSet &sUh = problem.component_dofs(Comp::velocity_trace);
+
+            const std::vector<ColBlock> col_blocks = {
+              {"A", &sA, 1e-3 * block_max(sA)},
+              {"U", &sU, std::max(1e-3, 1e-3 * block_max(sU))},
+              {"A_hat", &sAh, 1e-3 * block_max(sAh)},
+              {"U_hat", &sUh, std::max(1e-3, 1e-3 * block_max(sUh))},
+              {"Pc", &problem.rcr_dofs_owned, 1.0}};
+
+            problem.pcout
+              << "\n========== FD Jacobian check (scaled, eps = " << eps
+              << ") ==========\n"
+              << "  column   | rel.err CELL rows | TRACE rows | RCR rows\n";
+
             std::srand(problem.this_mpi_process + 1);
-            for (const auto i : problem.locally_owned_dofs_)
-              v(i) = 2.0 * std::rand() / double(RAND_MAX) - 1.0;
-            v.compress(VectorOperation::insert);
 
-            VectorType yp(y0), ym(y0);
-            yp.add(eps, v);
-            ym.add(-eps, v);
+            for (const auto &cb : col_blocks)
+              {
+                // v perturbs only this column block, each entry scaled to the
+                // size of the unknown it perturbs.
+                VectorType v(problem.locally_owned_dofs_, comm);
+                v = 0.0;
+                for (const auto i : *cb.set)
+                  {
+                    const double r = 2.0 * std::rand() / double(RAND_MAX) - 1.0;
+                    v(i)           = r * std::max(std::abs(y0(i)), cb.floor);
+                  }
+                v.compress(VectorOperation::insert);
+                if (v.l2_norm() == 0.0)
+                  continue; // e.g. no capacitor unknowns
 
-            VectorType Fp(problem.locally_owned_dofs_,
-                          problem.mpi_communicator_);
-            VectorType Fm(problem.locally_owned_dofs_,
-                          problem.mpi_communicator_);
-            problem.assemble_residual(t, yp, ydot0, Fp);
-            problem.assemble_residual(t, ym, ydot0, Fm);
+                VectorType yp(y0), ym(y0);
+                yp.add(eps, v);
+                ym.add(-eps, v);
 
-            VectorType fd(Fp);
-            fd -= Fm;
-            fd /= (2.0 * eps);
+                VectorType Fp(problem.locally_owned_dofs_, comm);
+                VectorType Fm(problem.locally_owned_dofs_, comm);
+                problem.assemble_residual(t, yp, ydot0, Fp);
+                problem.assemble_residual(t, ym, ydot0, Fm);
 
-            VectorType Jv(problem.locally_owned_dofs_,
-                          problem.mpi_communicator_);
-            problem.jacobian_matrix.vmult(Jv, v);
+                VectorType fd(Fp);
+                fd -= Fm;
+                fd /= (2.0 * eps);
 
-            VectorType d(Jv);
-            d -= fd;
+                VectorType Jv(problem.locally_owned_dofs_, comm);
+                problem.jacobian_matrix.vmult(Jv, v);
 
-            const double abs_err = d.l2_norm();
-            const double rel_err = abs_err / std::max(1.0, fd.l2_norm());
+                // Squared error and squared reference, per row type:
+                // [0] cell, [1] trace, [2] rcr.
+                double local[6] = {0, 0, 0, 0, 0, 0};
+                for (const auto i : problem.locally_owned_dofs_)
+                  {
+                    const unsigned int k =
+                      problem.cell_dofs_owned.is_element(i)  ? 0 :
+                      problem.trace_dofs_owned.is_element(i) ? 1 :
+                                                               2;
+                    const double di = Jv(i) - fd(i);
+                    local[k] += di * di;
+                    local[3 + k] += fd(i) * fd(i);
+                  }
+                double global[6];
+                MPI_Allreduce(local, global, 6, MPI_DOUBLE, MPI_SUM, comm);
 
-            double                  worst_local = 0.0;
-            types::global_dof_index worst_i     = numbers::invalid_dof_index;
-            for (const auto i : problem.locally_owned_dofs_)
-              if (std::abs(Jv(i) - fd(i)) > worst_local)
-                {
-                  worst_local = std::abs(Jv(i) - fd(i));
-                  worst_i     = i;
-                }
+                auto rel = [&](const unsigned int k) -> std::string {
+                  const double       e = std::sqrt(global[k]);
+                  const double       r = std::sqrt(global[3 + k]);
+                  std::ostringstream s;
+                  s << std::scientific << std::setprecision(2);
+                  if (e == 0.0 && r == 0.0)
+                    s << "      -     ";
+                  else if (r == 0.0)
+                    s << "abs " << e; // Jacobian entry where residual is flat
+                  else
+                    s << e / r;
+                  return s.str();
+                };
 
-            const double worst =
-              Utilities::MPI::max(worst_local, problem.mpi_communicator_);
-            const unsigned int reporter =
-              Utilities::MPI::min(worst_local >= worst && worst > 0.0 ?
-                                    problem.this_mpi_process :
-                                    numbers::invalid_unsigned_int,
-                                  problem.mpi_communicator_);
-
-            if (reporter == problem.this_mpi_process &&
-                worst_i != numbers::invalid_dof_index)
-              std::cout << "  worst row " << worst_i << " on rank "
-                        << problem.this_mpi_process << ": "
-                        << (problem.cell_dofs_owned.is_element(worst_i) ?
-                              "CELL" :
-                            problem.trace_dofs_owned.is_element(worst_i) ?
-                              "TRACE" :
-                              "RCR")
-                        << "  |Jv-fd| = " << worst << std::endl;
-
-            problem.pcout << "\n=====================================\n"
-                          << "Central FD Jacobian check\n"
-                          << "eps        = " << eps << "\n"
-                          << "||Jv-FD||  = " << abs_err << "\n"
-                          << "||FD||     = " << fd.l2_norm() << "\n"
-                          << "relative   = " << rel_err << "\n"
-                          << "=====================================\n";
+                problem.pcout << "  " << std::setw(8) << std::left << cb.name
+                              << " | " << std::setw(17) << rel(0) << " | "
+                              << std::setw(10) << rel(1) << " | " << rel(2)
+                              << "\n";
+              }
+            problem.pcout << "==========================================="
+                             "==========\n";
           };
 
           if (problem.verbosity > 0)

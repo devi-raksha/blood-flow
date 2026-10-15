@@ -86,11 +86,11 @@ namespace MetricFlowX
   namespace DoFTools              = dealii::DoFTools;
   namespace FEValuesExtractors    = dealii::FEValuesExtractors;
   namespace LinearAlgebraPETSc    = dealii::LinearAlgebraPETSc;
-  namespace LinearAlgebraTrilinos = dealii::LinearAlgebraTrilinos;
+  //namespace LinearAlgebraTrilinos = dealii::LinearAlgebraTrilinos;
   namespace PETScWrappers         = dealii::PETScWrappers;
   namespace SUNDIALS              = dealii::SUNDIALS;
   namespace SparsityTools         = dealii::SparsityTools;
-  namespace TrilinosWrappers      = dealii::TrilinosWrappers;
+  //namespace TrilinosWrappers      = dealii::TrilinosWrappers;
   namespace numbers               = dealii::numbers;
   namespace parallel              = dealii::parallel;
   namespace types                 = dealii::types;
@@ -107,7 +107,7 @@ namespace MetricFlowX
   // ---------------------------------------------------------------------------
   namespace LA
   {
-#define FORCE_USE_OF_TRILINOS
+// #define FORCE_USE_OF_TRILINOS
 #if defined(DEAL_II_WITH_PETSC) && !defined(DEAL_II_PETSC_WITH_COMPLEX) && \
   !(defined(DEAL_II_WITH_TRILINOS) && defined(FORCE_USE_OF_TRILINOS))
     namespace MPI     = dealii::LinearAlgebraPETSc::MPI;
