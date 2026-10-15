@@ -1,0 +1,2823 @@
+\documentclass[11pt]{article}
+% \documentclass[tikz,border=6pt]{standalone}
+\usepackage{amsmath,amssymb,amsthm,mathtools}
+\usepackage{mathrsfs}
+\usepackage[a4paper,margin=1in]{geometry}
+\usepackage{bm}
+\usepackage{multirow}   % \multirow{5}{*}{1} spanning rows
+\usepackage{booktabs}   % \toprule \midrule \bottomrule (better than \hline\hline)
+\usepackage{siunitx}  
+\usepackage{xcolor}
+\usepackage{hyperref}
+\usepackage{tikz}
+\usepackage{pgfplots}
+\usepackage{pgfplotstable}
+\pgfplotsset{compat=1.18}
+\usetikzlibrary{
+    positioning,
+    arrows.meta,
+    shapes.geometric,
+    shapes.misc,
+    fit,
+    calc,
+    backgrounds,
+    external,
+    fillbetween,
+    decorations.markings
+}
+\tikzexternalize[prefix=figures_tikz/]
+\usepackage{subcaption}
+\usepackage{float}
+\input{tikz_plots}
+\newtheorem{definition}{Definition}
+\newtheorem{theorem}{Theorem}
+\newtheorem{lemma}{Lemma}
+\newtheorem{remark}[theorem]{Remark}
+\newtheorem{corollary}{Corollary}
+\newcommand{\R}{\mathbb{R}}
+\newcommand{\dt}{\Delta t}
+\newcommand{\Th}{\mathcal{T}_h}
+\newcommand{\Eh}{\mathcal{E}_h}
+\newcommand{\Eho}{\mathcal{E}_h^o}
+\newcommand{\Ehb}{\mathcal{E}_h^{\partial}}
+\newcommand{\Ehj}{\mathcal{E}_h^{J}}
+\newcommand{\norm}[1]{\left\lVert #1\right\rVert}
+\newcommand{\wh}{\mathbf{w}_h}
+\newcommand{\whl}{\mathbf{w}^L_h}
+\newcommand{\whr}{\mathbf{w}^R_h}
+\newcommand{\who}{\widehat{\mathbf{w}}_h}
+\newcommand{\Hn}{\mathbf{H}_n}
+\newcommand{\Hnl}{\mathbf{H}_n^{L}}
+\newcommand{\Hnr}{\mathbf{H}_n^{R}}
+
+
+\title{An HDG-type discretization of 1D embedded blood flow in complex networks with Riemann-coupled junctions}
+\author{}
+\date{}
+
+\author{
+Raksha Devi$^{1}$ \and
+Luca Heltai$^{1}$ \and
+Lucas O. Muller$^{2}$
+}
+
+\date{}
+
+\begin{document}
+
+\maketitle
+
+\begin{center}
+$^{1}$ University of Pisa, Italy\\
+$^{2}$ University of Trento, Italy
+\end{center}
+
+\begin{abstract}
+This work presents a Hybridizable Discontinuous Galerkin (HDG) method for one-dimensional blood flow in arterial networks with Windkessel boundary conditions. The scheme uses an Harten--Lax--van Leer (HLL) numerical flux and implicit time integration. After spatial discretization, the complete network---including cell states, hybrid traces, junction conditions, and dynamic RCR terminal pressures---is written as a residual index-one differential--algebraic equation (DAE) and integrated with variable-step, variable-order backward differentiation formulas. The implicit formulation removes the explicit CFL stability restriction associated with explicit time integration, while accuracy and nonlinear convergence still control the admissible step size. The central contribution is a single global residual and Jacobian for the network and its terminal dynamics. This residual/Jacobian structure also provides a natural interface for future monolithic coupling with external nonlinear elasticity models. We establish local solvability and a semi-discrete energy estimate, and show optimal convergence rates for both solution variables in the $L^2$ and $H^1$ norms. The solver is validated against established benchmarks, including an aortic bifurcation and a $37$-artery network, and is used for strong-scaling studies on networks containing $8\,\mathrm{k}$ anatomical and up to $100\,\mathrm{k}$ synthetic vessels. The paper identifies the flow-side residual formulation for future external-elasticity coupling.
+\end{abstract}
+\section{Introduction}
+One-dimensional ($1\mathrm{D}$) models of the cardiovascular system provide a computationally efficient framework for analyzing pulse-wave propagation and hemodynamic variables across complex arterial networks \cite{formaggia2003one,sherwin2003computational,blanco2025one,kim2025one,boileau2015benchmark}. By simplifying the three-dimensional Navier--Stokes equations through cross-sectional averaging, these reduced-order models retain the dominant network-scale dynamics at a small fraction of the cost of fully three-dimensional simulations. In the literature, each vessel is commonly represented as an interval with a single axial coordinate. Anatomically realistic arteries, however, are curved tubes with a definite orientation in space, and effects such as gravity depend on that orientation. In existing $1\mathrm{D}$ models, gravity is typically introduced through a source term involving the component of gravitational acceleration along the vessel axis \cite{MR5106706,shramko2023gravity}.
+
+In view of possible coupling with three-dimensional elasticity models~\cite{MR1873203,heltai2021multiscale,belponer2023reduced}, we incorporate the orientation into the generic formulation while retaining a genuinely one-dimensional network discretization. Each vessel is parameterized along a centerline curve embedded in $\mathbb{R}^3$ through a directional field $\bm{b}(\bm{x})$, so the flux divergence takes the variable-coefficient form $\nabla \cdot (\bm{b}(\bm{x}) F(\mathbf{w}))$; the full model is given in Section~\eqref{sec:model-formulation}. This is a purely \emph{geometric} embedding. The present model describes one-dimensional flow along the embedded centerlines. The field $\bm b(\bm x)$ describes the local vessel orientation. When gravity is included, its projection onto the vessel enters the momentum source through $\bm g\!\cdot\!\bm b(\bm x)$. A spatially varying $\bm b(\bm x)$ therefore allows this known gravity-dependent source term to follow the vessel geometry accurately.
+
+ A network model is closed by two types of coupling. At each junction one imposes conservation of mass and continuity of total pressure across the incident vessels. At each terminal we attach a lumped $0\mathrm{D}$ Windkessel model whose pressure satisfies an ordinary differential equation (ODE). Existing network formulations include characteristic, finite-volume, and discontinuous Galerkin discretizations, as well as hybrid $1\mathrm{D}$--$0\mathrm{D}$ models that couple different vessel descriptions through conservation conditions \cite{formaggia2003one,ghitti2023hybrid}. Previous studies already include terminal coupling. The contribution here is the simultaneous treatment of all vessel, junction, and terminal equations as one residual index-one differential--algebraic (DAE) system. The system is integrated implicitly by a variable-order backward differentiation formula ($\mathrm{BDF}$). Terminal pressures are included among the global unknowns on the same footing as the hybrid traces, so one global nonlinear system and one Jacobian resolve vessels, junctions, and terminals together. The time-step solve may require several Newton iterations; all of them act on this global system.
+
+Realising that to implement this strategy, we need to have the appropriate global set of unknowns that couples naturally with hybrid traces junctions and terminals within the same nonlinear system, and the hybridizable discontinuous Galerkin (HDG) method provides exactly that. In practice, Discontinuous Galerkin (DG) methods are popular for hyperbolic conservation laws because they handle shocks and complex geometries well and parallelize nicely. However, in a standard DG formulation, the numerical flux on each element depends on its neighboring element states, leading to a globally coupled system involving all element degrees of freedom. Solving that requires inverting one enormous global system. HDG methods, fix this by introducing extra "trace" unknowns living only on the mesh skeleton (namely the trace of the unknown on the mesh faces). Once those trace values are known, each element can be solved completely independently through local element solver \cite{MR3345205}. Since the junction and terminal conditions involve the skeleton unknowns, they can be added straight into the trace system, and a single Newton step then solves the
+traces, junctions, and terminals at once.
+\noindent
+
+HDG methods have been extensively studied over the last two decades, and several HDG formulations incorporating approximate
+Riemann solvers such as the Harten--Lax--van Leer (HLL)
+flux have been proposed for hyperbolic systems,
+particularly in the context of compressible fluid
+dynamics \cite{peraire2010hybridizable,vila2021hybridisable}.
+For $1\mathrm{D}$ blood flow, DG methods have been used for reduced models \cite{puelz2017comparison,masri2022discontinuous} and for coupled flow and solute transport on networks \cite{masri2022discontinuous}. To the best of our knowledge, the combination studied here---an HDG--HLL network discretization, multi-way Riemann-coupled junctions, dynamic Windkessel states, and a residual DAE formulation---has not, to date, been considered within a single solver architecture. The analytical difficulty is concentrated at the junctions: single-valued traces are sufficient for ordinary interfaces, whereas multiple connected vessels require the simultaneous imposition of mass conservation, total-pressure continuity, and characteristic compatibility across all incident vessels. The formulation also represents gravity through the source term $\bm g\!\cdot\!\bm b(\bm x)$, which accounts for the local vessel orientation. The demonstrated contributions are:
+\begin{enumerate}
+    \item An HDG--HLL discretization of the $1\mathrm{D}$ network that incorporates junctions and RCR terminals into one condensed trace system.
+    \item An implicit index-one DAE formulation in which cell and terminal-capacitor variables are differential and hybrid traces are algebraic, together with local solvability and a semi-discrete energy estimate.
+    \item Numerically optimal spatial convergence on a manufactured solution in the $L^2$ and $H^1$ norms for both conserved variables.
+    \item Validation against the aortic bifurcation and $37$-artery network, together with strong-scaling studies on networks of up to $8\,\mathrm{k}$ anatomical vessels and $100\,\mathrm{k}$ synthetic vessels.
+\end{enumerate}
+The external-elasticity coupling is a target for future work. At the residual level, an external model with unknowns $z$ can be appended schematically as
+\begin{equation}
+\mathcal R_{\mathrm{flow}}(t,y,\dot y;z)=0,\qquad
+\mathcal R_{\mathrm{ext}}(t,z,\dot z;y)=0,
+\qquad \mathcal C(y,z)=0,
+\label{eq:future_external_coupling}
+\end{equation}
+so that the flow, elasticity, and interface equations are assembled into the same Newton system. This is the precise sense in which the DAE formulation provides a coupling interface; the coupled elasticity computation itself is left for future work.
+The remainder of the paper is organized as follows. Section~\ref{sec:model-formulation} presents the governing $1\mathrm{D}$ system, tube law, and characteristic structure. Section~\ref{sec:hdg-formulation} develops the HDG--HLL discretization. Section~\ref{sec:transmission} discusses the unified treatment of transmission, boundary, and junction conditions. In Section~\ref{sec:analysis} we establish solvability and energy stability of the semi-discrete scheme. Section~\ref{sec:time_integration} discusses the implicit time-integration strategy and the associated nonlinear solvers. Finally, Section~\ref{sec:numerical_results} presents convergence results, verification against benchmark problems, and strong-scaling studies for very large vascular networks.
+
+\section{Governing equations}\label{sec:model-formulation}
+We consider the one-dimensional blood flow equations parameterized along the centerline of each vessel, with tangent vector $\bm b(\bm x)$. The compact vector form of the conservation system is given by:
+\begin{equation}\label{equation_system}
+\partial_t \mathbf{w}
++\nabla\cdot\left(\bm b(\bm{x})\mathbf{F}(\mathbf{w})\right)
+=\mathbf{S}(\mathbf{w}),
+\qquad
+\mathbf{w}= \begin{pmatrix}
+    A \\[1mm]
+U
+\end{pmatrix},
+\end{equation}
+where the nonlinear physical flux and source term are given by
+\begin{equation}
+\mathbf{F}(\mathbf{w}) =
+\begin{pmatrix}
+F_A(\mathbf{w})\\
+F_U(\mathbf{w})
+\end{pmatrix} =
+\begin{pmatrix}
+AU\\[2mm]
+\dfrac{U^2}{2}+\dfrac{1}{\rho}P(A)
+\end{pmatrix},
+\qquad
+\mathbf{S}(\mathbf{w}) =
+\begin{pmatrix}
+0\\[2mm]
+-\dfrac{fU}{A}
+\end{pmatrix}.
+\end{equation}
+Here $A(s,t)$ is the cross-sectional area, $U(s,t)$ is the average axial velocity, and $\rho$ is the blood density. The displayed source contains viscous friction. When a gravitational body force $\bm g$ is included, its momentum contribution is the known term $\bm g\!\cdot\!\bm b(\bm x)$. The field $\bm b(\bm x)$ describes the vessel direction and supplies the geometric projection used by this source term. The viscous friction coefficient is
+$f = 2(\zeta+2)\,\mu\,\pi$,
+where $\mu$ is the dynamic viscosity and $\zeta$ is the velocity-profile
+parameter. We formulate the blood-flow equations along the vessel direction.
+The vector $\bm b$ describes the vessel direction. Although the divergence
+form can be reduced to a derivative along the vessel, we retain it because it
+explicitly represents the vessel orientation. In our simulations, the vessels
+are straight and aligned with $\bm e_1$, but the formulation also applies to
+vessels with a general orientation.
+
+The arterial wall mechanics are governed by the tube law~\cite{matthys2007pulse}
+\begin{align}\label{tube_law}
+P(A,s) - P_0 = P_d + \frac{\beta(s)}{A_d(s)}
+\left[ (A^m - A_d(s)^m) \right], \qquad \beta = \frac{4}{3} \sqrt{\pi} E h_w(s), \quad m = \frac{1}{2}
+\end{align}
+where $E$ is the wall Young's modulus,
+$h_w$ is the wall thickness, and
+$A_d(s)$ is the local diastolic area. For a tapered vessel,
+$A_d(s) = \pi r_d(s)^2$, where $r_d$ is interpolated linearly between the
+inlet radius $r_{\mathrm{in}}$ and the outlet radius $r_{\mathrm{out}}$
+~\cite{alastruey2012arterial,boileau2015benchmark}. Thus,
+
+\begin{equation}
+  r_d(s) = r_{\mathrm{in}}
+  + \frac{s - s_{\min}}{s_{\max} - s_{\min}}
+  \bigl(r_{\mathrm{out}} - r_{\mathrm{in}}\bigr),
+  \qquad
+  A_d(s) = \pi\,r_d(s)^2,
+  \label{eq:taper}
+\end{equation}
+where $s_{\min}$ and $s_{\max}$ are the arc-length bounds of the
+vessel.
+For a uniform vessel, $r_{\mathrm{in}} = r_{\mathrm{out}} = r_d$
+and $A_d$ reduces to the constant $\pi r_d^2$.
+
+The resulting wave speed is
+\[
+c(A,s) = \sqrt{\frac{A}{\rho}\,\partial_A P}
+= \sqrt{\frac{\beta}{2\rho A_d}}A^{1/4}.
+\]
+The flux Jacobian is
+\[
+\frac{\partial \mathbf{F}}{\partial\mathbf{w}}= \begin{pmatrix}
+ U  & A \\
+ c^2/A  & U
+\end{pmatrix}    
+\]
+It has eigenvalues $\lambda_{1,2}=U\pm c$. Under the physiological
+condition $|U|<c$, the system in Eq.~\eqref{equation_system} is strictly
+hyperbolic and has the associated Riemann invariants
+$W_{1,2}=U\pm4(c-c_0)$, where $c_0=c(A_d,s)$.
+
+\section{Hybridizable Discontinuous Galerkin Framework}\label{sec:hdg-formulation}
+Let $\Th$ be the collection of non-overlapping line elements $K$, and let $\Eh$ be the set of all boundary endpoints (nodes), split $\Eh$ into three mutually disjoint subsets:
+\[
+  \Eh = \Eho \cup \Ehb \cup \Ehj,
+\]
+representing standard interior nodes ($\Eho$), exterior boundary terminals ($\Ehb$), and branching junctions ($\Ehj$). Following the standard HDG construction \cite{MR3345205,peraire2010hybridizable}, we introduce a local element space $\mathbf{W}_h^k$ and the trace space $\mathbf{M}_h^k$
+\begin{align*}
+  \mathbf{W}_h^k &= \left\{ \mathbf{v} \in (L^2(\Th))^2 : \mathbf{v}|_K \in (\mathcal{P}^k(K))^2, \, \forall K \in \Th \right\}, \\
+  \mathbf{M}_h^k &= \left\{ \bm{\mu} \in (L^2(\Eh))^2 : \bm{\mu}|_F \in (\mathcal{P}^k(F))^2, \, \forall F \in \Eh \right\}.
+\end{align*}
+We seek $(\mathbf w_h,\who)\in\mathbf W_h^k\times\mathbf M_h^k$ with
+$\who=(\widehat A_h,\widehat U_h)^\top$. 
+
+Here note that, since the mesh is one-dimensional, every face $F \in \Eh $ is a single point. On the point, the polynomial space $\mathcal{P}^k(F)^2 = \mathbb R^2$. The trace space $\mathbf{M}_h^k$ is therefore independent of the polynomial degree $k$. On each face the trace is a single pair of values $\who (F)=(\widehat A_h,\widehat U_h)(F) \in \mathbb{R}^2$. We discuss the trace values at interior faces, boundary faces, and junctions in detail in Section~\ref{sec:transmission}.
+
+Testing \eqref{equation_system} on each element and replacing boundary flux by local flux gives the local problem  
+\begin{equation}  \label{eq:hdg_local}
+  \left(\partial_t \mathbf{w}_h, \mathbf{v}\right)_K - \left(\mathbf{F}(\mathbf{w}_h), \bm b \cdot \nabla \mathbf{v}\right)_K + \left\langle \widehat{\mathbf{F}}_h \cdot \bm n, \mathbf{v} \right\rangle_{\partial K} = \left(\mathbf{S}(\mathbf{w}_h), \mathbf{v}\right)_K, \quad \forall \mathbf{v} \in (\mathcal{P}^k(K))^2,
+\end{equation}
+where $\bm n$ is the outward unit normal. The interior state on each element
+is recovered from its trace, while the traces are fixed globally by the
+transmission, boundary, and junction conditions. See Section~\ref{sec:transmission}.
+
+\begin{figure}[htbp]
+  \centering
+  \tikzsetnextfilename{junction_dofs}
+  \resizebox{\textwidth}{!}{\input{figures_tikz/dof_count}}
+  \caption{HDG DoF on $2$-way junctions and bifurcating vessel with approximating polynomial degree ($k=1$).}
+  \label{fig:bifurcation_dofs}
+\end{figure}
+For the configuration in Figure~\ref{fig:bifurcation_dofs}(b), we have $3$ vessels and each vessel with $N_{\mathrm{el}}=2$ elements and $k=1$. Each element carries $2(k+1)=4$ unknowns. That gives $3\,N_{\mathrm{el}}\cdot2(k+1)= 24$ cell unknowns (black dots). For trace pairs: $3$ at the interior nodes, $3$ at inlet and outlet and $3$ at junction.  These gives $18$ trace unknowns. The two RCR outlets add $2$ capacitor pressures. The system therefore has $24+18+2=44$ Dofs total and in a similar way we can calculate DoF for $2$-way junction Figure~\ref{fig:bifurcation_dofs}(a).
+
+\subsection{Numerical trace flux}\label{sec:num-flux}
+The numerical trace flux is a two-state function of the interior (self) state
+$\wh$ and the trace state. On any face, it receives the interior element state
+$\mathbf w_h=(A_h,U_h)^\top$ (the \emph{self} state, evaluated on the face
+from inside $K$) and the single-valued trace
+$\widehat{\mathbf w}_h=(\widehat A_h,\widehat U_h)^\top$ (the
+\emph{exterior} state living on the face), and
+returns a single normal flux,
+\begin{equation}
+  \widehat{\mathbf F}_h\cdot\bm n
+  \;=\;
+  \mathcal F_{\mathrm{num}}\bigl(\,b\!\cdot\!\bm n,\;\mathbf w_h,\;
+  \widehat{\mathbf w}_h\,\bigr).
+  \label{eq:numflux_two_state}
+\end{equation}
+We use $\mathcal F_{\mathrm{num}}$ to denote a standard numerical flux,
+such as Lax--Friedrichs, Rusanov, Roe, or HLL. In HDG form, these fluxes can
+be written as
+\begin{equation}
+  \widehat{\mathbf F}_h\cdot\bm n
+  \;=\;
+  \underbrace{\mathbf F(\widehat{\mathbf w}_h)\cdot\bm n}_{\text{consistent part}}
+  \;+\;
+  \underbrace{\bm\Sigma(\mathbf w_h,\widehat{\mathbf w}_h)\,
+  \bigl(\mathbf w_h-\widehat{\mathbf w}_h\bigr)}_{\text{stabilisation / dissipation}},
+  \label{eq:hdg_template}
+\end{equation}
+where the physical flux is anchored at the trace. The matrix
+$\bm\Sigma$ penalizes the interior--trace mismatch, controls the amount of
+numerical dissipation, and contributes to the stability of the hybridized
+formulation.
+
+The simplest closure is the scalar Local Lax--Friedrichs (LLF) penalty
+$\bm\Sigma_{\mathrm{LF}}=\alpha_{\mathrm{LF}}\,\mathbf I$ with
+$$\alpha_{\mathrm{LF}}=\max\bigl(|U_h\pm c_h|,\,|\widehat U_h\pm\widehat
+c_h|\bigr),$$ which spreads identical dissipation over both characteristic
+directions. 
+
+Unlike scalar Lax--Friedrichs stabilisation, the HLL flux uses separate estimates of the left- and right-running wave speeds. This allows the numerical flux to distinguish between the two characteristic directions and provide wave-dependent dissipation.
+
+\textit{From the HDG stabilisation to the HLL flux.}
+In the HDG context the self/interior state is the
+left state and the trace is the right state,
+\begin{equation}
+  \mathbf w_L \equiv \mathbf w_h = (A_h,U_h)^\top,
+  \qquad
+  \mathbf w_R \equiv \widehat{\mathbf w}_h = (\widehat A_h,\widehat U_h)^\top .
+\end{equation}
+The orientation-projected physical fluxes are
+\begin{equation}
+  \mathbf F_\star\cdot\bm n
+  =
+  (b\!\cdot\!\bm n)
+  \begin{pmatrix}
+  A_\star U_\star \\[2pt]
+  \tfrac12 U_\star^2 + P(A_\star)/\rho
+  \end{pmatrix},
+  \qquad \star\in\{L,R\},
+  \label{eq:proj_flux}
+\end{equation}
+with the wave speed from the tube law $c(A)$.
+The signal speeds are estimated from the averaged states:
+\begin{equation}
+  \bar U=\tfrac12(U_L+U_R),
+  \quad
+  \bar c=\tfrac12\bigl(c(A_L)+c(A_R)\bigr),
+  \qquad
+  s_L=\bar U-\bar c,
+  \quad
+  s_R=\bar U+\bar c .
+  \label{eq:wave_speeds}
+\end{equation}
+The HLL numerical flux is then the three-branch expression \cite[Chapter~10]{toro2013riemann}
+\begin{equation} \label{eq:hll_flux}
+  \widehat{\mathbf F}_h\cdot\bm n
+  =
+  \begin{cases}
+  \mathbf F_R\cdot\bm n, & s_R\le 0,\\[6pt]
+  \dfrac{s_R\,\mathbf F_L\cdot\bm n - s_L\,\mathbf F_R\cdot\bm n
+         + s_R s_L\,(\mathbf w_R-\mathbf w_L)}{s_R-s_L}, 
+  & s_L<0<s_R, \\[6pt]
+  \mathbf F_L\cdot\bm n, & s_L\ge 0.
+  \end{cases}
+\end{equation}
+In the subcritical physiological regime $|U|<c$, the
+dissipative jump $s_Rs_L(\mathbf w_R-\mathbf w_L)$ acts on the
+\emph{raw} states.
+
+\textit{Equivalence with the HDG normal flux.}
+The central branch of~\eqref{eq:hll_flux} is the numerical flux itself. It can
+be decomposed into a consistent part and a \emph{scalar} dissipation acting on
+the interior--trace jump. Splitting the
+numerator,
+\begin{equation}
+  \widehat{\mathbf F}_h\cdot\bm n
+  =
+  \underbrace{\frac{s_R\,\mathbf F(\mathbf w_h)\cdot\bm n
+            -s_L\,\mathbf F(\widehat{\mathbf w}_h)\cdot\bm n}{s_R-s_L}}
+            _{\text{consistent (wave-weighted) flux}}
+  \;+\; \underbrace{\bm\Sigma_{\mathrm{HLL}}\,
+  \bigl(\mathbf w_h-\widehat{\mathbf w}_h\bigr)}_{\text{dissipation}}, 
+  \label{eq:hll_consistent}
+\end{equation}
+where $$
+  \bm\Sigma_{\mathrm{HLL}}=\delta_{\mathrm{HLL}}\,\mathbf I,
+  \quad
+  \delta_{\mathrm{HLL}}= -\frac{\,s_L\,s_R}{\,s_R-s_L\,}\;\ge 0 .$$
+Here the stabilisation $\bm\Sigma_{\mathrm{HLL}}$ is the \emph{scalar} matrix
+$\delta_{\mathrm{HLL}}\mathbf I$: in subcritical flow $s_L<0<s_R$, so
+$\delta_{\mathrm{HLL}}=-s_Ls_R/(s_R-s_L)>0$. 
+
+\begin{remark}[HLL $\to$ Rusanov $\to$ LLF]
+With a single symmetric speed $s_R=-s_L=\alpha$, the average
+in~\eqref{eq:hll_consistent} becomes $\tfrac12\bigl(\mathbf F(\mathbf
+w_h)+\mathbf F(\widehat{\mathbf w}_h)\bigr)\cdot\bm n$ and
+$\delta_{\mathrm{HLL}}=\alpha/2$, recovering the Rusanov / local
+Lax--Friedrichs flux
+$\tfrac12\bigl(\mathbf F(\mathbf w_h)+\mathbf F(\widehat{\mathbf
+w}_h)\bigr)\cdot\bm n+\tfrac{\alpha}{2}\bigl(\mathbf w_h-\widehat{\mathbf
+w}_h\bigr)$. HLL is therefore the two-wave generalisation that weights the
+forward ($U+c$) and backward ($U-c$) characteristics. A single parameter $\alpha$ provides the common symmetric bound in the Rusanov / local Lax--Friedrichs flux.
+\end{remark}
+
+\section{Transmission, boundary and junction conditions}\label{sec:transmission}
+The traces are determined by requiring transmission of the numerical trace flux: find
+$\widehat{\mathbf w}_h\in\mathbf M_h^k$ such that
+\begin{equation}
+  \sum_{K\in\Th}
+  \bigl\langle\widehat{\mathbf F}_h\cdot\bm n,\bm\mu\bigr\rangle
+    _{\partial K\setminus(\Ehb\cup\Ehj)}
+  +\sum_{F\in\Ehb}\bigl\langle\widehat{\mathbf B}_h,\bm\mu\bigr\rangle_F
+  +\sum_{J\in\Ehj}\bigl\langle\widehat{\mathbf J}_h,\bm\mu\bigr\rangle_J
+  =0,
+  \qquad\forall\bm\mu\in\mathbf M_h^k .
+  \label{eq:global_hdg}
+\end{equation}
+The same HLL flux \eqref{eq:hll_flux} is used in the local problem \eqref{eq:hdg_local} and in the interior transmission term, while the operators
+$\widehat{\mathbf B}_h$ and $\widehat{\mathbf J}_h$
+encode the boundary and junction physics defined next.
+
+A key feature of the formulation is that the same HLL numerical
+flux~\eqref{eq:hll_flux} is employed both in the local cell problem and in
+the global transmission condition. This provides a consistent coupling
+between the element-interior solution and the globally defined trace
+unknowns, while allowing boundary and junction physics to be incorporated
+through the operators $\widehat{\mathbf B}_h$ and
+$\widehat{\mathbf J}_h$.
+\subsection{Interior faces}\label{sec:interior}
+For a face shared by $K_L$ and $K_R$ of the same vessel, with
+$b\!\cdot\!\bm n_R=-\,b\!\cdot\!\bm n_L$, the residual
+is the sum of the two one-sided HLL fluxes, each taking that side's interior as the self state and the shared trace as the exterior state:
+\begin{equation}
+  \mathcal F_{\mathrm{int}}
+  =
+  \widehat{\mathbf F}_h\bigl(b\!\cdot\!\bm n_L,\,\mathbf w_L,\,
+  \widehat{\mathbf w}_h\bigr)
+  +
+  \widehat{\mathbf F}_h\bigl(b\!\cdot\!\bm n_R,\,\mathbf w_R,\,
+  \widehat{\mathbf w}_h\bigr)
+  =\mathbf 0 .
+  \label{eq:interior_hll}
+\end{equation}
+These are two scalar equations (area and momentum rows) fixing the two trace
+unknowns $(\widehat A_h,\widehat U_h)$. 
+\subsection{Physical boundaries: \texorpdfstring{$\widehat{\mathbf{B}}_h$}{B-hat}}\label{sec:boundaries}
+At a subcritical boundary face, the trace is determined by one physical condition and one outgoing characteristic compatibility condition. The operator $\widehat{\mathbf B}_h$
+combines it with one outgoing Riemann-invariant compatibility condition,
+using $W_{1,2}=U\pm4(c-c_0)$ and $c_0=c(A_d)$.
+
+\textit{Inflow.} A prescribed flow rate $Q_{\mathrm{in}}(t)$ with matched backward invariant:
+\begin{equation}\label{eq:bc_inflow}
+  \widehat{\mathbf B}_h^{\mathrm{in}}
+  =
+  \begin{pmatrix}
+  \widehat A_h\,\widehat U_h - Q_{\mathrm{in}}(t)\\[6pt]
+  \bigl[\widehat U_h-4(\widehat c_h-c_0)\bigr]
+  -\bigl[U_h-4(c_h-c_0)\bigr]
+  \end{pmatrix}
+  =\mathbf 0 .
+\end{equation}
+
+\textit{Windkessel/RCR outlet.} Pressure continuity with the Windkessel
+terminal is combined with the outgoing forward invariant:
+\begin{equation}\label{eq:bc_rcr}
+  \widehat{\mathbf B}_h^{\mathrm{rcr}}
+  =
+  \begin{pmatrix}
+  P(\widehat A_h) - \bigl(R_1\,\widehat A_h\widehat U_h + P_c\bigr)\\[6pt]
+  \bigl[\widehat U_h+4(\widehat c_h-c_0)\bigr]
+  -\bigl[U_h+4(c_h-c_0)\bigr]
+  \end{pmatrix}
+  =\mathbf 0 ,
+\end{equation}
+where the capacitor pressure $P_c$ is a global unknown in the DAE state. The
+single-resistance outlet is obtained with $R_1\equiv R$ and $C=0$. The
+capacitor pressure is determined by the additional DAE equation
+\[
+C\dot P_c = A\,U - \frac{P_c-P_{out}}{R_2},
+\]
+which we write as the DAE residual
+\begin{equation}
+R_{pc} = C \dot P_c  -
+\widehat A_h\widehat U_h
++
+\frac{P_c-P_{\mathrm{out}}}{R_2}.
+\label{eq:rcr_capacitor}
+\end{equation}
+Because $P_c$ couples to the trace through \eqref{eq:bc_rcr}-\eqref{eq:rcr_capacitor},
+the terminal contributes to the same Jacobian as the vessel variables. The
+corresponding blocks $D$, $C$, and $E$ are defined in
+Section~\ref{sec:time_integration}.
+
+\textit{Reflection outlet.} A reflection coefficient $R_t$ sets the incoming
+invariant from the outgoing one:
+\begin{equation}
+  \widehat{\mathbf B}_h^{\mathrm{refl}}
+  =
+  \begin{pmatrix}
+  \bigl[\widehat U_h+4(\widehat c_h-c_0)\bigr]-W_{1}^{\mathrm{int}}\\[6pt]
+  \bigl[\widehat U_h-4(\widehat c_h-c_0)\bigr]-\bigl(-R_t\,W_{1}^{\mathrm{int}}\bigr)
+  \end{pmatrix}
+  =\mathbf 0,
+  \qquad
+  W_1^{\mathrm{int}}=U_h+4(c_h-c_0).
+  \label{eq:bc_refl}
+\end{equation}
+In all cases the local cell equation on the face still uses the HLL
+flux. At a boundary, the trace value is prescribed by
+$\widehat{\mathbf B}_h$; at an interior interface, conservation
+determines the trace.
+
+\subsection{Junctions: \texorpdfstring{$\widehat{\mathbf J}_h$}{J-hat}}\label{sec:junctions}
+Consider a junction $J$ connecting $K\ge 2$ vessels. 
+\begin{itemize}
+    \item For $K=2$, we define a two-way junction. In the implementation, if the two neighbouring elements sharing a face have the same tube law, the interface is treated as an interior trace. Otherwise, if the neighbouring elements belong to different vessels, the interface is classified as a junction and the corresponding junction conditions are imposed, which are given below.
+\end{itemize}
+Let
+\[
+\widehat{\mathbf{w}}_{h,i}
+=
+\begin{pmatrix}
+\widehat{A}_i \\ \widehat{U}_i
+\end{pmatrix},
+\qquad i = 1,\ldots,K,
+\]
+denote the hybrid trace state of vessel $i$ at the junction, with
+orientation sign
+\[
+s_i =
+\begin{cases}
++1, & \text{if vessel } i \text{ ends at the junction},\\
+-1, & \text{if vessel } i \text{ starts at the junction}.
+\end{cases}
+\]
+
+Following the standard $1\mathrm D$ junction closure
+\cite{formaggia2003one,muller2016consistent}, mass conservation and
+continuity of total energy head $\mathcal H(\widehat{\mathbf{w}}_{h,i})=\tfrac12\widehat U_i^2+\Psi(\widehat A_i)$,
+$\Psi=P/\rho$, give the $K$ constraints
+\begin{equation}
+\mathcal{F}_J
+ (\widehat{\mathbf{w}}_{h,1},\ldots,\widehat{\mathbf{w}}_{h,K})
+=
+\begin{pmatrix}
+\displaystyle\sum_{i=1}^{K}
+s_i\,\widehat{A}_i\,\widehat{U}_i
+\\[10pt]
+\mathcal{H}(\widehat{\mathbf{w}}_{h,1})
+- \mathcal{H}(\widehat{\mathbf{w}}_{h,2})
+\\[4pt]
+\vdots
+\\[4pt]
+\mathcal{H}(\widehat{\mathbf{w}}_{h,1})
+- \mathcal{H}(\widehat{\mathbf{w}}_{h,K})
+\end{pmatrix}
+= \mathbf{0},
+\qquad
+\mathcal{H}(\widehat{\mathbf{w}}_{h,i})
+=
+\tfrac{1}{2}\widehat{U}_i^2 + \Psi(\widehat{A}_i),
+\label{eq:junction_transmission}
+\end{equation}
+where $\Psi(A) = P(A)/\rho$. Row 1 enforces global mass
+conservation; rows 2 to $K$ enforce continuity of total energy
+head between all vessels and the reference vessel $i=1$.
+
+\begin{remark}[Single-valued vs.\ multi-valued traces]
+On interior faces and at physical boundaries the trace is single-valued, as in
+standard HDG. At vessel junctions, each incident face carries its own trace
+because the cross-sectional area may be discontinuous between branches. The
+branch traces are coupled through conservation of mass, continuity of total
+pressure, and Riemann invariants.
+\end{remark}
+
+\section{Conditional solvability and energy balance}\label{sec:analysis}
+\textit{Notation.}
+Throughout the section $\mathbf w=(A,U)^\top$ with $A>0$, and we write $Q=AU$
+for the flow rate and $\widehat Q:=\widehat A\,\widehat U$ for its trace
+counterpart. We set $\Psi(A):=P(A)/\rho$, denote the wave speed by
+$c(A)=\sqrt{(A/\rho)P'(A)}$, and abbreviate
+$\int_{\Th}(\cdot):=\sum_{K\in\Th}\int_K(\cdot)$. The admissible set is
+\begin{equation}\label{eq:admissible}
+  \mathcal U=\bigl\{(\wh,\who):\ A_h>\tfrac12A_{\min},\ \widehat A_h>\tfrac12A_{\min},\
+  |U_h|<c_h,\ |\widehat U_h|<\widehat c_h\ \text{on }\Th\bigr\},
+\end{equation}
+that is, the discrete states with strictly positive area and strictly
+subcritical flow. Positive area keeps the tube law and wave speed differentiable, while subcriticality makes the entropy of Section~\ref{sec:entropy} convex.
+
+We use two algebraically equivalent representations of the numerical normal flux. The first is the
+\emph{trace-anchored} form familiar from the HDG literature,
+\begin{equation}\label{eq:trace_anchored}
+  \widehat{\mathbf F}_h\cdot\bm n
+  =\sigma\,\mathbf F(\who)+\bm\Sigma(\wh,\who)\,(\wh-\who),
+  \qquad \sigma:=\bm b\cdot\bm n,
+\end{equation}
+in which the physical flux is evaluated at the trace alone. The second is the
+\emph{wave-weighted} HLL form \eqref{eq:hll_consistent} actually implemented
+here, whose consistent part mixes the interior and trace states,
+\begin{equation}\label{eq:hll_wave}
+  \widehat{\mathbf F}_h\cdot\bm n
+  =\frac{s_R\,\mathbf F(\wh)\!\cdot\!\bm n-s_L\,\mathbf F(\who)\!\cdot\!\bm n}
+        {s_R-s_L}
+  +\delta_{\mathrm{HLL}}\bigl(\wh-\who\bigr),
+  \qquad
+  \delta_{\mathrm{HLL}}=-\frac{s_Ls_R}{s_R-s_L}\ \ge 0 .
+\end{equation}
+The trace-anchored matrix $\bm\Sigma$ in \eqref{eq:trace_anchored} incorporates the physical-flux difference between the interior and trace states. The scalar $\delta_{\mathrm{HLL}}$ in \eqref{eq:hll_wave} is the coefficient of the interior--trace jump in the wave-weighted representation.
+
+\subsection{Conditional solvability}\label{sec:solvability}
+
+For any $(\wh,\who)\in\mathbf W_h^k\times\mathbf M_h^k$ the semi-discrete HDG
+scheme reads
+\begin{subequations}
+\begin{align}
+\left(\partial_t\wh,\mathbf v\right)_K
+- \left(\mathbf F(\wh),\bm b\cdot\nabla\mathbf v\right)_K
++ \left\langle\widehat{\mathbf F}_h\cdot\bm n,\mathbf v\right\rangle_{\partial K}
+&= \left(\mathbf S(\wh),\mathbf v\right)_K,
+\quad \forall\,\mathbf v\in(\mathcal P^k(K))^2,
+\label{eq:semidiscrete1}\\
+\sum_{K\in\Th}
+\left\langle\widehat{\mathbf F}_h\cdot\bm n,\bm\mu\right\rangle
+  _{\partial K\setminus(\Ehb\cup\Ehj)}
+&+\sum_{F\in\Ehb}\left\langle\widehat{\mathbf B}_h,\bm\mu\right\rangle_F
+\nonumber\\
+&+\sum_{J\in\Ehj}\left\langle\widehat{\mathbf J}_h,\bm\mu\right\rangle_J=0,
+\qquad \forall\,\bm\mu\in\mathbf M_h^k .
+\label{eq:semidiscrete2}
+\end{align}
+\end{subequations}
+Expanding the discrete fields in the finite-element bases produces coefficient
+vectors $W\in\mathbb R^{N_c}$ and $\widehat W\in\mathbb R^{N_f}$, where $N_c$
+and $N_f$ count the cell and trace degrees of freedom. Collecting the terminal
+pressures into the differential block through $z=(W,P_c)$, the pair
+\eqref{eq:semidiscrete1}--\eqref{eq:semidiscrete2} becomes a
+differential--algebraic system,
+\begin{equation}\label{dae_form}
+\begin{aligned}
+    M_z\,\dot z &= R(t,z,\widehat W),\qquad z=(W,P_c),\\
+    0 &= G(t,z,\widehat W),
+\end{aligned}
+\end{equation}
+in which $M_z=\mathrm{blockdiag}\bigl(M,\mathrm{diag}(C_i)\bigr)$ is positive
+definite whenever the capacitive terminals satisfy $C_i>0$. The cell rows of $R$
+carry the volume, flux and source contributions, its terminal rows are
+$\widehat Q_i-(P_{c,i}-P_{\mathrm{out},i})/R_{2,i}$, and the map $G$ gathers the
+transmission, boundary and junction constraints. Purely resistive terminals enter through algebraic boundary conditions.
+
+\begin{lemma}[Residual regularity]\label{lem:reg}
+For the tube law~\eqref{tube_law} with fixed positive wall and reference-area
+coefficients, and for $C^1$ prescribed data, the maps $R$ and $G$ are of class
+$C^1$ on the admissible set~\eqref{eq:admissible}, extended by arbitrary
+capacitor pressures. In particular they are locally Lipschitz in the state.
+\end{lemma}
+
+\begin{proof}
+The set $\mathcal U$ is open, since the inequalities defining it are strict and
+the discrete fields depend continuously on the coefficient vectors
+$(W,\widehat W)$. Fix a compact $\mathcal K\subset\mathcal U$. Because the basis
+functions are fixed, the maps $W\mapsto\wh$ and $\widehat W\mapsto\who$ are
+linear, so only the elementwise nonlinearities require attention.
+
+Strict positivity of the area is what makes those nonlinearities harmless. Every
+state in $\mathcal K$ satisfies $A_h,\widehat A_h\ge\tfrac12A_{\min}>0$, so the
+fractional powers and square roots appearing in the tube law, in
+$c=\sqrt{AP'/\rho}$ and in their derivatives are well defined and continuously
+differentiable there. Subcriticality plays a complementary role at the faces: it
+places the averaged signal speeds strictly in the central branch of
+\eqref{eq:hll_wave}, $s_L<0<s_R$, so the denominator $s_R-s_L$ is bounded away
+from zero and the central branch applies throughout $\mathcal K$. Hence
+$\widehat{\mathbf F}_h$ is a $C^1$ function of $(\wh,\who)$, and the same
+reasoning applies verbatim to the boundary operator $\widehat{\mathbf B}_h$ and
+the junction operator $\widehat{\mathbf J}_h$.
+
+Finally, $R$ and $G$ are finite sums of integrals of compositions of these $C^1$
+maps against fixed basis functions. Integration and finite summation preserve
+differentiability, so $R,G\in C^1(\mathcal K)$; a $C^1$ map on a compact set has
+bounded derivative, and the local Lipschitz estimate follows.
+\end{proof}
+
+The local solvability result assumes an invertible trace Jacobian. Remark~\ref{rem:scope} describes its boundary, junction and interior blocks.
+
+\begin{theorem}[Conditional local existence and uniqueness]
+\label{thm:existence_uniqueness}
+Assume that
+\begin{itemize}
+  \item[(i)] the pressure law $P:(0,\infty)\to\mathbb R$ is of class $C^1$ with
+    $P'(A)>0$, and $C_i,R_{2,i}>0$ at the capacitive terminals;
+  \item[(ii)] the initial approximation is admissible, $A_h(\cdot,0)\ge A_{\min}>0$
+    and $|U_h(\cdot,0)|<c_h(\cdot,0)$, and admits a consistent trace
+    $\widehat W_0$ with $G(0,z_0,\widehat W_0)=0$;
+  \item[(iii)] the trace Jacobian
+    $D_0:=\partial_{\widehat W}G(0,z_0,\widehat W_0)$ is nonsingular,
+    equivalently the semi-discrete system is index one at the initial state.
+\end{itemize}
+Then there exists $T^*>0$ such that the DAE~\eqref{dae_form} possesses a unique
+solution $(z,\widehat W)\in C^1([0,T^*])$ which remains admissible; equivalently,
+\eqref{eq:semidiscrete1}--\eqref{eq:semidiscrete2} admit a unique local solution
+$(\wh,\who)$ in $\mathcal U$.
+\end{theorem}
+
+\begin{proof}
+\emph{Step 1 (finite-dimensional DAE).}
+Writing $\wh=\sum_{i=1}^{N_c}W_i(t)\phi_i$ and
+$\who=\sum_{j=1}^{N_f}\widehat W_j(t)\psi_j$ and substituting into
+\eqref{eq:semidiscrete1} produces the matrix form \eqref{dae_form}. The cell mass
+matrix $M=(\phi_i,\phi_j)_{\Th}$ is symmetric positive definite because the local
+basis functions are linearly independent, and $\mathrm{diag}(C_i)$ is positive
+definite for $C_i>0$; hence $M_z$ is invertible.
+
+\emph{Step 2 (elimination of the trace).}
+By Lemma~\ref{lem:reg} the constraint map $G$ is $C^1$ in a neighbourhood of
+$(0,z_0,\widehat W_0)$, and by hypothesis~(iii) its partial Jacobian $D_0$ is
+invertible there. The implicit function theorem therefore supplies a
+neighbourhood of $(0,z_0)$ and a unique $\Phi\in C^1$ with
+$\Phi(0,z_0)=\widehat W_0$ and
+\[
+  G\bigl(t,z,\Phi(t,z)\bigr)=0 .
+\]
+
+\emph{Step 3 (reduced ODE and Picard--Lindel\"of).}
+On that neighbourhood the algebraic constraint has been removed and
+\eqref{dae_form} collapses to the ordinary differential equation
+\[
+  \dot z=M_z^{-1}R\bigl(t,z,\Phi(t,z)\bigr)=:\mathcal G(t,z),
+  \qquad z(0)=z_0 .
+\]
+As a composition of $C^1$ maps with the constant matrix $M_z^{-1}$, the field
+$\mathcal G$ is $C^1$ and hence locally Lipschitz in $z$. Picard--Lindel\"of then
+gives $T^*>0$ and a unique $z\in C^1([0,T^*])$; setting
+$\widehat W(t):=\Phi(t,z(t))$ yields $\widehat W\in C^1$ with
+$G(t,z,\widehat W)=0$ throughout, so the pair solves \eqref{dae_form}
+\cite[Chapter~VI.1]{MR2657217}.
+
+\emph{Step 4 (admissibility).}
+The set $\mathcal U$ is open and the solution is continuous in time, so after
+shortening the interval if necessary the discrete state remains admissible.
+Reversing the expansions of Step~1 returns the solution $(\wh,\who)$ with the
+stated regularity.
+\end{proof}
+
+\begin{remark}[Trace Jacobian blocks]\label{rem:scope}
+The boundary and junction blocks admit explicit nonsingularity checks, while the interior blocks depend on the derivatives of the complete numerical flux.
+
+\emph{Inflow.} Differentiating \eqref{eq:bc_inflow} and using
+$d\widehat c/d\widehat A=\widehat c/(4\widehat A)$ gives
+\begin{equation}\label{eq:Din}
+  D_{\mathrm{in}}
+  =\begin{bmatrix}
+     \widehat U_h & \widehat A_h\\[4pt]
+     -\,\widehat c_h/\widehat A_h & 1
+   \end{bmatrix},
+  \qquad
+  \det D_{\mathrm{in}}=\widehat U_h+\widehat c_h>0 ,
+\end{equation}
+the sign of the off-diagonal entry following from the minus in front of the
+$4(\widehat c_h-c_0)$ term of the outgoing invariant.
+
+\emph{RCR outlet.} The same computation applied to \eqref{eq:bc_rcr} yields
+$\det D_{\mathrm{rcr}}=P'(\widehat A_h)-R_1(\widehat U_h-\widehat c_h)>0$ for
+every $R_1\ge0$, by subcriticality together with $P'>0$.
+
+\emph{Junction.} Let $(\delta\widehat A_i,\delta\widehat U_i)$ be a perturbation
+of the branch traces annihilating the linearised junction operator. The
+homogeneous characteristic rows give
+$\delta\widehat U_i+4s_i\,\delta\widehat c_i=0$ with
+$\delta\widehat c_i=(c_i/4A_i)\,\delta\widehat A_i$, so that
+\begin{equation}\label{eq:junclin}
+  \delta\widehat U_i=-s_i\frac{c_i}{A_i}\,\delta\widehat A_i,
+  \qquad
+  \delta\mathcal H_i=\frac{c_i}{A_i}\bigl(c_i-s_iU_i\bigr)\delta\widehat A_i,
+  \qquad
+  s_i\,\delta\widehat Q_i=-\frac{A_i}{c_i}\,\delta\mathcal H_i .
+\end{equation}
+Continuity of the total head forces a single common value
+$\delta\mathcal H_i\equiv\delta\mathcal H$, whereupon linearised mass
+conservation $\sum_i s_i\delta\widehat Q_i=0$ reduces to
+$-\bigl(\sum_i A_i/c_i\bigr)\delta\mathcal H=0$ and therefore
+$\delta\mathcal H=0$. Since $|U_i|<c_i$ implies $c_i-s_iU_i>0$, the middle
+identity in \eqref{eq:junclin} gives $\delta\widehat A_i=0$ and then
+$\delta\widehat U_i=0$. The junction block is thus nonsingular, and the argument
+uses subcriticality in an essential way.
+
+\emph{Interior.} Differentiating the
+wave-weighted form \eqref{eq:hll_wave} with respect to the trace produces, besides
+the jump contribution $-\delta_{\mathrm{HLL}}\mathbf I$, the physical-flux
+derivative $-\sigma s_L\,\mathbf F'(\who)/(s_R-s_L)$ together with the
+derivatives of $s_L$ and $s_R$ through the averaged state
+$\bar U=\tfrac12(U_h+\widehat U_h)$, $\bar c=\tfrac12(c_h+\widehat c_h)$.
+Moreover the two sides of an interior face are built from \emph{different}
+averages and therefore carry different values of $\delta_{\mathrm{HLL}}$. These contributions enter the assembled interior block. Hypothesis~(iii) imposes nonsingularity of the full trace Jacobian.
+\end{remark}
+
+\subsection{Entropy structure}\label{sec:entropy}
+
+The nonlinear system \eqref{equation_system} carries a natural entropy structure,
+which supplies both an admissibility criterion for weak solutions and the
+analytical framework used below
+\cite{tadmor1987numerical,harten1998convex}. We introduce a convex entropy
+$\eta$, its entropy flux $q$ and the entropy variables $\vartheta=\eta'$ through
+the usual compatibility relation with the physical flux. For the blood-flow model
+the entropy has a transparent mechanical meaning: it is the sum of the kinetic
+energy of the fluid column and the elastic energy stored in the vessel wall
+\cite{formaggia2003one,MR4570554}. This structure yields positivity of the
+discrete energy and, in Section~\ref{sec:energy_balance}, an exact balance for
+the semi-discrete scheme.
+
+\begin{definition}[Entropy pair]\label{def:entropy_defs}
+A convex function $\eta:\mathcal U\to\mathbb R$ and a flux
+$q:\mathcal U\to\mathbb R$ form an entropy pair for
+$\partial_t\mathbf w+\partial_s\mathbf F(\mathbf w)=\mathbf S(\mathbf w)$ if
+\[
+  \eta'(\mathbf w)^\top\mathbf F'(\mathbf w)=q'(\mathbf w)^\top .
+\]
+The entropy variables are $\bm\vartheta(\mathbf w):=\eta'(\mathbf w)$. Smooth
+solutions then satisfy the additional conservation law
+$\partial_t\eta+\partial_sq=\bm\vartheta^\top\mathbf S$ whenever the tube-law
+coefficients are spatially constant. When they vary along the vessel, $\eta$ and
+$q$ depend explicitly on $s$ and the identity acquires two extra terms,
+\[
+  \partial_t\eta+\partial_sq
+  =\bm\vartheta^\top\mathbf S
+   +(\partial_sq)_{\mathbf w}-\bm\vartheta^\top(\partial_s\mathbf F)_{\mathbf w};
+\]
+for the tube law \eqref{tube_law} with constant $P^\circ$ these two terms
+cancel, both being equal to $Q\,(\partial_sP)_A/\rho$.
+\end{definition}
+
+Let $P^\circ:=P_{\mathrm{ext}}+P_d$, so that $P(A_d,s)=P^\circ$ in every vessel
+by \eqref{tube_law}. Define the total head, the pressure potential and the
+entropy density by
+\begin{equation}\label{eq:entropy}
+  \mathcal H(\mathbf w):=\tfrac12U^2+\Psi(A),\qquad
+  \Pi(A):=\frac1\rho\int_{A_d}^{A}\bigl(P(a)-P^\circ\bigr)\,da,\qquad
+  \eta(\mathbf w):=\tfrac12AU^2+\Pi(A),
+\end{equation}
+together with the entropy flux $q(\mathbf w):=Q\bigl(\mathcal H-P^\circ/\rho\bigr)$.
+Two normalisations are built into \eqref{eq:entropy} and both are needed later:
+the lower limit $A_d$ in the integral makes $\Pi(A_d)=0$, while measuring the
+pressure from $P^\circ$ places the minimum of $\Pi$ at the diastolic area. The dynamics depend on $\Pi'$.
+
+\begin{lemma}[Entropy structure of the blood-flow system]\label{lem:entropy_pair}
+The pair $(\eta,q)$ of \eqref{eq:entropy} is an entropy pair in the sense of
+Definition~\ref{def:entropy_defs}, with entropy variables
+$\bm\vartheta(\mathbf w)=\eta'(\mathbf w)=\bigl(\mathcal H-P^\circ/\rho,\ Q\bigr)^\top$.
+Moreover $\eta$ is strictly convex on $\mathcal U$,
+\begin{equation}\label{eq:hessian}
+  \nabla^2\eta(\mathbf w)=\begin{pmatrix}c^2/A&U\\ U&A\end{pmatrix},
+  \qquad \det\nabla^2\eta=c^2-U^2>0,
+  \qquad \operatorname{tr}\nabla^2\eta=c^2/A+A>0,
+\end{equation}
+so $\nabla^2\eta$ is positive definite precisely for $|U|<c$. Finally,
+\[
+  \mathbf S(\mathbf w)^\top\bm\vartheta(\mathbf w)=-fU^2\le0.
+\]
+\end{lemma}
+
+\begin{proof}
+Since $\Pi'(A)=(P(A)-P^\circ)/\rho$, differentiation gives
+$\eta_A=\tfrac12U^2+\Pi'(A)=\mathcal H-P^\circ/\rho$ and $\eta_U=AU=Q$, which is
+$\bm\vartheta$ by definition. It is worth observing that the two components of
+$\bm\vartheta$ are precisely the total head and the flow rate, that is, the two
+quantities constrained by the junction conditions
+\eqref{eq:junction_transmission}; Lemma~\ref{lemma:junction_energy} below is a
+direct consequence of this coincidence.
+
+For compatibility, recall
+$\mathbf F'=\bigl(\begin{smallmatrix}U&A\\ P'/\rho&U\end{smallmatrix}\bigr)$. A
+direct computation gives $\partial_Aq=\vartheta_1U+QP'/\rho$ and
+$\partial_Uq=\vartheta_1A+QU$, that is $q'=\bm\vartheta^\top\mathbf F'$, so
+$(\eta,q)$ is an entropy pair.
+
+For convexity, $\eta_{AA}=\Pi''(A)=P'(A)/\rho=c^2/A$, $\eta_{AU}=U$ and
+$\eta_{UU}=A$, which is \eqref{eq:hessian}. A symmetric $2\times2$ matrix with
+positive trace and positive determinant has two positive eigenvalues, and both
+invariants are positive exactly when $A>0$ and $|U|<c$. Equivalently, completing
+the square,
+\begin{equation}\label{eq:posdef}
+  \mathbf z^\top\nabla^2\eta\,\mathbf z
+  =A\Bigl(z_U+\tfrac{U}{A}z_A\Bigr)^{2}+\frac{c^2-U^2}{A}\,z_A^2 ,
+\end{equation}
+which exhibits the quadratic form as a sum of two nonnegative contributions and
+absorbs the cross term $2Uz_Az_U$ into the square for arbitrary $z_A,z_U$. Taking
+$z_U=-\tfrac{U}{A}z_A$ reduces the form to $(c^2-U^2)z_A^2/A$, establishing the stated characterization. Finally
+$\mathbf S^\top\bm\vartheta=(0,-fU/A)\cdot(\mathcal H-P^\circ/\rho,\,AU)^\top=-fU^2$.
+\end{proof}
+
+\begin{remark}[Convexity and the admissible set]\label{rem:convex_subcritical}
+In the primitive variables $(A,U)$, positive definiteness of the entropy Hessian is equivalent to subcriticality. In the conservative variables $(A,Q)$ the corresponding entropy is strictly convex for every $A>0$. The admissible states of Theorem~\ref{thm:existence_uniqueness} lie in the primitive-variable convexity region.
+\end{remark}
+
+\begin{lemma}[Positivity of the energy]\label{energy_positivity}
+Let
+\begin{equation}\label{eq:energy}
+  \mathscr E_h(t)=\int_{\Th}\eta(\wh)\,dx
+  +\sum_{i\in\mathrm{RCR}}\frac{C_i}{2\rho}\bigl(P_{c,i}-P_{\mathrm{out},i}\bigr)^2 .
+\end{equation}
+Then $\Pi(A_d)=\Pi'(A_d)=0$ and $\Pi''(A)>0$ for all $A>0$. Consequently
+$\eta(\mathbf w)\ge0$ and $\mathscr E_h(t)\ge0$ at every admissible discrete
+state, with equality precisely at the rest state $A=A_d$, $U=0$,
+$P_{c,i}=P_{\mathrm{out},i}$.
+\end{lemma}
+
+\begin{proof}
+The potential $\Pi$ is a definite integral whose lower limit is $A_d$, so
+$\Pi(A_d)=0$ by construction. The fundamental theorem of calculus gives
+$\Pi'(A)=(P(A)-P^\circ)/\rho$, and $P(A_d)=P^\circ$ then yields $\Pi'(A_d)=0$.
+Differentiating once more,
+\[
+  \Pi''(A)=P'(A)/\rho>0,\qquad A>0 .
+\]
+Hence $\Pi$ is strictly convex with a stationary point at $A_d$, which is
+therefore its unique global minimum, so $\Pi(A)\ge\Pi(A_d)=0$ with equality only
+at $A=A_d$. Since $\tfrac12AU^2\ge0$ for $A>0$, vanishing only when $U=0$, we
+obtain $\eta\ge0$ with the stated equality case. The Windkessel contributions in
+\eqref{eq:energy} are squares with $C_i\ge0$, and $\mathscr E_h\ge0$ follows by
+integration and summation.
+\end{proof}
+
+\subsection{Exact discrete energy balance}\label{sec:energy_balance}
+
+We now derive an exact discrete energy identity, assuming exact spatial integration and a constant reference pressure $P^\circ$. Write $f_{K,F}:=\widehat{\mathbf F}_h\cdot\bm n$ for the
+complete numerical normal flux on the face $F$ of the element $K$, and
+$\sigma_{K,F}:=\bm b\cdot\bm n$ for the associated orientation.
+
+\begin{lemma}[Discrete energy identity]\label{lemma:eta_inequality}
+Let $(\wh,\who)\in\mathcal U$ solve \eqref{eq:semidiscrete1}--\eqref{eq:semidiscrete2}
+with polynomial degree $p=k$, and let $v_h$ denote the elementwise $L^2$
+projection of $\bm\vartheta(\wh,s)$ onto $\mathbf W_h^k$. Define the flux defect
+and the volume defect
+\begin{align}
+  R_h&:=\sum_{K}\sum_{F\subset\partial K}
+    \Bigl[\,v_h(F)^\top f_{K,F}
+      -\sigma_{K,F}\,q(\widehat{\mathbf w}_{K,F},F)\Bigr],
+  \label{eq:Rh}\\[2pt]
+  V_h&:=\sum_{K}\Bigl[\bigl(\mathbf F(\wh,s),\partial_sv_h\bigr)_K
+      +\bigl(\mathbf S,\,v_h-\bm\vartheta(\wh,s)\bigr)_K\Bigr].
+  \label{eq:Vh}
+\end{align}
+Then, with $f$ the friction coefficient of Section~\ref{sec:model-formulation},
+\begin{equation}\label{eq:semi_discrete_energy}
+  \frac{d}{dt}\int_{\Th}\eta(\wh,s)
+  +\int_{\Th}fU_h^2
+  +\sum_{K}\sum_{F\subset\partial K}\sigma_{K,F}\,q(\widehat{\mathbf w}_{K,F},F)
+  +R_h=V_h .
+\end{equation}
+For $p=0$ with coefficients constant on each element one has $v_h=\bm\vartheta(\wh)$
+and $V_h=0$.
+\end{lemma}
+
+\begin{proof}
+Test \eqref{eq:semidiscrete1} with $\mathbf v=v_h$. Since
+$\partial_t\wh\in\mathbf W_h^k$, projection orthogonality removes the projection
+error from the time term,
+\[
+  \bigl(\partial_t\wh,v_h\bigr)_K=\bigl(\partial_t\wh,\bm\vartheta\bigr)_K
+  =\int_K\partial_t\eta=\frac{d}{dt}\int_K\eta ,
+\]
+while $\bm\vartheta^\top\mathbf S=-fU_h^2$ from Lemma~\ref{lem:entropy_pair} gives
+$(\mathbf S,v_h)_K=-\int_KfU_h^2+(\mathbf S,v_h-\bm\vartheta)_K$. Summing the cell
+equations over all $K$ and collecting the volume and projection remainders into
+$V_h$,
+\[
+  \frac{d}{dt}\int_{\Th}\eta+\int_{\Th}fU_h^2
+  +\sum_{K,F}v_h(F)^\top f_{K,F}=V_h .
+\]
+Adding and subtracting the physical trace entropy fluxes
+$\sigma_{K,F}\,q(\widehat{\mathbf w}_{K,F})$ inside the face sum, and invoking the
+definition \eqref{eq:Rh}, yields \eqref{eq:semi_discrete_energy}.
+
+For $p=0$ with elementwise constant coefficients the function
+$\bm\vartheta(\wh,s)$ already lies in $\mathbf W_h^0$, so $v_h=\bm\vartheta(\wh)$,
+$\partial_sv_h=0$ and $v_h-\bm\vartheta=0$, whence $V_h=0$.
+\end{proof}
+
+\begin{remark}[Entropy-variable jumps]\label{rem:nojump}
+The exact vector identity
+\begin{equation}\label{eq:mvt}
+  \bm\vartheta(\mathbf w)-\bm\vartheta(\mathbf z)
+  =\int_0^1\nabla^2\eta\bigl(\mathbf z+\theta(\mathbf w-\mathbf z)\bigr)
+    (\mathbf w-\mathbf z)\,d\theta
+\end{equation}
+gives a nonnegative pairing with $\mathbf w-\mathbf z$ whenever the joining segment lies in the convexity region. An entropy-conservative two-state flux satisfies the entropy-potential jump condition
+\begin{equation}\label{eq:ecjump}
+  \bigl(\bm\vartheta(\mathbf w)-\bm\vartheta(\mathbf z)\bigr)^\top
+  f^{\,\mathrm{ec}}_n(\mathbf w,\mathbf z)
+  =\sigma\bigl(\psi(\mathbf w)-\psi(\mathbf z)\bigr),
+  \qquad \psi:=\bm\vartheta^\top\mathbf F-q,
+\end{equation}
+with $\psi$ the entropy potential \cite{tadmor1987numerical}. For the HLL scheme, $R_h$ collects the complete wave-weighted numerical flux, including its physical-flux and jump contributions.
+\end{remark}
+
+\begin{lemma}[Physical trace energy at junctions]\label{lemma:junction_energy}
+Assume the junction conditions \eqref{eq:junction_transmission} impose global
+mass conservation $\sum_{i\in J}s_i\widehat Q_i=0$ together with continuity of
+the total head. Then the consistent junction energy flux vanishes,
+\[
+  \Sigma_J:=\sum_{i\in J}s_i\,q(\widehat{\mathbf w}_i)=0 .
+\]
+\end{lemma}
+
+\begin{proof}
+Continuity of the head means that all branches share one value,
+$\mathcal H(\widehat{\mathbf w}_i)\equiv\mathcal H^*$. That common value can then be
+factored out of the sum, and mass conservation finishes the argument:
+\[
+  \Sigma_J=\bigl(\mathcal H^*-P^\circ/\rho\bigr)\sum_{i\in J}s_i\widehat Q_i
+  =\bigl(\mathcal H^*-P^\circ/\rho\bigr)\sum_{i\in J}s_i\widehat A_i\widehat U_i=0 .
+  \qedhere
+\]
+\end{proof}
+
+\begin{remark}[Total-head coupling]\label{rem:head}
+Common total head factors the physical trace energy flux as $(\mathcal H^*-P^\circ/\rho)\sum_i s_i\widehat Q_i$. The numerical-flux contribution is collected in $R_h$. The benchmarks in Section~\ref{sec:numerical_results} use the total-head condition \eqref{eq:junction_transmission}.
+\end{remark}
+
+\begin{theorem}[Energy balance with numerical-flux defects]\label{thm:energy_balance}
+On the local admissible interval of Theorem~\ref{thm:existence_uniqueness},
+assume junctions as in Lemma~\ref{lemma:junction_energy}, prescribed-flow inlets
+and capacitive RCR outlets with constant $P_{\mathrm{out},i}$. Then
+\begin{equation}\label{eq:energy_balance}
+  \frac{d}{dt}\mathscr E_h
+  +\int_{\Th}fU_h^2
+  +\sum_{i\in\mathrm{RCR}}
+    \left[\frac{R_{1,i}\widehat Q_i^{\,2}}{\rho}
+      +\frac{(P_{c,i}-P_{\mathrm{out},i})^2}{\rho R_{2,i}}\right]
+  =\mathcal B_\partial+V_h-R_h ,
+\end{equation}
+with $\mathscr E_h$ defined in \eqref{eq:energy} and $R_{1,i}\ge0$. The friction
+and resistive contributions on the left are nonnegative. The boundary term
+\begin{equation}\label{eq:boundary_term}
+  \mathcal B_\partial
+  =\sum_{\mathrm{inlets}}Q_{\mathrm{in}}
+     \bigl(\widehat{\mathcal H}-P^\circ/\rho\bigr)
+   -\sum_{i\in\mathrm{RCR}}\widehat Q_i
+     \left[\tfrac12\widehat U_i^2
+       +\frac{P_{\mathrm{out},i}-P^\circ}{\rho}\right]
+\end{equation}
+and $V_h-R_h$ collect the boundary power and numerical-flux and volume contributions.
+\end{theorem}
+
+\begin{proof}
+Start from \eqref{eq:semi_discrete_energy} and evaluate the physical trace
+entropy flux sum $\sum_{K,F}\sigma_{K,F}q(\widehat{\mathbf w}_{K,F})$ face by
+face. On an ordinary interface the trace is single-valued and
+$\sigma_L=-\sigma_R$, so the two contributions cancel in pairs. At a junction
+they cancel by Lemma~\ref{lemma:junction_energy}. At an inlet, where
+$\sigma=-1$, the contribution is
+$-Q_{\mathrm{in}}\bigl(\widehat{\mathcal H}-P^\circ/\rho\bigr)$.
+
+The outlets require a short computation. Expanding the flux at an RCR face,
+where $\sigma=+1$, and inserting the pressure-continuity row
+$P(\widehat A_i)=R_{1,i}\widehat Q_i+P_{c,i}$ of \eqref{eq:bc_rcr},
+\begin{equation}\label{eq:out1}
+  \widehat Q_i\bigl(\widehat{\mathcal H}_i-P^\circ/\rho\bigr)
+  =\widehat Q_i\left(\tfrac12\widehat U_i^2
+     +\frac{P(\widehat A_i)-P^\circ}{\rho}\right)
+  =\tfrac12\widehat Q_i\widehat U_i^2
+   +\frac{R_{1,i}\widehat Q_i^{\,2}}{\rho}
+   +\frac{\widehat Q_i\bigl(P_{c,i}-P^\circ\bigr)}{\rho}.
+\end{equation}
+Only the last term still involves the terminal unknown, and it is eliminated by
+the Windkessel equation itself. Multiplying
+$C_i\dot P_{c,i}=\widehat Q_i-(P_{c,i}-P_{\mathrm{out},i})/R_{2,i}$ by
+$(P_{c,i}-P_{\mathrm{out},i})/\rho$, and using
+$(P_{c,i}-P_{\mathrm{out},i})\dot P_{c,i}
+=\tfrac12\tfrac{d}{dt}(P_{c,i}-P_{\mathrm{out},i})^2$ for constant
+$P_{\mathrm{out},i}$, gives the energy law of the terminal,
+\begin{equation}\label{eq:out2}
+  \frac{d}{dt}\left[\frac{C_i}{2\rho}(P_{c,i}-P_{\mathrm{out},i})^2\right]
+  +\frac{(P_{c,i}-P_{\mathrm{out},i})^2}{\rho R_{2,i}}
+  =\frac{\widehat Q_i}{\rho}\bigl(P_{c,i}-P_{\mathrm{out},i}\bigr),
+\end{equation}
+that is, storage rate plus resistive loss equals the power received from the
+vessel. Solving \eqref{eq:out2} for $\widehat Q_iP_{c,i}/\rho$ and substituting
+into \eqref{eq:out1},
+\begin{equation}\label{eq:out3}
+  \widehat Q_i\bigl(\widehat{\mathcal H}_i-P^\circ/\rho\bigr)
+  =\frac{d}{dt}\!\left[\frac{C_i(P_{c,i}-P_{\mathrm{out},i})^2}{2\rho}\right]
+   +\underbrace{\frac{R_{1,i}\widehat Q_i^{\,2}}{\rho}
+     +\frac{(P_{c,i}-P_{\mathrm{out},i})^2}{\rho R_{2,i}}}_{\ \ge0}
+   +\widehat Q_i\left[\tfrac12\widehat U_i^2
+     +\frac{P_{\mathrm{out},i}-P^\circ}{\rho}\right].
+\end{equation}
+Each of the three groups in \eqref{eq:out3} has a destination. The first is
+exactly the time derivative of the terminal part of $\mathscr E_h$ in
+\eqref{eq:energy} and is absorbed into $\tfrac{d}{dt}\mathscr E_h$; the second is
+nonnegative and stays on the left of \eqref{eq:energy_balance}; the third,
+together with the inlet contribution, is transposed to the right and constitutes
+$\mathcal B_\partial$ as given in \eqref{eq:boundary_term}. Substituting back into
+\eqref{eq:semi_discrete_energy} proves the balance.
+\end{proof}
+
+\begin{remark}[Terminal boundary power]\label{rem:kinetic_efflux}
+The final bracket in \eqref{eq:out3} contains the kinetic efflux $\tfrac12\widehat Q_i\widehat U_i^2$ and the pressure-reference work $\widehat Q_i(P_{\mathrm{out},i}-P^\circ)/\rho$. These contributions enter $\mathcal B_\partial$ explicitly.
+\end{remark}
+
+\begin{corollary}[Closed network, conditional decay]\label{closed_network}
+If $\Ehb=\emptyset$, then $\mathcal B_\partial\equiv0$ and
+\[
+  \frac{d}{dt}\mathscr E_h+\int_{\Th}fU_h^2=V_h-R_h .
+\]
+The discrete energy is therefore non-increasing provided $R_h-V_h\ge0$.
+\end{corollary}
+
+\begin{corollary}[Solution-dependent bound]\label{given_inflow}
+Under the hypotheses of Theorem~\ref{thm:energy_balance},
+\begin{equation}\label{standard_energy}
+  \mathscr E_h(t)\le\mathscr E_h(0)
+  +\int_0^t\Bigl(|\mathcal B_\partial|+|V_h|+|R_h|\Bigr)\,d\tau,
+  \qquad 0\le t\le T^* .
+\end{equation}
+\end{corollary}
+
+\begin{proof}
+Discard the nonnegative friction and resistive terms in
+\eqref{eq:energy_balance} and integrate in time.
+\end{proof}
+
+\begin{remark}[Boundary-state dependence]\label{rem:notclosed}
+The right-hand side of \eqref{standard_energy} depends on the solution through the boundary states and numerical defects. At an inlet, \eqref{eq:bc_inflow} couples the prescribed flow to the outgoing interior invariant through
+\[
+  \widehat A_F\Bigl[W_2^{\mathrm{int}}+4\bigl(c(\widehat A_F)-c_0\bigr)\Bigr]
+  =Q_{\mathrm{in}}(t).
+\]
+This relation determines the inlet state and hence its total head. The bound applies on the local admissible interval $[0,T^*]$.
+\end{remark}
+
+\begin{remark}[Gravitational source]\label{rem:gravity}
+When a gravitational body force is included, the momentum source carries the
+extra term $\bm g\cdot\bm b(\bm x)$, contributing the power
+$\int_{\Th}(\bm g\cdot\bm b)\,Q_h$ to the right-hand side of
+\eqref{eq:semi_discrete_energy} and \eqref{eq:energy_balance}, where it is
+collected in $V_h$. Its absolute value contributes to the right-hand side of \eqref{standard_energy}.
+\end{remark}
+
+\begin{remark}[Polynomial degree and energy diagnostics]\label{rem:scopek}
+For $p\ge1$ and for spatially varying tube-law coefficients, the projection in Lemma~\ref{lemma:eta_inequality} retains the volume term $V_h$. The computed energy $\mathscr E_h(t)$ and the residual of \eqref{eq:energy_balance} provide diagnostics for the time-discrete solution.
+\end{remark}
+\section{Time Integration}\label{sec:time_integration}
+
+The semi-discrete problem has the residual DAE form
+\begin{equation}
+  \mathbf F(t,\mathbf y,\dot{\mathbf y})=\mathbf 0
+  \label{eq:time_dae}
+\end{equation}
+with the differential and algebraic components identified below. Let $t_n$ be
+the current time, $h_n=t_n-t_{n-1}$ the current step size, and $q_n$ the
+order of a variable-step BDF formula. The multistep approximation satisfies
+\begin{equation}
+  \sum_{i=0}^{q_n}\alpha_{n,i}\mathbf y_{n-i}
+  = h_n\dot{\mathbf y}_n,
+  \label{eq:bdf_formula}
+\end{equation}
+where the coefficients $\alpha_{n,i}$ are determined by the order and the
+history of the step sizes. Substitution into the residual DAE produces the
+nonlinear algebraic problem
+\begin{equation}
+  \mathbf G_n(\mathbf y_n)
+  \equiv
+  \mathbf F\!\left(t_n,\mathbf y_n,
+  \frac{1}{h_n}\sum_{i=0}^{q_n}\alpha_{n,i}\mathbf y_{n-i}\right)
+  =\mathbf 0 .
+  \label{eq:bdf_residual}
+\end{equation}
+Newton linearization of this problem gives the following result.
+\begin{equation}
+  \mathcal J_n
+  =\frac{\partial\mathbf G_n}{\partial\mathbf y_n}
+  =\frac{\partial\mathbf F}{\partial\mathbf y}
+   +\gamma_n\frac{\partial\mathbf F}{\partial\dot{\mathbf y}},
+  \qquad
+  \gamma_n=\frac{\alpha_{n,0}}{h_n}.
+  \label{eq:newton_linearization}
+\end{equation}
+This relation is the mathematical link between the BDF time discretization and
+the global Newton system. The numerical computations use the SUNDIALS IDA
+solver as the backend for this residual DAE procedure \cite{hindmarsh2005sundials}.
+
+\paragraph{Global unknown vector.}
+The unknowns are grouped into a cell block, a trace block, and a capacitor
+block,
+\begin{equation}
+  \mathbf y
+  =
+  \bigl(\mathbf y_{\mathrm{cell}},\;
+        \mathbf y_{\mathrm{trace}},\;
+        \mathbf y_{\mathrm{pc}}\bigr),
+  \label{eq:global_state}
+\end{equation}
+\begin{equation}
+  \mathbf y_{\mathrm{pc}}
+  =\bigl(P_{c,1},\dots,P_{c,N_{\mathrm{rcr}}}\bigr),
+  \label{eq:capacitor_state}
+\end{equation}
+where $\mathbf y_{\mathrm{pc}}$ carries one capacitor pressure $P_{c,i}$ for
+each \emph{capacitive} ($C_i>0$) RCR terminal. Purely resistive ($C_i=0$)
+outlets impose pressure through algebraic conditions in $\mathbf R_{\mathrm{trace}}$.
+
+\paragraph{Three-block residual.}
+Stacking the cell weak form~\eqref{eq:hdg_local}, the transmission conditions,
+and the Windkessel residual~\eqref{eq:rcr_capacitor} gives
+\begin{equation}
+  \mathbf F(t,\mathbf y,\dot{\mathbf y})
+  =
+  \begin{pmatrix}
+  M_K\,\dot{\mathbf y}_{\mathrm{cell}}-\mathbf R_{\mathrm{cell}}(t,\mathbf y)\\[6pt]
+  \mathbf R_{\mathrm{trace}}(t,\mathbf y)\\[6pt]
+  \mathbf R_{\mathrm{pc}}(t,\mathbf y,\dot{\mathbf y}_{\mathrm{pc}})
+  \end{pmatrix}
+  =\mathbf 0 .
+  \label{eq:global_dae_residual}
+\end{equation}
+Here $\mathbf R_{\mathrm{cell}}$ is the cell residual associated with the local weak form~\eqref{eq:hdg_local} (volume
+flux, face flux via the trace, and source), $\mathbf R_{\mathrm{trace}}$
+collects the interior, inflow, single-resistance, RCR, and junction transmission
+residuals, and $\mathbf R_{\mathrm{pc}}$ is the capacitor
+residual~\eqref{eq:rcr_capacitor}, which contains the time derivative
+$C_i\,\dot P_{c,i}$. Thus, the time derivative enters only through the cell mass
+matrix $M_K$ and the capacitor block; the trace rows are purely algebraic.
+
+\textit{Differential / algebraic split.}
+The rows carrying a time derivative are differential, the rest algebraic:
+\begin{equation}
+  \text{differential:} \;
+  \{\mathbf y_{\mathrm{cell}}\}\cup\{\mathbf y_{\mathrm{pc}}\},
+  \label{eq:differential_components}
+\end{equation}
+\begin{equation}
+  \text{algebraic:}  \;
+  \{\mathbf y_{\mathrm{trace}}\}.
+  \label{eq:algebraic_components}
+\end{equation}
+The cell block and the capacitor block carry the time derivatives, whereas the
+trace block is algebraic. Under the non-singularity condition established in
+Section~\ref{sec:analysis}, the trace variables can be locally eliminated, so
+the residual system~\eqref{eq:global_dae_residual} is a semi-explicit
+index-one DAE.
+
+\textit{Newton system.}
+Using the notations in \eqref{eq:newton_linearization}, the derivative block is 
+\begin{equation}
+  \frac{\partial\mathbf F}{\partial\dot{\mathbf y}}
+  =\mathrm{blockdiag}\bigl(M_K,\,\mathbf 0,\,\mathbf C_{\mathrm{wk}}\bigr),
+  \qquad
+  \mathbf C_{\mathrm{wk}}=\mathrm{diag}(C_i).
+  \label{eq:dae_derivative_block}
+\end{equation}
+The Newton matrix has the form 
+\begin{equation}
+ \mathcal J_n
+  =
+  \begin{pmatrix}
+   \gamma_n M_K + A & B & 0\\[4pt]
+  C & D & E\\[4pt]
+  0 & G & \gamma_n \,\mathbf C_{\mathrm{wk}}+\mathbf R_2^{-1}
+  \end{pmatrix},
+  \label{eq:ida_Jblocks}
+\end{equation}
+% This saddle-point system \eqref{eq:ida_Jblocks} in which the differential unknowns are coupled to the algebraic trace unknowns. The leading block $\mathcal{A}$ collects the two differential contributions and is block-diagonal i.e., the $\alpha$ scaled cell mass matrix $\alpha M_k +A$ and the capacitor block $\alpha\,\mathbf C_{\mathrm{wk}}+\mathbf R_2^{-1}$, with $\mathbf C_{\mathrm{wk}}=\mathrm{diag}(C_i)$ the diagonal matrix of terminal capacitance, so that the cell and capacitor unknowns are uncoupled form each other. 
+in which $A,B,C,D$ are the cell--cell, cell--trace, trace--cell and
+trace--trace blocks already assembled for the network. The capacitor coupling reuses the boundary-section derivatives directly:
+
+% The off-diagonal blocks $\mathcal{B}$ and $\mathcal{C}$ couples the differential and algebraic groups. They contain the cell-trace block $B$ and trace-cell block $C$, they contain the capacitor coupling whose entries are from the boundary-section directly:
+\begin{equation}
+  E \;\text{contains}\; E_{\mathrm{rcr}}
+  =\frac{\partial\widehat{\mathbf B}_h^{\mathrm{rcr}}}{\partial P_c}
+  =\begin{bmatrix}-1\\[2pt]0\end{bmatrix} ,
+  \label{eq:rcr_trace_derivative}
+\end{equation}
+\begin{equation}
+  G \;\text{contains}\;
+  \frac{\partial R_{\mathrm{pc},i}}{\partial(\widehat A_i,\widehat U_i)}
+  =\bigl(-\widehat U_i,\;-\widehat A_i\bigr),
+  \label{eq:rcr_capacitor_derivative}
+\end{equation}
+% so that $E$ (trace-$P_c$) goes to $\mathcal{C}$ and $G$ ($P_c$-trace) in $\mathcal{B}$. The capacitor diagonal entry per outlet, which forms the lower
+% block of $\mathcal A$, is
+and the capacitor diagonal entry per outlet is
+\begin{equation}
+  \frac{\partial R_{\mathrm{pc},i}}{\partial P_{c,i}}
+  +\gamma_n\,\frac{\partial R_{\mathrm{pc},i}}{\partial\dot P_{c,i}}
+  =\frac{1}{R_{2,i}}+\gamma_n\,C_i .
+  \label{eq:capacitor_newton_diagonal}
+\end{equation}
+The two mass terms $\gamma_n M_K$ and $\gamma_n C_i$ and the remaining entries comes from the residual Jacobian assembly. Here note the capacitance $C_i$ is distinct from the trace--cell block $C$.
+
+This block structure is also the coupling interface for an external dynamical model. If an elasticity discretization introduces unknowns z and residuals $R_{\mathrm{ext}}(t, z, \dot{z}; y)$, 
+ the coupled problem is obtained by augmenting
+$ y$  and $F$ with the elastic variables and the interface equations.
+The resulting off-diagonal blocks are assembled in the same Newton matrix \eqref{eq:capacitor_newton_diagonal}, providing a monolithic formulation for future external-elasticity coupling.
+
+\textit{Solver.}
+The complete solution procedure is summarized in
+Figure~\ref{fig:solver_workflow}. Each Newton iteration solves $\mathcal{J}_n \,\delta\mathbf y=-\mathbf G_n$
+with the sparse direct solver \textsc{mumps} \cite{amestoy2000mumps}. Relative to the explicit-update formulation only the system size and
+sparsity change: a few extra rows/columns for $y_{\mathrm{pc}}$ and the off-diagonal $E$, $G$ couplings.
+
+% \paragraph{Consistent initialisation.}
+% At $t=0$ the residual DAE requires a pair $(\mathbf y_0,\dot{\mathbf y}_0)$ satisfying
+% $\mathbf F(0,\mathbf y_0,\dot{\mathbf y}_0)=\mathbf 0$. The cell DoF are seeded
+% at rest,
+% \begin{equation}
+%   A=A_d(x),\qquad U=0,
+%   \label{eq:seed_cell}
+% \end{equation}
+% and each capacitor pressure at a prescribed level $P_{c,i}(0)$ (e.g.\ diastolic,
+% or $P_{\mathrm{out},i}$). The trace DoF are then obtained from a dedicated
+% Newton solve of
+% \begin{equation}
+%   \mathbf R_{\mathrm{trace}}(0,\mathbf y_0)=\mathbf 0
+%   \label{eq:trace_initialization}
+% \end{equation}
+% holding the cell and capacitor DoF fixed (routine
+% \texttt{initialize\_trace\_unknowns()}). Operationally this is enforced by
+% replacing the cell and $P_c$ rows of the Newton matrix with identity rows (unit
+% diagonal, zero right-hand side), so their increments vanish and they remain at
+% the seeded values, while the nonsingular trace block is inverted for
+% $\mathbf y_{\mathrm{trace}}$. Stamping the unit diagonal on the $P_c$ rows is
+% essential: those rows are otherwise empty in the trace-only system and the
+% Newton matrix would be singular.
+
+% The differential rates follow from the residual. The cell rate is
+% \begin{equation}
+%   \dot{\mathbf y}_{\mathrm{cell}}
+%   =M_K^{-1}\,\mathbf R_{\mathrm{cell}}(0,\mathbf y_0),
+%   \label{eq:initial_cell_rate}
+% \end{equation}
+% and, since $U=0\Rightarrow Q_h=0$, the capacitor rate from
+% $\mathbf R_{\mathrm{pc}}=\mathbf 0$ is
+% \begin{equation}
+%   \dot P_{c,i}(0)
+%   =-\,\frac{P_{c,i}(0)-P_{\mathrm{out},i}}{R_{2,i}\,C_i},
+%   \label{eq:initial_capacitor_rate}
+% \end{equation}
+% with $\dot{\mathbf y}_{\mathrm{trace}}=\mathbf 0$. The integrator's consistent-IC
+% consistent-IC correction (\texttt{ic\_type = use\_y\_diff}) then refines the
+% pair $(\mathbf y_0,\dot{\mathbf y}_0)$ before the first step.
+
+\noindent
+\begin{figure}[t]
+\centering
+\resizebox{\textwidth}{!}{%
+\begin{tikzpicture}[
+  font=\sffamily\scriptsize,
+  >={Stealth[length=2.0mm]},
+  process/.style = {
+    rectangle, rounded corners=2pt, draw=black!70, thick,
+    fill=blue!6, minimum width=34mm, minimum height=12mm,
+    align=center, text width=32mm, inner sep=1.5mm
+  },
+  subprocess/.style = {
+    rectangle, rounded corners=1pt, draw=black!50,
+    fill=orange!6, minimum width=34mm, minimum height=12mm,
+    align=center, text width=32mm, inner sep=1.2mm
+  },
+  decision/.style = {
+    diamond, draw=black!70, thick, fill=green!8, aspect=1.7,
+    align=center, inner sep=0.4mm, text width=17mm
+  },
+  startstop/.style = {
+    rectangle, rounded corners=6pt, draw=black!70, thick,
+    fill=black!5, minimum width=22mm, minimum height=9mm, align=center
+  },
+  loopbox/.style = {
+    rectangle, rounded corners=2pt, draw=purple!60!black, thick,
+    dashed, inner sep=2.5mm
+  },
+  arr/.style = {-{Stealth[length=2mm]}, thick},
+  lbl/.style = {font=\sffamily\scriptsize, fill=white, inner sep=1pt}
+]
+% ---------- Row A : setup phase (left -> right) ----------
+\node[startstop]                       (start)  {Start};
+\node[process,   right=9mm of start]   (params) {Read parameters (.prm) \& vessel network mesh (VTK)};
+\node[process,   right=9mm of params]  (setup)  {Build HDG space: DoFHandler, trace/face maps, sparsity patterns};
+\node[process,   right=9mm of setup]   (init)   {Initialize cell state, trace unknowns \& terminal RCR capacitors};
+
+% ---------- Row B : IDA / Newton loop (right -> left) ----------
+\node[subprocess, below=10mm of init]      (residual) {\textbf{assemble\_residual}: cell + trace (interior/boundary/junction) + RCR};
+\node[subprocess, left=9mm of residual]    (jacobian) {\textbf{assemble\_jacobian}: numerical-flux Jacobians (HLL / HLL-HDG / LF)};
+\node[subprocess, left=9mm of jacobian]    (linsolve) {Linear solve: direct (MUMPS) or GMRES + LU (refactor on stall)};
+\node[decision,   left=9mm of linsolve]    (conv)     {Newton converged?};
+
+% ---------- Row C : output / time check (left -> right) ----------
+\node[process,  below=16mm of conv]     (output) {Compute pressure, write VTK \& CSV (\textbf{output\_step})};
+\node[decision, right=14mm of output]   (tend)   {Final time reached?};
+\node[startstop, below=12mm of tend]    (stop)   {End};
+
+% ---------- loop box ----------
+\begin{scope}[on background layer]
+\node[loopbox, fit=(residual)(jacobian)(linsolve)(conv), inner sep=4mm] (loop) {};
+\end{scope}
+\node[purple!60!black, font=\sffamily\scriptsize\itshape,
+      above=0.7mm of loop.north west, anchor=south west]
+  {SUNDIALS IDA time step (implicit DAE)};
+
+% ---------- arrows ----------
+\draw[arr] (start)  -- (params);
+\draw[arr] (params) -- (setup);
+\draw[arr] (setup)  -- (init);
+\draw[arr] (init)   -- (residual);
+\draw[arr] (residual) -- (jacobian);
+\draw[arr] (jacobian) -- (linsolve);
+\draw[arr] (linsolve) -- (conv);
+\draw[arr] (conv)   -- (output) node[lbl, pos=0.4]{yes};
+\draw[arr] (output) -- (tend);
+\draw[arr] (tend)   -- (stop)   node[lbl, pos=0.4]{yes};
+
+% Newton feedback: conv -> residual (channel below row B)
+\draw[arr] (conv.south) -- ++(0,-6mm) -| (residual.south)
+  node[lbl, pos=0.25]{no, update $y$};
+
+% Time feedback: tend -> residual (channel on the right)
+\draw[arr] (tend.east)
+  -- ([xshift=13mm]init.east |- tend)
+  -- ([xshift=13mm]init.east |- residual)
+  node[lbl, pos=0.55]{no, advance $t$}
+  -- (residual.east);
+\end{tikzpicture}}
+\caption[Workflow of the implicit HDG solver]{Workflow of the implicit HDG solver. After the parameters and the vessel-network mesh are read, the HDG
+space is built and the cell, trace and terminal RCR capacitor unknowns are initialized. Each SUNDIALS IDA time step (dashed box) is a Newton iteration
+consisting of residual assembly, Jacobian assembly and a sparse linear solve,
+repeated until convergence. The pressure is then computed and the solution
+written to file, and the time loop continues until the final time is reached.}
+\label{fig:solver_workflow}
+\end{figure}
+
+\section{Numerical Results}\label{sec:numerical_results}
+All computations and scaling results reported in this section are
+obtained with the finite element library \texttt{deal.II}~\cite{arndt2025deal}
+(development version 9.8.0-pre), built in debug mode with GCC 13.3.0, Open MPI 4.1.6 and SUNDIALS 6.4.1. The experiments are run on a workstation with an AMD Ryzen AI 9 HX 370 processor (12 cores,
+24 threads) and 124\,GiB of RAM, running TUXEDO OS.
+\subsection{Convergence Studies}
+As a first verification test, we consider a manufactured solution to assess
+the spatial accuracy of the proposed HDG method. The manufactured test case
+is inspired by Example~5.1 of \cite{lucca2023semi}. We consider the
+one-dimensional blood-flow equations~\eqref{equation_system} on a single
+vessel of length $L=1\,\mathrm{m}$ and final time $T=0.1\,\mathrm{s}$. The
+exact manufactured solution is chosen as
+\begin{align*}
+    A(x,t) &= A_d + \alpha_A\,(1 - \cos(2 \pi t))\, \sin(2 \pi x/L), \\
+    U(x,t) &= \alpha_U\, \sin(2 \pi t)\, \cos(2 \pi x/L),
+\end{align*}
+where $\alpha_A = 5\times 10^{-5}\,\mathrm{m}^2$ and
+$\alpha_U = 0.5\,\mathrm{m/s}$. The corresponding source terms are obtained
+by substituting these expressions into \eqref{equation_system}, so that the
+manufactured solution satisfies the governing equations exactly. Unless
+otherwise stated, all physical parameters are given in SI units. The
+following parameters are used in the numerical experiments:
+
+\emph{blood density} $\rho=1060$, \emph{viscosity} $\mu=0$,
+\emph{wall thickness} $h_\mathrm{w}=1.2\times10^{-3}$,
+\emph{Young's modulus} $E=4\times10^5$, \emph{reference pressure}
+$P_0=0$, \emph{diastolic pressure} $P_d=9.46\times10^3$, and
+\emph{diastolic cross-sectional area} $A_d=4.5239\times10^{-4}$. The errors
+in the variables $A$ and $U$ are measured using the
+$L^2$-norm and $H^1$-seminorm,
+\begin{equation*}
+\|e_w\|_{L^2}=\|w-w_h\|_{L^2},
+\qquad
+|e_w|_{H^1}=|w-w_h|_{H^1},
+\qquad w\in\{A,U\}.
+\end{equation*}
+The corresponding errors and observed convergence rates for polynomial degrees $p=1$, $2$ and $p=3$ are reported in
+Table~\ref{tab:convergence}. The expected order of convergence is achieved
+for both quantities $A$ and $U$ in the $L^2$ and $H^1$ norms.
+\begin{table}[ht]
+\centering
+\caption{Spatial convergence of the HDG scheme on a manufactured solution.
+         Errors and convergence rates in $L^2$ and $H^1$ for the cross-sectional
+         area $A$ and velocity $U$, for polynomial degrees $p=1,2,3$.}
+\label{tab:convergence}
+\setlength{\tabcolsep}{5pt}
+\renewcommand{\arraystretch}{1.05}
+\begin{tabular}{c c rr rr rr rr}
+\hline\hline
+$p$ & $N_h$ &
+$\|e_A\|_{L^2}$ & rate &
+$|e_A|_{H^1}$   & rate &
+$\|e_U\|_{L^2}$ & rate &
+$|e_U|_{H^1}$   & rate \\
+\hline
+\multirow{5}{*}{1}
+ & 4  & $2.197\times10^{-6}$ & --   & $3.316\times10^{-5}$ & --   & $1.926\times10^{-2}$ & --   & $5.766\times10^{-1}$ & --   \\
+ & 8  & $5.714\times10^{-7}$ & 1.94 & $1.758\times10^{-5}$ & 0.92 & $5.021\times10^{-3}$ & 1.94 & $2.982\times10^{-1}$ & 0.95 \\
+ & 16 & $1.441\times10^{-7}$ & 1.99 & $8.960\times10^{-6}$ & 0.97 & $1.286\times10^{-3}$ & 1.97 & $1.506\times10^{-1}$ & 0.99 \\
+ & 32 & $3.609\times10^{-8}$ & 2.00 & $4.514\times10^{-6}$ & 0.99 & $3.256\times10^{-4}$ & 1.98 & $7.549\times10^{-2}$ & 1.00 \\
+ & 64 & $9.030\times10^{-9}$ & 2.00 & $2.264\times10^{-6}$ & 1.00 & $8.193\times10^{-5}$ & 1.99 & $3.778\times10^{-2}$ & 1.00 \\[3pt]
+\midrule
+\multirow{5}{*}{2}
+ & 4  & $2.729\times10^{-7}$ & --   & $8.754\times10^{-6}$ & --   & $2.554\times10^{-3}$ & --   & $1.295\times10^{-1}$ & --   \\
+ & 8  & $3.502\times10^{-8}$ & 2.96 & $2.289\times10^{-6}$ & 1.94 & $3.328\times10^{-4}$ & 2.94 & $3.343\times10^{-2}$ & 1.95 \\
+ & 16 & $4.409\times10^{-9}$ & 2.99 & $5.816\times10^{-7}$ & 1.98 & $4.238\times10^{-5}$ & 2.97 & $8.438\times10^{-3}$ & 1.99 \\
+ & 32 & $5.523\times10^{-10}$ & 3.00 & $1.463\times10^{-7}$ & 1.99 & $5.343\times10^{-6}$ & 2.99 & $2.116\times10^{-3}$ & 2.00 \\
+ & 64 & $6.908\times10^{-11}$ & 3.00 & $3.668\times10^{-8}$ & 2.00 & $6.707\times10^{-7}$ & 2.99 & $5.297\times10^{-4}$ & 2.00 \\[3pt]
+ \midrule
+\multirow{5}{*}{3}
+ & 4  & $2.621\times10^{-8}$ & --   & $1.386\times10^{-6}$ & --   & $2.557\times10^{-4}$ & --   & $1.895\times10^{-2}$ & --   \\
+ & 8  & $1.676\times10^{-9}$ & 3.97 & $1.796\times10^{-7}$ & 2.95 & $1.657\times10^{-5}$ & 3.95 & $2.438\times10^{-3}$ & 2.96 \\
+ & 16 & $1.054\times10^{-10}$ & 3.99 & $2.274\times10^{-8}$ & 2.98 & $1.050\times10^{-6}$ & 3.98 & $3.075\times10^{-4}$ & 2.99 \\
+ & 32 & $6.598\times10^{-12}$ & 4.00 & $2.855\times10^{-9}$ & 2.99 & $6.602\times10^{-8}$ & 3.99 & $3.855\times10^{-5}$ & 3.00 \\
+ & 64 & $4.299\times10^{-13}$ & 3.94 & $3.574\times10^{-10}$ & 3.00 & $4.267\times10^{-9}$ & 3.95 & $4.825\times10^{-6}$ & 3.00 \\
+\hline
+\end{tabular}
+\end{table}
+% \begin{table}[ht]
+% \centering
+% \caption{Spatial convergence of the HDG method for the manufactured solution using polynomial degree $p=1$.}
+% \label{tab:conv_p1}
+% \renewcommand{\arraystretch}{1.0}
+% \begin{tabular}{ccccccccc}
+% \hline
+% Cells &
+% $\|A-A_h\|_{L^2}$ & Order &
+% $|A-A_h|_{H^1}$ & Order &
+% $\|U-U_h\|_{L^2}$ & Order &
+% $|U-U_h|_{H^1}$ & Order \\
+% \hline
+% 4  & $2.197\times10^{-6}$ & --   & $3.316\times10^{-5}$ & --   & $1.926\times10^{-2}$ & --   & $5.766\times10^{-1}$ & -- \\
+% 8  & $5.714\times10^{-7}$ & 1.94 & $1.758\times10^{-5}$ & 0.92 & $5.021\times10^{-3}$ & 1.94 & $2.982\times10^{-1}$ & 0.95 \\
+% 16 & $1.441\times10^{-7}$ & 1.99 & $8.960\times10^{-6}$ & 0.97 & $1.286\times10^{-3}$ & 1.97 & $1.506\times10^{-1}$ & 0.99 \\
+% 32 & $3.609\times10^{-8}$ & 2.00 & $4.514\times10^{-6}$ & 0.99 & $3.256\times10^{-4}$ & 1.98 & $7.549\times10^{-2}$ & 1.00 \\
+% 64 & $9.030\times10^{-9}$ & 2.00 & $2.264\times10^{-6}$ & 1.00 & $8.193\times10^{-5}$ & 1.99 & $3.778\times10^{-2}$ & 1.00 \\
+% \hline
+% \end{tabular}
+% \end{table}
+% \begin{table}[ht]
+% \centering
+% \caption{Spatial convergence of the HDG method for the manufactured solution using polynomial degree $p=2$.}
+% \label{tab:conv_p2}
+% \renewcommand{\arraystretch}{1.0}
+% \begin{tabular}{ccccccccc}
+% \hline
+%  Cells &
+% $\|A-A_h\|_{L^2}$ & Order &
+% $|A-A_h|_{H^1}$ & Order &
+% $\|U-U_h\|_{L^2}$ & Order &
+% $|U-U_h|_{H^1}$ & Order \\
+% \hline
+% 4 & $2.729\times10^{-7}$ & --   & $8.754\times10^{-6}$ & --   & $2.554\times10^{-3}$ & --   & $1.295\times10^{-1}$ & -- \\
+% 8  & $3.502\times10^{-8}$ & 2.96 & $2.289\times10^{-6}$ & 1.94 & $3.328\times10^{-4}$ & 2.94 & $3.343\times10^{-2}$ & 1.95 \\
+% 16 & $4.409\times10^{-9}$ & 2.99 & $5.816\times10^{-7}$ & 1.98 & $4.238\times10^{-5}$ & 2.97 & $8.438\times10^{-3}$ & 1.99 \\
+% 32 & $5.523\times10^{-10}$ & 3.00 & $1.463\times10^{-7}$ & 1.99 & $5.343\times10^{-6}$ & 2.99 & $2.116\times10^{-3}$ & 2.00 \\
+% 64 & $6.908\times10^{-11}$ & 3.00 & $3.668\times10^{-8}$ & 2.00 & $6.707\times10^{-7}$ & 2.99 & $5.297\times10^{-4}$ & 2.00 \\
+% \hline
+% \end{tabular}
+% \end{table}
+% \begin{table}[ht]
+% \centering
+% \caption{Spatial convergence of the HDG method for the manufactured solution using polynomial degree $p=3$.}
+% \label{tab:conv_p3}
+% \renewcommand{\arraystretch}{1.15}
+% \begin{tabular}{ccccccccc}
+% \hline
+% Cells &
+% $\|A-A_h\|_{L^2}$ & Order &
+% $|A-A_h|_{H^1}$ & Order &
+% $\|U-U_h\|_{L^2}$ & Order &
+% $|U-U_h|_{H^1}$ & Order \\
+% \hline
+% 4  & $2.621\times10^{-8}$ & --   & $1.386\times10^{-6}$ & --   & $2.557\times10^{-4}$ & --   & $1.895\times10^{-2}$ & -- \\
+% 8  & $1.676\times10^{-9}$ & 3.97 & $1.796\times10^{-7}$ & 2.95 & $1.657\times10^{-5}$ & 3.95 & $2.438\times10^{-3}$ & 2.96 \\
+% 16 & $1.054\times10^{-10}$ & 3.99 & $2.274\times10^{-8}$ & 2.98 & $1.050\times10^{-6}$ & 3.98 & $3.075\times10^{-4}$ & 2.99 \\
+% 32 & $6.598\times10^{-12}$ & 4.00 & $2.855\times10^{-9}$ & 2.99 & $6.602\times10^{-8}$ & 3.99 & $3.855\times10^{-5}$ & 3.00 \\
+% 64 & $4.299\times10^{-13}$ & 3.94 & $3.574\times10^{-10}$ & 3.00 & $4.267\times10^{-9}$ & 3.95 & $4.825\times10^{-6}$ & 3.00 \\
+% \hline
+% \end{tabular}
+% \end{table}
+% \subsubsection{Reference solution test for 2 way junctions networks}
+
+
+\subsection{Verification with benchmark results}
+\label{sec:verification}
+In this section, we verify the proposed implicit HDG scheme against the
+one-dimensional arterial blood-flow benchmark of Boileau et al.~\cite{boileau2015benchmark}. Of the test case proposed there, we consider two: a single aortic bifurcation and a $37$-artery network for which in~vitro pressure and flow
+measurements are available. These two cases are chosen because together they cover both type boundary conditions used in this work: the aortic bifurcation is closed with full three-element (RCR) Windkessel models, whereas the $37$-artery network is terminated by single resistances. We reproduce both cases with the HDG method, using the polynomial
+degrees and mesh refinements specified in Table~1 of
+\cite{boileau2015benchmark}. In both cases, the governing $1\mathrm{D}$
+equations are closed with the tube law~\eqref{tube_law}, using $A_d=A_0$ and
+$P_d=0$, and the flow is started from
+rest, $\big(A(x,0),U(x,0),P(x,0)\big)=\big(A_d(x),0,0\big)$. All geometric, wall and terminal parameters, together with the prescribed inflow $Q_{\mathrm{in}}(t)$, are taken directly from the supplementary data of \cite{boileau2015benchmark} .
+
+\subsubsection{Aortic bifurcation}
+\label{sec:aortic_bifurcation}
+The first test case is a symmetric, single-bifurcation model of the abdominal
+aorta dividing into the two iliac arteries~\cite{boileau2015benchmark}. Each
+iliac outlet is coupled to a three-element ($RCR$) Windkessel model
+representing the remainder of the systemic circulation. The outlet condition
+is imposed through the terminal operator, while the aortic inlet is driven by
+the \emph{in vivo} flow-rate signal $Q_{\mathrm{in}}(t)$ from the supplementary
+data of the benchmark.
+
+Figures~\ref{fig:aorta_results}--\ref{fig:iliac_results} compare the HDG waveforms of pressure, flow rate and luminal-radius change against the discontinuous Galerkin method (DCG) reference solutions at three locations: the midpoint of the aorta, the aortic bifurcation (junction point) and the midpoint of one iliac artery over the final periodic cycle, from $T = 28.6\,\mathrm{s}$ to $29.7\,\mathrm{s}$. At every location the HDG waveforms are visually indistinguishable from the
+reference DCG results, reproducing both the systolic pressure peak and the reflected wave in diastole.
+
+Following the benchmark configuration, we use polynomial degree $3$ with no
+mesh refinement and employ $\mathrm{BDF}$ of maximum order $2$. Running to a
+final time of $30\,\mathrm{s}$ with $6000$ time steps, our solver completes the
+simulation in optimal state (release mode) $8.741\,\mathrm{s}$ debug mode $57.04\,\mathrm{s}$ on a single processor.
+
+%------------------------------------------------
+% AortaMid results
+%------------------------------------------------
+\begin{figure*}[t]
+    \centering
+
+    \begin{subfigure}[b]{0.32\textwidth}
+        \centering
+        \tikzsetnextfilename{aorta_mid_pressure}
+        \BloodAortaPlot{Aorta mid Pressure}{Pressure}
+          {\thisrowno{1}*10000}{\thisrow{P_dynpcm2}}
+          {\BloodDCGAortaMid}{\BloodHDGAortaMid}
+        \caption{Pressure $(\mathrm{dyn/cm^2})$}
+        \label{fig:aorta_pressure}
+    \end{subfigure}
+    \hfill
+    \begin{subfigure}[b]{0.32\textwidth}
+        \centering
+        \tikzsetnextfilename{aorta_mid_flow}
+        \BloodAortaPlot{Aorta mid Flow}{Flow}
+          {\thisrowno{2}}{\thisrow{Q_cm3ps}}
+          {\BloodDCGAortaMid}{\BloodHDGAortaMid}
+        \caption{Flow rate $(\mathrm{ml/s})$}
+        \label{fig:aorta_flow}
+    \end{subfigure}
+    \hfill
+    \begin{subfigure}[b]{0.32\textwidth}
+        \centering
+        \tikzsetnextfilename{aorta_mid_radius_change}
+        \BloodAortaPlot{Aorta mid Radius change}{Change in radius}
+          {\thisrowno{3}}{10*(sqrt(\thisrow{A_cm2}/pi)-0.86)}
+          {\BloodDCGAortaMid}{\BloodHDGAortaMid}
+        \caption{Radius change $(\mathrm{mm})$}
+        \label{fig:aorta_radius}
+    \end{subfigure}
+
+    \caption{Comparison of the DCG and HDG solutions at the midpoint of the
+    aorta. The pressure, flow rate, and radius change are shown as functions of
+    time.}
+    \label{fig:aorta_results}
+\end{figure*}
+
+%------------------------------------------------
+% Junction results
+%------------------------------------------------
+\begin{figure*}[t]
+    \centering
+
+    \begin{subfigure}[b]{0.32\textwidth}
+        \centering
+        \tikzsetnextfilename{junction_pressure}
+        \BloodAortaPlot{Junction Pressure}{Pressure}
+          {\thisrowno{1}*10000}{\thisrow{P_dynpcm2}}
+          {\BloodDCGJunction}{\BloodHDGJunction}
+        \caption{Pressure $(\mathrm{dyn/cm^2})$}
+        \label{fig:junction_pressure}
+    \end{subfigure}
+    \hfill
+    \begin{subfigure}[b]{0.32\textwidth}
+        \centering
+        \tikzsetnextfilename{junction_flow}
+        \BloodAortaPlot{Junction Flow}{Flow}
+          {\thisrowno{2}}{\thisrow{Q_cm3ps}}
+          {\BloodDCGJunction}{\BloodHDGJunction}
+        \caption{Flow rate $(\mathrm{ml/s})$}
+        \label{fig:junction_flow}
+    \end{subfigure}
+    \hfill
+    \begin{subfigure}[b]{0.32\textwidth}
+        \centering
+        \tikzsetnextfilename{junction_radius_change}
+        \BloodAortaPlot{Junction Radius change}{Change in radius}
+          {\thisrowno{3}}{10*(sqrt(\thisrow{A_cm2}/pi)-0.86)}
+          {\BloodDCGJunction}{\BloodHDGJunction}
+        \caption{Radius change $(\mathrm{mm})$}
+        \label{fig:junction_radius}
+    \end{subfigure}
+
+    \caption{Comparison of the DCG and HDG solutions at the junction. The
+    pressure, flow rate, and radius change are shown as functions of time.}
+    \label{fig:junction_results}
+\end{figure*}
+
+%------------------------------------------------
+% IliacMid results
+%------------------------------------------------
+\begin{figure*}[t]
+    \centering
+
+    \begin{subfigure}[b]{0.32\textwidth}
+        \centering
+        \tikzsetnextfilename{iliac_mid_pressure}
+        \BloodAortaPlot{Iliac mid Pressure}{Pressure}
+          {\thisrowno{1}*10000}{\thisrow{P_dynpcm2}}
+          {\BloodDCGIliacMid}{\BloodHDGIliacMid}
+        \caption{Pressure $(\mathrm{dyn/cm^2})$}
+        \label{fig:iliac_pressure}
+    \end{subfigure}
+    \hfill
+    \begin{subfigure}[b]{0.32\textwidth}
+        \centering
+        \tikzsetnextfilename{iliac_mid_flow}
+        \BloodAortaPlot{Iliac mid Flow}{Flow}
+          {\thisrowno{2}}{\thisrow{Q_cm3ps}}
+          {\BloodDCGIliacMid}{\BloodHDGIliacMid}
+        \caption{Flow rate $(\mathrm{ml/s})$}
+        \label{fig:iliac_flow}
+    \end{subfigure}
+    \hfill
+    \begin{subfigure}[b]{0.32\textwidth}
+        \centering
+        \tikzsetnextfilename{iliac_mid_radius_change}
+        \BloodAortaPlot{Iliac mid Radius change}{Change in radius}
+          {\thisrowno{3}}{10*(sqrt(\thisrow{A_cm2}/pi)-0.60)}
+          {\BloodDCGIliacMid}{\BloodHDGIliacMid}
+        \caption{Radius change $(\mathrm{mm})$}
+        \label{fig:iliac_radius}
+    \end{subfigure}
+
+    \caption{Comparison of the DCG and HDG solutions at the midpoint of the
+    iliac artery. The pressure, flow rate, and radius change are shown as
+    functions of time.}
+    \label{fig:iliac_results}
+\end{figure*}
+
+
+\subsubsection{Thirty-seven-artery network}
+\label{sec:37artery}
+
+The second test is the $37$-artery network of the largest central systemic
+arteries, realised in~vitro as a set of silicone tubes and used as a
+$1\mathrm{D}$
+benchmark in~\cite{boileau2015benchmark}. At the inlet of the ascending aorta
+the flow rate measured in~vitro is prescribed as $Q_{\mathrm{in}}(t)$, and every
+terminal vessel is closed with a single-resistance outlet, i.e. the $C\to0$,
+$R_1\to0$ limit of the Windkessel operator of Section~\ref{sec:boundaries}, with
+$R_2$ the terminal resistance of the benchmark. We take the constant area to be
+the average of the inlet and outlet areas, so that
+$A_d=\pi(r_{\mathrm{in}}^2+r_{\mathrm{out}}^2)/2$ enters the tube law.
+
+Following the benchmark configuration~\cite[Table~1]{boileau2015benchmark}, we
+use polynomial degree $3$ and employ $\mathrm{BDF}$ of maximum order $3$.
+Running to a final time of $20\,\mathrm{s}$ with $2000$ time steps, our solver
+completes the simulation in $11.121\,\mathrm{s}$ in Release mode
+$124.4\,\mathrm{s}$ in Debug mode on a on a single core of the workstation described above.
+
+Figures~\ref{fig:37_aorta}--\ref{fig:37_gen3} compare the HDG pressure and flow
+waveforms with the in~vitro measurements and with the FVM reference solutions at the aortic root and at representative vessels of the first, second and third generations of bifurcations. The HDG scheme captures the pressure amplification and the progressive steepening of the wavefront toward the periphery, and reproduces the timing and magnitude of the reflected waves; the agreement with the in~vitro data is comparable to that of the FVM scheme, confirming that the HDG discretization of the coupled network, including the junction and terminal conditions, attains benchmark-level
+accuracy.
+% ---------------------------------------------------------------- Aorta
+\begin{figure}[!p]
+  \centering
+  \begin{subfigure}[b]{0.48\textwidth}
+    \tikzsetnextfilename{network_37_aortic_arch_ii_pressure}
+    \BloodNetworkPlot{aortic arch II Pressure}{Pressure}{4}{P_dynpcm2}
+      {\BloodFVMAorticArchII}{\BloodHDGAorticArchII}
+    \caption{Aortic arch II -- pressure ($\mathrm{dyn/cm^2}$)}
+  \end{subfigure}\hfill
+  \begin{subfigure}[b]{0.48\textwidth}
+    \tikzsetnextfilename{network_37_aortic_arch_ii_flow}
+    \BloodNetworkPlot{aortic arch II Flow}{Flow}{2}{Q_cm3ps}
+      {\BloodFVMAorticArchII}{\BloodHDGAorticArchII}
+    \caption{Aortic arch II -- flow ($\mathrm{ml/s}$)}
+  \end{subfigure}
+  \\[1ex]
+  \begin{subfigure}[b]{0.48\textwidth}
+    \tikzsetnextfilename{network_37_thoracic_aorta_ii_pressure}
+    \BloodNetworkPlot{thoracic aorta II Pressure}{Pressure}{4}{P_dynpcm2}
+      {\BloodFVMThoracicAortaII}{\BloodHDGThoracicAortaII}
+    \caption{Thoracic aorta II -- pressure ($\mathrm{dyn/cm^2}$)}
+  \end{subfigure}\hfill
+  \begin{subfigure}[b]{0.48\textwidth}
+    \tikzsetnextfilename{network_37_thoracic_aorta_ii_flow}
+    \BloodNetworkPlot{thoracic aorta II Flow}{Flow}{2}{Q_cm3ps}
+      {\BloodFVMThoracicAortaII}{\BloodHDGThoracicAortaII}
+    \caption{Thoracic aorta II -- flow ($\mathrm{ml/s}$)}
+  \end{subfigure}
+  \caption{Thirty-seven-artery network: pressure and flow waveforms at the
+  midpoint of the aortic arch~II (top) and thoracic aorta~II (bottom). HDG
+  (solid) compared with the finite-volume reference (FVM, dashed).}
+  \label{fig:37_aorta}
+\end{figure}
+ 
+% ------------------------------------------------- First generation
+\begin{figure}[!p]
+  \centering
+  \begin{subfigure}[b]{0.48\textwidth}
+    \tikzsetnextfilename{network_37_subclavian_l_i_pressure}
+    \BloodNetworkPlot{subclavian L I Pressure}{Pressure}{4}{P_dynpcm2}
+      {\BloodFVMSubclavianLI}{\BloodHDGSubclavianLI}
+    \caption{Left subclavian I -- pressure ($\mathrm{dyn/cm^2}$)}
+  \end{subfigure}\hfill
+  \begin{subfigure}[b]{0.48\textwidth}
+    \tikzsetnextfilename{network_37_subclavian_l_i_flow}
+    \BloodNetworkPlot{subclavian L I Flow}{Flow}{2}{Q_cm3ps}
+      {\BloodFVMSubclavianLI}{\BloodHDGSubclavianLI}
+    \caption{Left subclavian I -- flow ($\mathrm{ml/s}$)}
+  \end{subfigure}
+  \\[1ex]
+  \begin{subfigure}[b]{0.48\textwidth}
+    \tikzsetnextfilename{network_37_iliac_femoral_r_ii_pressure}
+    \BloodNetworkPlot{iliac femoral R II Pressure}{Pressure}{4}{P_dynpcm2}
+      {\BloodFVMIliacFemoralRII}{\BloodHDGIliacFemoralRII}
+    \caption{Right iliac-femoral II -- pressure ($\mathrm{dyn/cm^2}$)}
+  \end{subfigure}\hfill
+  \begin{subfigure}[b]{0.48\textwidth}
+    \tikzsetnextfilename{network_37_iliac_femoral_r_ii_flow}
+    \BloodNetworkPlot{iliac femoral R II Flow}{Flow}{2}{Q_cm3ps}
+      {\BloodFVMIliacFemoralRII}{\BloodHDGIliacFemoralRII}
+    \caption{Right iliac-femoral II -- flow ($\mathrm{ml/s}$)}
+  \end{subfigure}
+  \caption{Thirty-seven-artery network, first generation of bifurcations:
+  waveforms at the midpoint of the left subclavian~I (top) and right
+  iliac-femoral~II (bottom). HDG (solid) versus FVM (dashed).}
+  \label{fig:37_gen1}
+\end{figure}
+ 
+% ------------------------------------------------ Second generation
+\begin{figure}[!p]
+  \centering
+  \begin{subfigure}[b]{0.48\textwidth}
+    \tikzsetnextfilename{network_37_ulnar_l_pressure}
+    \BloodNetworkPlot{ulnar L Pressure}{Pressure}{4}{P_dynpcm2}
+      {\BloodFVMUlnarL}{\BloodHDGUlnarL}
+    \caption{Left ulnar -- pressure ($\mathrm{dyn/cm^2}$)}
+  \end{subfigure}\hfill
+  \begin{subfigure}[b]{0.48\textwidth}
+    \tikzsetnextfilename{network_37_ulnar_l_flow}
+    \BloodNetworkPlot{ulnar L Flow}{Flow}{2}{Q_cm3ps}
+      {\BloodFVMUlnarL}{\BloodHDGUlnarL}
+    \caption{Left ulnar -- flow ($\mathrm{ml/s}$)}
+  \end{subfigure}\\[1ex]
+  \begin{subfigure}[b]{0.48\textwidth}
+    \tikzsetnextfilename{network_37_anterior_tibial_r_pressure}
+    \BloodNetworkPlot{anterior tibial R Pressure}{Pressure}{4}{P_dynpcm2}
+      {\BloodFVMAnteriorTibialR}{\BloodHDGAnteriorTibialR}
+    \caption{Right anterior tibial -- pressure ($\mathrm{dyn/cm^2}$)}
+  \end{subfigure}\hfill
+  \begin{subfigure}[b]{0.48\textwidth}
+    \tikzsetnextfilename{network_37_anterior_tibial_r_flow}
+    \BloodNetworkPlot{anterior tibial R Flow}{Flow}{2}{Q_cm3ps}
+      {\BloodFVMAnteriorTibialR}{\BloodHDGAnteriorTibialR}
+    \caption{Right anterior tibial -- flow ($\mathrm{ml/s}$)}
+  \end{subfigure}
+  \caption{Thirty-seven-artery network, second generation of bifurcations: flow
+  waveforms at the midpoint of the left ulnar (a) and right anterior tibial (b)
+  arteries. HDG (solid) versus FVM (dashed).}
+  \label{fig:37_gen2}
+\end{figure}
+ 
+% ------------------------------------------------- Third generation
+\begin{figure}[!p]
+  \centering
+  \begin{subfigure}[b]{0.48\textwidth}
+    \tikzsetnextfilename{network_37_ulnar_r_pressure}
+    \BloodNetworkPlot{ulnar R Pressure}{Pressure}{4}{P_dynpcm2}
+      {\BloodFVMUlnarR}{\BloodHDGUlnarR}
+    \caption{Right ulnar -- pressure ($\mathrm{dyn/cm^2}$)}
+  \end{subfigure}\hfill
+  \begin{subfigure}[b]{0.48\textwidth}
+    \tikzsetnextfilename{network_37_ulnar_r_flow}
+    \BloodNetworkPlot{ulnar R Flow}{Flow}{2}{Q_cm3ps}
+      {\BloodFVMUlnarR}{\BloodHDGUlnarR}
+    \caption{Right ulnar -- flow ($\mathrm{ml/s}$)}
+  \end{subfigure}
+  \\[1ex]
+  \begin{subfigure}[b]{0.48\textwidth}
+    \tikzsetnextfilename{network_37_splenic_pressure}
+    \BloodNetworkPlot{splenic Pressure}{Pressure}{4}{P_dynpcm2}
+      {\BloodFVMSplenic}{\BloodHDGSplenic}
+    \caption{Splenic -- pressure ($\mathrm{dyn/cm^2}$)}
+  \end{subfigure}\hfill
+  \begin{subfigure}[b]{0.48\textwidth}
+    \tikzsetnextfilename{network_37_splenic_flow}
+    \BloodNetworkPlot{splenic Flow}{Flow}{2}{Q_cm3ps}
+      {\BloodFVMSplenic}{\BloodHDGSplenic}
+    \caption{Splenic -- flow ($\mathrm{ml/s}$)}
+  \end{subfigure}
+  \caption{Thirty-seven-artery network, third generation of bifurcations:
+  waveforms at the midpoint of the right ulnar (top) and splenic (bottom)
+  arteries. HDG (solid) versus FVM (dashed).}
+  \label{fig:37_gen3}
+\end{figure}
+
+\paragraph{Spatial mesh independence.}
+To confirm that the reported waveforms are resolution independent, we repeat the $37$-artery simulation under global mesh refinement, from $2^{4}$ to $2^{7}$ cells per vessel, at fixed polynomial degree $p=2$ and maximum $\mathrm{BDF}$ order $2$. We monitor one representative artery from the aorta and from each generation of bifurcations: the thoracic aorta~II, the left subclavian~I (first generation), the right ulnar (second generation), and the splenic
+(third generation). For each vessel, we track the systolic peak pressure, flow, and area across the refinement sequence (Figures~\ref{fig:37_aorta_mesh_ind}--\ref{fig:37_gen3_mesh_ind}). At every location, all three quantities remain within a $\pm1\%$ band of the finest-mesh value: the peak pressure and area are essentially converged already at the coarsest level, while the peak flow settles monotonically onto the finest-mesh value. All benchmark waveforms reported above are therefore computed on a mesh lying within this $\pm1\%$ band. The comparison with the reference schemes consequently measures the accuracy of the HDG scheme on a resolved discretization.
+\begin{figure}[htbp]
+  \centering
+  \tikzsetnextfilename{mesh_independence_thoracic_aorta_ii}
+  \BloodMeshFigure{\BloodMeshThoracicAortaII}{thoracic aorta II: mesh independence (systolic peak)}
+  \caption{Mesh independence at the thoracic aorta~II (aorta): systolic peak
+  pressure, flow and area under global refinement from $2^{4}$ to $2^{7}$
+  elements per vessel ($p=2$). The dashed lines mark $\pm1\%$ of the
+  finest-mesh value.}
+  \label{fig:37_aorta_mesh_ind}
+\end{figure}
+
+\begin{figure}[htbp]
+  \centering
+  \tikzsetnextfilename{mesh_independence_subclavian_l_i}
+  \BloodMeshFigure{\BloodMeshSubclavianLI}{subclavian L I: mesh independence (systolic peak)}
+  \caption{Mesh independence at the left subclavian~I (first generation).
+  Details as in Figure~\ref{fig:37_aorta_mesh_ind}.}
+  \label{fig:37_gen1_mesh_ind}
+\end{figure}
+
+\begin{figure}[htbp]
+  \centering
+  \tikzsetnextfilename{mesh_independence_ulnar_r}
+  \BloodMeshFigure{\BloodMeshUlnarR}{ulnar R: mesh independence (systolic peak)}
+  \caption{Mesh independence at the right ulnar (second generation).
+  Details as in Figure~\ref{fig:37_aorta_mesh_ind}.}
+  \label{fig:37_gen2_mesh_ind}
+\end{figure}
+
+\begin{figure}[htbp]
+  \centering
+  \tikzsetnextfilename{mesh_independence_splenic}
+  \BloodMeshFigure{\BloodMeshSplenic}{splenic: mesh independence (systolic peak)}
+  \caption{Mesh independence at the splenic artery (third generation).
+  Details as in Figure~\ref{fig:37_aorta_mesh_ind}.}
+  \label{fig:37_gen3_mesh_ind}
+\end{figure}
+
+%%%%%%%%%%%%
+% Adaptive BDF order selection.
+% Say maximum allowed BDF order(q) = 3.
+%
+% Step 1:
+% The integrator starts with BDF order q = 1 and gradually increases the order
+% based on the solution history and estimated local truncation error (ELTE).
+%
+% Step 2:
+% For the current order q, the integrator estimates the ELTE for nearby orders
+% q-1, q, and q+1 using the stored modified divided differences.
+%
+% Step 3:
+% The estimated error for order q' is
+% ELTE(q') = C(q') * ||phi^(q'+1)||_WRMS.
+%
+% Step 4:
+% The integrator defines T(q') = (q'+1) * ELTE(q') and compares the values
+% corresponding to the possible orders.
+%
+% Step 5:
+% If T(q+1) < T(q), the integrator increases the order.
+% If T(q-1) <= min(T(q),T(q+1)), the integrator decreases the order.
+% Otherwise, the current order is retained.
+%
+% Step 6:
+% Since the maximum order is q = 3, the order can only be 1, 2, or 3.
+% Thus, for example:
+%     q = 2  ->  q = 3   if the estimated error favors BDF3,
+%     q = 3  ->  q = 2   if the estimated error favors BDF2,
+%     q = 3  ->  q = 3   otherwise.
+%
+%%%%%%%%%%%%
+
+\paragraph{Time resolution.}
+We integrate the semi-discrete system using the implicit, variable-step, variable-order $\mathrm{BDF}$ methods described above. The time-resolution experiments use the same backend and residual formulation. To study the effect of the maximum $\mathrm{BDF}$ order on the computational cost, we fix the spatial polynomial degree
+to $p=3$ and consider two levels of global mesh refinement. The
+simulations are performed on a single processor with fixed absolute and relative error tolerances. The resulting wall-clock times and time-integration statistics are reported in Figure~\ref{fig:time_resolution} and Table~\ref{tab:bdf_statistics}.
+
+For both mesh resolutions, the smallest computational cost is obtained when the maximum $\mathrm{BDF}$ order is set to two. This behaviour is closely related to the number of accepted time steps: restricting the method to $\mathrm{BDF}1$ requires substantially more time steps, while allowing $\mathrm{BDF}2$
+significantly reduces the number of steps needed to reach the final time. Increasing the maximum order beyond two does not result in a further reduction in computational cost; see Figure~\ref{fig:time_resolution}. In particular, for the higher mesh refinement, the number of accepted steps increases noticeably for the higher maximum orders, accompanied by an increase in the total number of nonlinear iterations; see Table~\ref{tab:bdf_statistics}.
+
+The results also demonstrate that the maximum $\mathrm{BDF}$ order is only an upper bound for the adaptive time integrator. The selected order may vary during the simulation depending on the estimated local truncation error and the solution history. For example, when higher maximum orders are permitted, the dominant order need not coincide with the maximum allowed order, as indicated by the statistics in Table~\ref{tab:bdf_statistics}. Thus, the observed computational cost is determined by the combined adaptive selection of the time step and $\mathrm{BDF}$ order.
+
+The stability properties of the $\mathrm{BDF}$ family provide useful context for
+this behaviour. $\mathrm{BDF}$1 and $\mathrm{BDF}$2 are $A$-stable, whereas the higher-order
+$\mathrm{BDF}$ methods are $A(\alpha)$-stable \cite{ascher1998computer}. The observed cost reflects the combined adaptive selection of step size and order. The experiments show that, for this problem and the chosen
+error tolerances, allowing a maximum $\mathrm{BDF}$ order of two gives the lowest
+observed computational cost.
+\begin{figure}
+  \centering
+  \begin{subfigure}[b]{0.49\textwidth}
+    \tikzsetnextfilename{time_resolution_wall_time_vs_bdf_order}
+    \BloodTimePlot{refinement1_wall_min}{refinement2_wall_min}
+      {total wall time [min]}{total wall time [min] vs BDF order}
+    \caption{Total wall-clock time}
+  \end{subfigure}\hfill
+  \begin{subfigure}[b]{0.47\textwidth}
+    \tikzsetnextfilename{time_resolution_accepted_steps_vs_bdf_order}
+    \BloodStepsPlot
+    \caption{Number of accepted time steps}
+  \end{subfigure}
+  \caption{Cost of a single $20\,\mathrm{s}$ simulation of the $37$-vessel network on one processor, as a function of the maximum $\mathrm{BDF}$ order,
+  with HDG degree $p = 3$. In every case the second-order scheme is the cheapest and first order the most expensive.}
+  \label{fig:time_resolution}
+\end{figure}
+
+\begin{table}[ht]
+\centering
+\caption{BDF time-integration statistics for a single $20\,\mathrm{s}$
+simulation of the $37$-vessel network on one processor, with HDG degree
+$p = 3$, as a function of the maximum $\mathrm{BDF}$ order $q_{\max}$:
+number of error-test failures $N_{\mathrm{fail}}$, number of nonlinear
+iterations $N_{\mathrm{NI}}$, and the dominant order $q_{\mathrm{dom}}$
+(the order at which the most steps were accepted), for one and two levels of
+global mesh refinement.}
+\label{tab:bdf_statistics}
+\begin{tabular}{c|rrr|rrr}
+\toprule
+& \multicolumn{3}{c|}{One refinement}
+& \multicolumn{3}{c}{Two refinements} \\
+$q_{\max}$
+& $N_{\mathrm{fail}}$ & $N_{\mathrm{NI}}$ & $q_{\mathrm{dom}}$
+& $N_{\mathrm{fail}}$ & $N_{\mathrm{NI}}$ & $q_{\mathrm{dom}}$ \\
+\midrule
+1 & 2  & 174763 & 1 & 2  & 175862 & 1 \\
+2 & 2  &  51561 & 2 & 2  &  47861 & 2 \\
+3 & 19 &  64176 & 3 & 10 & 134431 & 3 \\
+4 & 23 &  71892 & 4 & 12 & 150778 & 4 \\
+5 & 35 &  71517 & 3 & 25 & 136992 & 3 \\
+\bottomrule
+\end{tabular}
+\end{table}
+\subsection{Scalability Study for Large Arterial Networks}
+\subsubsection{7999 vessels}\label{sec:liver}
+To verify the solver on a physiologically realistic large-scale network, we use a synthetic liver vascular tree of $7{,}999$ vessels, generated with the open-source constrained constructive optimisation (CCO) tool
+\textsc{OpenCCO} \cite{kerautret2023opencco}. The CCO algorithm grows a space-filling binary tree by iteratively inserting terminal segments that minimise a global cost functional (total intravascular volume), producing
+networks whose branching geometry and vessel-calibre distribution are consistent with Murray's law \cite{murray1926physiological}. The resulting tree and the pressure field at the final time $T=2\,\mathrm{s}$ are shown in Figure~\ref{fig:8k_results}.
+\begin{table}[H]
+\centering
+\caption{Simulation parameters for the liver vascular tree.}
+\label{tab:params}
+\begin{tabular}{@{}lll@{}}
+\toprule
+Symbol & Description & Value \\
+\midrule
+\multicolumn{3}{@{}l}{\textit{Network geometry}}\\
+$N_\mathrm{v}$ & Vessels (cells) & 7999 \\
+$N_\mathrm{t}$ & Terminals & 4000 \\
+$N_\mathrm{j}$ & Junctions & 4008 \\
+$g_\mathrm{max}$ & Max.\ generation depth & 57 \\
+$r_0$ & Root radius & $1.744\times10^{-3}$ m \\
+$\kappa$ & Radius-floor ratio & 8 \\
+$\delta r$ & Radius range & $2.18\times10^{-4}$--$1.74\times10^{-3}$ m \\
+$\ell$ & Length range & $5.2\times10^{-5}$--$1.00\times10^{-2}$ m \\
+$A_d$ & Cross-section range & $1.49\times10^{-7}$--$9.55\times10^{-6}$ m$^2$ \\
+\midrule
+\multicolumn{3}{@{}l}{\textit{Blood properties}}\\
+$\rho$ & Density & $1060$ kg\,m$^{-3}$ \\
+$\mu$ & Dynamic viscosity & $1.0\times10^{-3}$ Pa\,s \\
+$\xi$ & Friction constant & $2$ \\
+$m$ & Tube-law exponent & $0.5$ \\
+\midrule
+\multicolumn{3}{@{}l}{\textit{Vessel wall}}\\
+$E$ & Young's modulus & $1.0\times10^{4}$ Pa \\
+$h$ & Wall thickness & $1.0\times10^{-3}$ m \\
+$\beta$ & $\tfrac{4}{3}\sqrt{\pi}Eh$ & $23.63$ Pa\,m \\
+$P_0,\,P_d$ & Reference / working pressure & $0$ Pa \\
+\midrule
+\multicolumn{3}{@{}l}{\textit{Terminal BC (single resistor)}}\\
+$R_2$ & Terminal resistance & $5.0\times10^{9}$ Pa\,s\,m$^{-3}$ \\
+$R_1,\,C,\,P_\mathrm{out}$ & (unused) & $0$ \\
+\midrule
+\multicolumn{3}{@{}l}{\textit{Discretization \& solver}}\\
+$p$ & DG degree & $2$ \\
+-- & Global refinements & $2$ \\
+-- & Numerical flux & HLL \\
+atol,\,rtol & Tolerances & $10^{-8},\,10^{-9}$ \\
+$T$ & Final time & $2$ s \\
+\bottomrule
+\end{tabular}
+\end{table}
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=0.48\linewidth]{%
+ scaling_results_on_my_computer/8k_vessels/8k_arteries_picture_direct_solver3d}
+  \caption{Computed pressure field for the $7{,}999$-vessel liver network at
+  the final time $T=2\,\mathrm{s}$. The simulation uses polynomial degree
+  $p=2$, two global mesh refinements, and a maximum $\mathrm{BDF}$ order of
+  two.}
+  \label{fig:8k_results}
+\end{figure}
+\paragraph{Mass conservation.}
+To check global mass conservation, the total blood volume
+$V(t)=\sum_{K\in\mathcal{T}_h}\int_K A_h\,\mathrm{d}x$ is compared with the net
+boundary flux $Q_\mathrm{net}=Q_\mathrm{in}-\sum_{k=1}^{N_\mathrm{t}}Q_{\mathrm{out},k}$
+through the inlet and the $4000$ terminals. Figure~\ref{fig:8k_mass}(a) shows that
+$\mathrm{d}V/\mathrm{d}t$ follows $Q_\mathrm{net}$ over the whole simulation. The cumulative
+error
+$\varepsilon_\mathrm{cum}(t)=\big[V(t)-V(0)-\int_0^t Q_\mathrm{net}\,\mathrm{d}t\big]/V(t)$
+in Figure~\ref{fig:8k_mass}(b) remains below $1e-6$ and does not grow in time,
+confirming that the HDG discretisation with the junction coupling conserves mass across
+the $4008$ junctions. The small discrepancy in Figure~\ref{fig:8k_mass}(a) for $t<0.01$ is due to the finite-difference evaluation of $\mathrm{d}V/\mathrm{d}t$ over the output interval during the initial rapid rise of the inflow
+\begin{figure}[H]
+  \centering
+  \begin{subfigure}{0.50\linewidth}
+    \centering
+    \includegraphics[width=\linewidth]{%
+      scaling_results_on_my_computer/8k_vessels/fig_mass_conservation_flux}
+    \caption{Net boundary flux and rate of change of volume.}
+  \end{subfigure}\hfill
+  \begin{subfigure}{0.46\linewidth}
+    \centering
+    \includegraphics[width=\linewidth]{%
+      scaling_results_on_my_computer/8k_vessels/fig_mass_conservation_error}
+    \caption{Cumulative mass error $\varepsilon_\mathrm{cum}$.}
+  \end{subfigure}
+  \caption{Global mass conservation for the $7{,}999$-vessel liver network up to
+  $T=2\,\mathrm{s}$. $\mathrm{d}V/\mathrm{d}t$ is evaluated by finite differences
+  between consecutive outputs and plotted at the interval midpoints.}
+  \label{fig:8k_mass}
+\end{figure}
+% \subsection{30k/50k/100k vessel networks}
+% In this example we create synthetic vessel networks containg 30,001 vessel using sv Vascularized. And for scaling pirposes we run the code for mpi  4 ,6 8 10 and 12 and vcompare results at final time $T=1$s and also proviode the pressure in 30k vessel at time 0.47s and subdomains figure.
+
+\subsubsection{Synthetic large-scale networks: 30k, 50k and 100k vessels}
+\label{sec:large_scale}
+
+In this section, we go beyond the liver network described in
+Section~\ref{sec:liver}. We generate three synthetic vascular trees of
+$30{,}001$, $50{,}000$ and $100{,}000$ vessels using \textsc{svVascularize}
+\cite{updegrove2017simvascular}, which constructs space-filling binary trees by CCO.
+For each of the $N$ segments, the generator returns the segment endpoints, the length $L_i$, the reference
+(diastolic) radius $r_{d,i}$ and the terminal (design) volumetric flow $Q_i$;
+the simulations use the generated tree morphology, connectivity, lengths, radii and design flows directly. All three networks are run to a
+final time $T = 1\,\mathrm{s}$ with the direct solver \textsc{mumps}. For the
+$30{,}001$-vessel tree we use polynomial degree $p=2$ with $4$ cells per vessel,
+and for the two larger trees $p=3$ with $1$ cell per vessel. In each
+case MPI process counts of $4$, $6$, $8$, $10$ and $12$ are tested.
+
+\paragraph{Vessel wall and constitutive parameters.}
+The segments produced by \textsc{svVascularize} have constant cross-section, so that
+$r_{\text{in}}=r_{\text{out}}=r_{d}$ and the reference cross-section is constant
+along each vessel,
+\begin{equation}
+  A_{d,i} \;=\; A_{0,i} \;=\; \pi\,r_{d,i}^{2},
+  \label{eq:ls_area}
+\end{equation}
+with $A_{d,i}$ the diastolic area entering the tube law of
+Section~\ref{sec:liver}, recalled here as
+\begin{equation}
+  P(A,x)-P_{0} \;=\; P_{d} \;+\; \frac{\beta(x)}{A_{d}(x)}
+      \Big(A^{m}-A_{d}(x)^{m}\Big),
+  \qquad
+  \beta(x)=\tfrac{4}{3}\sqrt{\pi}\,E\,h_{w}(x),
+  \quad m=\tfrac12 .
+  \label{eq:ls_tubelaw}
+\end{equation}
+The external and diastolic reference pressures are set to $P_{0}=P_{d}=0$. The wall stiffness that enters $\beta$ is prescribed through an empirical radius law of the same exponential family used for the anatomically
+detailed ADAN networks \cite[Sec. 5.2.2]{MR5106706}, where the relative wall
+thickness follows $h_{0}/R_{0}=a\,e^{b R_{0}}+c\,e^{d R_{0}}$. Here we express
+the law directly in terms of the wall stiffness $E h_{w}/r_{d}$,
+\begin{equation}
+  \frac{E\,h_{w}(r_{d})}{r_{d}} \;=\; k_{1}\,e^{k_{2}\,r_{d}} + k_{3},
+  \qquad\Longrightarrow\qquad
+  h_{w}(r_{d}) \;=\; \frac{r_{d}}{E}\Big(k_{1}\,e^{k_{2}\,r_{d}}+k_{3}\Big),
+  \label{eq:ls_wall}
+\end{equation}
+so that the elastic coefficient in \eqref{eq:ls_tubelaw} becomes
+$\beta_i=\tfrac{4}{3}\sqrt{\pi}\,r_{d,i}\big(k_{1}e^{k_{2}r_{d,i}}+k_{3}\big)$
+and depends on the local radius alone. A single reference modulus $E=2.25\times10^{4}\,\mathrm{Pa}$ is assigned to every segment. The fit coefficients are
+$k_{1}=6.5383\times10^{4}\,\mathrm{Pa}$,
+$k_{2}=-4.6154\times10^{2}\,\mathrm{m^{-1}}$ and
+$k_{3}=2.6326\times10^{4}\,\mathrm{Pa}$; the resulting $\beta_i$ and $h_{w,i}$
+are stored per vessel, together with $A_{d,i}$, $L_{i}$ and $r_{d,i}$.
+
+\textit{Terminal boundary parameters.}
+Every terminal vessel is closed with the Windkessel outlet of
+Section~\ref{sec:liver}, so that at each outlet the trace satisfies
+$P(\widehat A)=R_{1}\widehat A\,\widehat U+P_{c}$ together with the capacitor
+equation $C\dot P_{c}=\widehat A\,\widehat U-(P_{c}-P_{\text{out}})/R_{2}$. The
+total peripheral resistance of each terminal is set from the design flow
+returned by the generator,
+\begin{equation}
+  R^{i}_{\text{tot}} \;=\; \frac{\Delta P}{Q_{i}},
+  \label{eq:ls_Rtot}
+\end{equation}
+where $\Delta P=1.25\times10^{5}\,\mathrm{Pa}$ is the perfusion pressure
+prescribed across the peripheral bed. The total resistance is split between the
+proximal and distal resistors and the compliance is fixed through an $RC$ time
+constant $\tau$,
+\begin{equation}
+  R_{1}^{i}=\gamma\,R^{i}_{\text{tot}},\qquad
+  R_{2}^{i}=(1-\gamma)\,R^{i}_{\text{tot}},\qquad
+  C^{i}=\frac{\tau}{R^{i}_{\text{tot}}},
+  \label{eq:ls_rcr}
+\end{equation}
+with $\gamma=0.2$, $\tau=0.283\,\mathrm{s}$ and outlet pressure
+$P_{\text{out}}=0$. The pure-resistance terminal used for the scaling runs
+reported below is recovered as the $C\to0$, $R_{1}\to0$ limit of
+\eqref{eq:ls_rcr}, i.e. $R_{1}^{i}=0$, $R_{2}^{i}=R^{i}_{\text{tot}}$ and
+$C_{i}=0$, which is exactly the single-resistance special case of the outlet
+operator in Section~\ref{sec:liver}. The single arterial inlet ($\mathrm{bid}=0$)
+is driven by the prescribed inflow $Q_{\text{in}}(t)$; the remaining nodes are
+tagged as terminals ($\mathrm{bid}=1,\dots,n_{\text{out}}$, one per outlet) or as
+interior junctions, and only terminal nodes carry nonzero $(R_{1},R_{2},C)$. In
+summary, all geometric and flow quantities
+$\{L_i,\,r_{d,i},\,A_{d,i},\,Q_i\}$ are taken precisely from
+\textsc{svVascularize}, while the material constants
+$(E,k_{1},k_{2},k_{3})$, the terminal constants $(\Delta P,\gamma,\tau)$ and the
+reference pressures $(P_{0},P_{d},P_{\text{out}})$ are the only modelling inputs;
+these are collected in Table~\ref{tab:ls_params}.
+
+\begin{table}[H]
+  \centering
+  \begin{tabular}{llll}
+    \hline
+    Symbol & Meaning & Value & Source \\
+    \hline
+    $L_i,\ r_{d,i},\ Q_i$ & length, radius, terminal flow & per vessel & \textsc{svVascularize} \\
+    $A_{0,i}=A_{d,i}$ & reference area & $\pi r_{d,i}^2$ & Eq.~\eqref{eq:ls_area} \\
+    $E$               & wall Young's modulus            & $2.25\times10^{4}\,\mathrm{Pa}$ & assumed \\
+    $k_1$             & wall-law coefficient            & $6.5383\times10^{4}\,\mathrm{Pa}$ & assumed \\
+    $k_2$             & wall-law coefficient            & $-4.6154\times10^{2}\,\mathrm{m^{-1}}$ & assumed \\
+    $k_3$             & wall-law coefficient            & $2.6326\times10^{4}\,\mathrm{Pa}$ & assumed \\
+    $m$               & tube-law exponent               & $1/2$ & assumed \\
+    $P_0,\ P_d$       & external, diastolic pressure    & $0$ & assumed \\
+    $\Delta P$        & perfusion pressure              & $1.25\times10^{5}\,\mathrm{Pa}$ & assumed \\
+    $\gamma$          & proximal-resistance fraction    & $0.2$ & assumed \\
+    $\tau$            & terminal $RC$ time constant     & $0.283\,\mathrm{s}$ & assumed \\
+    $P_{\text{out}}$  & outlet pressure                 & $0$ & assumed \\
+    \hline
+  \end{tabular}
+  \caption{Parameters of the synthetic large-scale networks. Geometry and flow
+  are produced by \textsc{svVascularize}; the derived areas, wall thickness
+  \eqref{eq:ls_wall} and terminal resistances/compliance
+  \eqref{eq:ls_Rtot}--\eqref{eq:ls_rcr} follow from the constants listed.}
+  \label{tab:ls_params}
+\end{table}
+
+\paragraph{Flow solution.}
+Figure~\ref{fig:50k_100k_pressure} shows the pressure distributions at
+$t=0.5\,\mathrm{s}$ for the $50\mathrm{k}$ and $100\mathrm{k}$ networks. The networks are partitioned
+over at most $12$ MPI subdomains. The pressure decreases monotonically from
+the single arterial inlet toward the terminal outlets, qualitatively consistent with the smaller liver network of
+Section~\ref{sec:liver} and confirming that the junction and terminal conditions of \eqref{eq:ls_Rtot}--\eqref{eq:ls_rcr} are enforced correctly at this scale. The spatial pressure gradient and the branching structure are well resolved in both cases.
+
+\textit{Strong scaling.}
+Figure~\ref{fig:all_scaling} reports wall times for the dominant kernels as a
+function of MPI process count on a log--log scale, with the ideal speedup line
+included for reference. The residual and Jacobian assembly kernels, which
+constitute the bulk of the computational work, scale close to ideally up to
+$8$ processes across all network sizes. Beyond $8$ processes, the direct solver
+begins to saturate because the per-process matrix becomes too small to offset
+the additional cost of parallel factorization. This behaviour is also observed
+on the $8\mathrm{k}$ liver network and is expected for a direct solver at high
+parallelism. The assembly kernels remain the dominant cost and continue to
+scale well, indicating that communication associated with the HDG skeleton
+coupling and terminal conditions remains manageable as the network size
+increases.
+\begin{figure}[H]
+    \centering   
+    \begin{subfigure}[t]{0.49\linewidth}
+        \centering
+        \includegraphics[width=\linewidth]{scaling_results_on_my_computer/50k_vessels/50k_network_pressure_0.5s.png}
+        \caption{$50 \mathrm{k}$ vessel networks.}
+        \label{fig:50k_network_pressure}
+    \end{subfigure}
+    \hfill
+    \begin{subfigure}[t]{0.47\linewidth}
+        \centering
+        \includegraphics[width=\linewidth]{scaling_results_on_my_computer/100k_vessels/100k_networks_pressure_0.5s.png}
+        \caption{$100 \mathrm{k}$ vessel networks.}
+        \label{fig:100k_network_pressure}
+    \end{subfigure}
+    \caption{Results for pressure distribution at $t=0.5\,\mathrm{s}$}
+    \label{fig:50k_100k_pressure}
+\end{figure}
+
+\begin{figure}[H]
+  \centering
+  \begin{subfigure}[t]{0.48\linewidth}
+    \centering
+    \tikzsetnextfilename{scaling_8k_strong}
+    \BloodScalingPlot{\BloodScalingEightK}
+    \caption{$8\mathrm{k}$ vessels, $319{,}960$ DoF.}
+    \label{fig:8k_scaling}
+  \end{subfigure}\hfill
+  \begin{subfigure}[t]{0.48\linewidth}
+    \centering
+    \tikzsetnextfilename{scaling_30k_strong}
+    \BloodScalingPlot{\BloodScalingThirtyK}
+    \caption{$30\mathrm{k}$ vessels, $360{,}012$ DoF.}
+    \label{fig:30k_scaling}
+  \end{subfigure}
+  \\[1ex]
+  \begin{subfigure}[t]{0.48\linewidth}
+    \centering
+    \tikzsetnextfilename{scaling_50k_strong}
+    \BloodScalingPlot{\BloodScalingFiftyK}
+    \caption{$50\mathrm{k}$ vessels, $600{,}012$ DoF.}
+    \label{fig:50k_network_scaling}
+  \end{subfigure}\hfill
+  \begin{subfigure}[t]{0.48\linewidth}
+    \centering
+    \tikzsetnextfilename{scaling_100k_strong}
+    \BloodScalingPlot{\BloodScalingHundredK}
+    \caption{$100\mathrm{k}$ vessels, $1{,}200{,}012$ DoF.}
+    \label{fig:100k_network_scaling}
+  \end{subfigure}
+  \caption{Strong-scaling results at the final time $T=1\,\mathrm{s}$. Each
+  panel shows wall time for the dominant kernels versus the actual MPI process
+  counts.}
+  \label{fig:all_scaling}
+\end{figure}
+\section{Conclusion}
+We have presented an HDG--HLL discretization for one-dimensional blood flow
+on complex arterial networks with Riemann-coupled junctions and Windkessel
+terminals. The hybrid traces place the network transmission conditions and the
+terminal variables in a common global system, while the spatially discrete
+problem has an explicit differential--algebraic structure: cell and capacitive
+terminal variables are differential, whereas the network traces are
+algebraic. This structure allows the complete flow network to be advanced through
+one global residual and Jacobian structure at each time step. The analysis establishes local solvability and a
+semi-discrete energy estimate under the stated positivity and subcriticality
+assumptions. Manufactured-solution tests, the aortic bifurcation and the
+$37$-artery benchmark verify the accuracy and physiological behavior of the
+method, while the large-network experiments demonstrate its parallel
+scalability.
+
+The DAE formulation is also the principal interface for future multiphysics
+extensions. In particular, an external nonlinear elasticity model can be
+introduced by augmenting the flow residual with elastic unknowns and interface
+equations, thereby retaining a single monolithic Newton system. This is
+consistent with geometrical multiscale models in which one-dimensional
+pressure and area data drive a three-dimensional elastic problem
+\cite{heltai2021multiscale,belponer2023reduced}. Future work will
+address the two-way exchange between the flow tube law and the external
+elastic response, as well as the corresponding fully coupled analysis and
+preconditioning strategy.
+
+\bibliographystyle{elsarticle-num}
+\bibliography{./blood_flow}
+\clearpage
+
+% \appendix
+
+% \section{Jacobian Blocks}
+% The Jacobian blocks are:
+% \begin{equation}
+% D_{\mathrm{in}}
+% =
+% \frac{\partial\widehat{\mathbf B}_h^{\mathrm{in}}}
+%      {\partial\who}
+% =
+% \begin{bmatrix}
+% \widehat{U}_h & \widehat{A}_h
+% \\[8pt]
+% 4\,\dfrac{dc}{d\widehat{A}_h} & 1
+% \end{bmatrix},
+% \qquad
+% C_{\mathrm{in}}
+% =
+% \frac{\partial\widehat{\mathbf B}_h^{\mathrm{in}}}
+%      {\partial\mathbf{w}_h}
+% =
+% \begin{bmatrix}
+% 0 & 0
+% \\[8pt]
+% 4\,\dfrac{dc}{dA_h} & -1
+% \end{bmatrix},
+% \label{eq:inflow_jacobian}
+% \end{equation}
+
+% $P_c=\mathbf y[\,\texttt{rcr\_pc\_dof}\,]$ (fully coupled into the DAE). 
+
+% The
+% single-resistance case $C=0$ is the special case $P(\widehat A_h)-(R_2\,\widehat
+% A_h\widehat U_h+P_{\mathrm{out}})$ in the first row.
+
+% The Jacobian with respect to the trace variables is
+
+% \begin{equation}
+% D_{\mathrm{rcr}}
+% =
+% \frac{\partial \widehat{\mathbf B}_h^{\mathrm{rcr}}}
+%      {\partial \widehat{\mathbf w}_h}
+% =
+% \begin{bmatrix}
+% \dfrac{dP}{d\widehat A_h}
+% -
+% R_1\widehat U_h
+% &
+% -
+% R_1\widehat A_h
+% \\[10pt]
+% 4\,\dfrac{dc}{d\widehat A_h}
+% &
+% 1
+% \end{bmatrix}.
+% \label{eq:Drcr}
+% \end{equation}
+% The Jacobian with respect to the interior state is
+
+% \begin{equation}
+% C_{\mathrm{rcr}}
+% =
+% \frac{\partial \widehat{\mathbf B}_h^{\mathrm{rcr}}}
+%      {\partial \mathbf w_h}
+% =
+% \begin{bmatrix}
+% 0 & 0
+% \\[8pt]
+% -4\,\dfrac{dc}{dA_h}
+% &
+% -1
+% \end{bmatrix}.
+% \label{eq:Brcr}
+% \end{equation}
+% since $P_c$ is a global degree of freedom, there is an additional coupling block
+% \begin{equation}
+% E_{\mathrm{rcr}}
+% =
+% \frac{\partial \widehat{\mathbf B}_h^{\mathrm{rcr}}}
+%      {\partial P_c}
+% =
+% \begin{bmatrix}
+% -1
+% \\[4pt]
+% 0
+% \end{bmatrix},
+% \label{eq:Ercr}
+% \end{equation}
+% \paragraph{Terminal pressure.}
+
+
+% and whose Jacobian contributions are
+% \begin{equation}
+% \frac{\partial R_{pc}}
+% {\partial (\widehat A_h,\widehat U_h,P_c)} =
+% \begin{bmatrix}
+% -\widehat U_h &
+% -\widehat A_h &
+% \dfrac{1}{R_2}
+% \end{bmatrix},
+% \label{eq:rcr_cap_jac}
+% \end{equation}
+% together with the mass contribution 
+% \begin{equation}
+% \frac{\partial R_{pc}}
+% {\partial \dot P_c} = C.
+% \label{eq:rcr_cap_mass}
+% \end{equation}
+
+
+% %%%%%%junctions
+% Since $\mathcal{F}_J$ depends only on junction trace unknowns
+% and not on any interior element state, the element-to-trace
+% coupling block vanishes:
+% \begin{equation}
+% C_{J,K_i}
+% =
+% \frac{\partial\mathcal{F}_J}{\partial\mathbf{w}_{h,i}}
+% =
+% \mathbf{0},
+% \qquad i=1,\ldots,K.
+% \label{eq:Cjunc}
+% \end{equation}
+
+% The trace control block is the $K\times 2K$ matrix:
+% \begin{equation}
+% D_J
+% =
+% \frac{\partial\mathcal{F}_J}
+%      {\partial(\who_1,\ldots,\who_K)}
+% =
+% \begin{bmatrix}
+% s_1\widehat{U}_1 & s_1\widehat{A}_1 &
+% s_2\widehat{U}_2 & s_2\widehat{A}_2 &
+% \cdots &
+% s_K\widehat{U}_K & s_K\widehat{A}_K
+% \\[8pt]
+% \Psi'(\widehat{A}_1) & \widehat{U}_1 &
+% -\Psi'(\widehat{A}_2) & -\widehat{U}_2 &
+% \cdots & 0 & 0
+% \\[4pt]
+% \vdots & & & & \ddots & & \vdots
+% \\[4pt]
+% \Psi'(\widehat{A}_1) & \widehat{U}_1 &
+% 0 & 0 & \cdots &
+% -\Psi'(\widehat{A}_K) & -\widehat{U}_K
+% \end{bmatrix},
+% \label{eq:DJ}
+% \end{equation}
+% where $\Psi'(\widehat{A}_i) = (1/\rho)\,dP/d\widehat{A}_i$.
+% % The system at the junction is closed by the $B$ blocks from the
+% % element equations, which supply the remaining $K$ equations
+% % through the HDG numerical flux~\eqref{eq:junction_flux}.
+% % \begin{center}
+% %     \Large\bfseries Appendix
+% % \end{center}
+% % \section{Example to understnad the mechanism of method}
+% % Consider a simple arterial network consisting of:
+% % \begin{itemize}
+% % \item one parent vessel $P$,
+% % \item two daughter vessels $D_1$ and $D_2$,
+% % \item one inflow boundary,
+% % \item one bifurcation junction,
+% % \item two RCR outlet boundaries.
+% % \end{itemize}
+
+% % \subsection{Global Newton System}
+
+% % After assembling all transmission residuals, the Newton linearisation
+% % at each time step yields the block system
+% % \begin{equation}
+% % \begin{pmatrix}
+% % A_P    & 0      & 0      & B_P     & 0   \\
+% % 0      & A_{D_1}& 0      & B_{D_1} & 0   \\
+% % 0      & 0      & A_{D_2}& B_{D_2} & 0   \\
+% % C_P    & C_{D_1}& C_{D_2}& D       & E   \\
+% % 0      & 0      & 0      & G       & H
+% % \end{pmatrix}
+% % \begin{pmatrix}
+% % \delta W_P \\ \delta W_{D_1} \\ \delta W_{D_2} \\ \delta\widehat{W} \\ \delta P_c
+% % \end{pmatrix}
+% % =
+% % -
+% % \begin{pmatrix}
+% % R_P \\ R_{D_1} \\ R_{D_2} \\ R_{\widehat{W}} \\ R_{P_c}
+% % \end{pmatrix}.
+% % \label{eq:block_hdg_system}
+% % \end{equation}
+
+% % The trace unknown vector, ordered by face type, is
+% % \begin{equation}
+% % \widehat{W}
+% % =
+% % \begin{pmatrix}
+% % \widehat{W}_{\mathrm{in}}   \\
+% % \widehat{W}_{P,1}           \\
+% % \widehat{W}_{P,2}           \\
+% % \widehat{W}_{J}             \\
+% % \widehat{W}_{D_1,1}         \\
+% % \widehat{W}_{D_1,2}         \\
+% % \widehat{W}_{\mathrm{out},1}\\
+% % \widehat{W}_{D_2,1}         \\
+% % \widehat{W}_{D_2,2}         \\
+% % \widehat{W}_{\mathrm{out},2}
+% % \end{pmatrix},
+% % \qquad
+% % P_c
+% % =
+% % \begin{pmatrix}
+% % P_{c,1}\\
+% % P_{c,2}
+% % \end{pmatrix},
+% % \end{equation}
+% % where each $\widehat{W}$ entry is a 2-vector $(\widehat{A}, \widehat{U})^\top$
+% % at the corresponding face, and $P_{c,1},P_{c,2}$ are the capacitor pressures of
+% % the two RCR outlets, where
+% % \begin{align}
+% % A_\alpha
+% % &= \frac{\partial R_\alpha}{\partial W_\alpha}
+% % & &\longrightarrow \text{element residual w.r.t. element unknowns}
+% % \\[6pt]
+% % B_\alpha
+% % &= \frac{\partial R_\alpha}{\partial \widehat{W}}
+% % & &\longrightarrow \text{element residual w.r.t. trace unknowns}
+% % \\[6pt]
+% % C_\alpha
+% % &= \frac{\partial R_{\widehat{W}}}{\partial W_\alpha}
+% % & &\longrightarrow \text{transmission residual w.r.t. element unknowns}
+% % \\[6pt]
+% % D
+% % &= \frac{\partial R_{\widehat{W}}}{\partial \widehat{W}}
+% % & &\longrightarrow \text{transmission residual w.r.t. trace unknowns}
+% % \\[6pt]
+% % E
+% % &= \frac{\partial R_{\widehat{W}}}{\partial P_c}
+% % & &\longrightarrow \text{transmission residual w.r.t. capacitor pressures}
+% % \\[6pt]
+% % G
+% % &= \frac{\partial R_{P_c}}{\partial \widehat{W}}
+% % & &\longrightarrow \text{capacitor residual w.r.t. trace unknowns}
+% % \\[6pt]
+% % H
+% % &= \frac{\partial R_{P_c}}{\partial P_c}
+% % & &\longrightarrow \text{capacitor residual w.r.t. capacitor pressures}
+% % \end{align}
+
+% % \subsection{Element Residual Vectors}
+
+% % The vessel residual vectors $R_\alpha$ appearing in the right-hand
+% % side of~\eqref{eq:block_hdg_system} are assembled from the local
+% % weak form residual on each element $K \in \alpha$:
+
+% % \begin{equation}
+% % R_\alpha
+% % =
+% % \begin{pmatrix}
+% % R_{K_1} \\ R_{K_2} \\ R_{K_3}
+% % \end{pmatrix},
+% % \end{equation}
+
+% % where for each element $K$ the local residual is:
+% % \begin{equation}
+% % R_K(\mathbf{w}_h, \who)
+% % =
+% % \underbrace{
+% % \left(\frac{\mathbf{w}_h - \mathbf{w}_h^n}{\Delta t},
+% % \mathbf{v}\right)_K
+% % }_{\text{time derivative}}
+% % -
+% % \underbrace{
+% % \left(\mathbf{F}(\mathbf{w}_h),
+% % \bm{b}\cdot\nabla\mathbf{v}\right)_K
+% % }_{\text{volume flux}}
+
+% % \underbrace{
+% % \left\langle
+% % \widehat{\mathbf{F}}_h \cdot \bm{n},
+% % \mathbf{v}
+% % \right\rangle_{\partial K}
+% % }_{\text{face flux via trace}}
+% % -
+% % \underbrace{
+% % \left(\mathbf{S}(\mathbf{w}_h),
+% % \mathbf{v}\right)_K
+% % }_{\text{source}},
+% % \label{eq:RK}
+% % \end{equation}
+
+% % with the numerical flux $\widehat{\mathbf{F}}_h$ defined
+% % in~\eqref{eq:hdg_local}. The face flux term couples $R_K$
+% % to the trace unknowns $\who$, which is
+% % why the $B_\alpha$ blocks appear in the element rows of
+% % the global system. The element residuals do not depend on
+% % $P_c$, so the element rows of~\eqref{eq:block_hdg_system} have
+% % a zero column under $\delta P_c$.
+
+% % Similarly, $R_{\widehat{W}}$ is the vector of transmission
+% % residuals assembled from all faces:
+% % \begin{equation}
+% % R_{\widehat{W}}
+% % =
+% % \begin{pmatrix}
+% % \mathcal{F}_{\mathrm{in}}(\mathbf{w}_h, \widehat{W}_{\mathrm{in}})              \\
+% % \mathcal{F}_{f}(\mathbf{w}_h, \widehat{W}_{P,1})                                \\
+% % \mathcal{F}_{f}(\mathbf{w}_h, \widehat{W}_{P,2})                                \\
+% % \mathcal{F}_{J}(\widehat{W}_{J})                                                 \\
+% % \mathcal{F}_{f}(\mathbf{w}_h, \widehat{W}_{D_1,1})                              \\
+% % \mathcal{F}_{f}(\mathbf{w}_h, \widehat{W}_{D_1,2})                              \\
+% % \mathcal{F}_{\mathrm{rcr}}(\mathbf{w}_h, \widehat{W}_{\mathrm{out},1}, P_{c,1}) \\
+% % \mathcal{F}_{f}(\mathbf{w}_h, \widehat{W}_{D_2,1})                              \\
+% % \mathcal{F}_{f}(\mathbf{w}_h, \widehat{W}_{D_2,2})                              \\
+% % \mathcal{F}_{\mathrm{rcr}}(\mathbf{w}_h, \widehat{W}_{\mathrm{out},2}, P_{c,2})
+% % \end{pmatrix},
+% % \label{eq:R_What}
+% % \end{equation}
+
+% % each entry being the transmission residual, with the two RCR rows also
+% % carrying the corresponding capacitor pressure $P_{c,i}$.
+
+% % The capacitor residual vector collects one Windkessel
+% % equation~\eqref{eq:rcr_capacitor} per RCR outlet:
+% % \begin{equation}
+% % R_{P_c}
+% % =
+% % \begin{pmatrix}
+% % R_{\mathrm{pc},1}\\
+% % R_{\mathrm{pc},2}
+% % \end{pmatrix},
+% % \qquad
+% % R_{\mathrm{pc},i}
+% % =
+% % C_i\,\frac{P_{c,i}-P_{c,i}^{\,n}}{\Delta t}
+% % -\widehat{A}_i\widehat{U}_i
+% % +\frac{P_{c,i}-P_{\mathrm{out},i}}{R_{2,i}} .
+% % \label{eq:R_Pc}
+% % \end{equation}
+
+% % \subsection{Structure of the Coupling Blocks}
+
+% % Each vessel-level coupling matrix $C_\alpha$ is assembled from
+% % the individual face transmission Jacobians $C_{\mathrm{in}}$,
+% % $C_f$, $C_J$, $C_{\mathrm{rcr}}$ defined in
+% % equations~\eqref{eq:inflow_jacobian}--\eqref{eq:Cjunc}.
+% % Each row block corresponds to the transmission condition at one
+% % face of the vessel, and acts on the element DoF $W_\alpha$
+% % in the column direction, here $C_J =0$
+
+% % \begin{equation}
+% % C_P
+% % =
+% % \renewcommand{\arraystretch}{1.6}
+% % \left(
+% % \begin{array}{c}
+% % C_{\mathrm{in}}  \\
+% % \hline
+% % C_{f}            \\
+% % \hline
+% % C_{f}            \\
+% % \hline
+% % C_{J}
+% % \end{array}
+% % \right)
+% % \begin{array}{l}
+% % \leftarrow \text{inflow face } \widehat{W}_{\mathrm{in}}     \\
+% % \leftarrow \text{interior face } \widehat{W}_{P,1}           \\
+% % \leftarrow \text{interior face } \widehat{W}_{P,2}           \\
+% % \leftarrow \text{junction face } \widehat{W}_{J}
+% % \end{array}
+% % \label{eq:CP}
+% % \end{equation}
+
+% % \begin{equation}
+% % C_{D_1}
+% % =
+% % \renewcommand{\arraystretch}{1.6}
+% % \left(
+% % \begin{array}{c}
+% % C_{J}            \\
+% % \hline
+% % C_{f}            \\
+% % \hline
+% % C_{f}            \\
+% % \hline
+% % C_{\mathrm{rcr}}
+% % \end{array}
+% % \right)
+% % \begin{array}{l}
+% % \leftarrow \text{junction face } \widehat{W}_{J}             \\
+% % \leftarrow \text{interior face } \widehat{W}_{D_1,1}         \\
+% % \leftarrow \text{interior face } \widehat{W}_{D_1,2}         \\
+% % \leftarrow \text{RCR outlet face } \widehat{W}_{\mathrm{out},1}
+% % \end{array}
+% % \label{eq:CD1}
+% % \end{equation}
+
+% % \begin{equation}
+% % C_{D_2}
+% % =
+% % \renewcommand{\arraystretch}{1.6}
+% % \left(
+% % \begin{array}{c}
+% % C_{J}            \\
+% % \hline
+% % C_{f}            \\
+% % \hline
+% % C_{f}            \\
+% % \hline
+% % C_{\mathrm{rcr}}
+% % \end{array}
+% % \right)
+% % \begin{array}{l}
+% % \leftarrow \text{junction face } \widehat{W}_{J}             \\
+% % \leftarrow \text{interior face } \widehat{W}_{D_2,1}         \\
+% % \leftarrow \text{interior face } \widehat{W}_{D_2,2}         \\
+% % \leftarrow \text{RCR outlet face } \widehat{W}_{\mathrm{out},2}
+% % \end{array}
+% % \label{eq:CD2}
+% % \end{equation}
+
+% % \subsection{Structure of the Capacitor Coupling Blocks $E$ and $G$}
+
+% % The block $E=\partial R_{\widehat{W}}/\partial P_c$ has nonzero rows only at
+% % the two RCR outlet faces, each given by $E_{\mathrm{rcr}}$
+% % of~\eqref{eq:Ercr}; all other trace rows are zero:
+% % \begin{equation}
+% % E
+% % =
+% % \renewcommand{\arraystretch}{1.6}
+% % \left(
+% % \begin{array}{cc}
+% % 0              & 0              \\
+% % \vdots         & \vdots         \\
+% % E_{\mathrm{rcr}} & 0            \\
+% % \vdots         & \vdots         \\
+% % 0              & E_{\mathrm{rcr}}
+% % \end{array}
+% % \right)
+% % \begin{array}{l}
+% % \\
+% % \leftarrow \text{RCR outlet face } \widehat{W}_{\mathrm{out},1}\\
+% % \\
+% % \leftarrow \text{RCR outlet face } \widehat{W}_{\mathrm{out},2}
+% % \end{array},
+% % \qquad
+% % E_{\mathrm{rcr}}
+% % =
+% % \begin{bmatrix}-1\\[2pt]0\end{bmatrix}.
+% % \label{eq:E_block}
+% % \end{equation}
+
+% % The block $G=\partial R_{P_c}/\partial\widehat{W}$ has nonzero columns only at
+% % the two RCR outlet trace faces:
+% % \begin{equation}
+% % G
+% % =
+% % \renewcommand{\arraystretch}{1.6}
+% % \begin{pmatrix}
+% % \cdots & G_1 & \cdots & 0   & \cdots \\
+% % \cdots & 0   & \cdots & G_2 & \cdots
+% % \end{pmatrix},
+% % \qquad
+% % G_i
+% % =
+% % \frac{\partial R_{\mathrm{pc},i}}{\partial(\widehat{A}_i,\widehat{U}_i)}
+% % =
+% % \bigl(-\widehat{U}_i,\;-\widehat{A}_i\bigr),
+% % \label{eq:G_block}
+% % \end{equation}
+% % the column of $G_i$ aligning with the $\widehat{W}_{\mathrm{out},i}$ entry of
+% % $\widehat{W}$, from~\eqref{eq:rcr_cap_jac}.
+
+% % \subsection{Structure of the Trace Block $D$}
+
+% % The trace block $D$ is block-diagonal, with each diagonal entry
+% % being the Jacobian $D_F = \partial\mathcal{F}_F/\partial
+% % \who$ at the corresponding face:
+
+% % \begin{equation}
+% % D
+% % =
+% % \mathrm{blockdiag}
+% % \bigl(
+% % D_{\mathrm{in}},\;
+% % D_{f},\;
+% % D_{f},\;
+% % D_{J},\;
+% % D_{f},\;
+% % D_{f},\;
+% % D_{\mathrm{rcr}},\;
+% % D_{f},\;
+% % D_{f},\;
+% % D_{\mathrm{rcr}}
+% % \bigr),
+% % \label{eq:D_blockdiag}
+% % \end{equation}
+% % with the $2\times2$ values:
+% % \begin{equation}
+% % \renewcommand{\arraystretch}{1.8}
+% % \begin{array}{ll}
+% % D_{\mathrm{in}}
+% % =
+% % \begin{bmatrix}
+% % \widehat{U}_h & \widehat{A}_h \\
+% % 4\,dc/d\widehat{A}_h & 1
+% % \end{bmatrix},
+% % &
+% % \text{(inflow face)}
+% % \\[10pt]
+% % D_{f}
+% % =
+% % -2\alpha_{\mathrm{LF}}\,\mathbf{I},
+% % &
+% % \text{(interior face)}
+% % \\[10pt]
+% % D_{\mathrm{rcr}}
+% % =
+% % \begin{bmatrix}
+% % dP/d\widehat{A}_h - R_1\widehat{U}_h
+% % & -R_1\widehat{A}_h \\
+% % 4\,dc/d\widehat{A}_h & 1
+% % \end{bmatrix},
+% % &
+% % \text{(RCR outlet face)}
+% % \end{array}
+% % \label{eq:D_blocks_summary}
+% % \end{equation}
+% % and $D_J$ is the $3\times6$ block from equation~\eqref{eq:DJ},
+% % spanning the three junction trace unknowns
+% % $(\widehat{W}_{J,P},\, \widehat{W}_{J,D_1},\, \widehat{W}_{J,D_2})$.
+% % With $P_c$ a global unknown, dependence is now carried by the off-diagonal block
+% % $E$ through $E_{\mathrm{rcr}}$.
+
+% % \subsection{Structure of the Capacitor Block $H$}
+
+% % The capacitor block $H=\partial R_{P_c}/\partial P_c$ is diagonal, one scalar
+% % entry per RCR outlet,
+% % \begin{equation}
+% % H
+% % =
+% % \mathrm{diag}\!\left(
+% % \alpha C_1+\frac{1}{R_{2,1}},\;
+% % \alpha C_2+\frac{1}{R_{2,2}}
+% % \right),
+% % \label{eq:H_block}
+% % \end{equation}
+% % from~\eqref{eq:rcr_cap_jac} and~\eqref{eq:rcr_cap_mass} (under the BDF discretization,
+% % $C_i/\Delta t \to \alpha\,C_i$ with the BDF coefficient $\alpha$).
+
+\end{document}
