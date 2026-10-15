@@ -40,19 +40,60 @@
 #include <deal.II/numerics/error_estimator.h>
 #include <deal.II/numerics/vector_tools.h>
 
+#include <idas/idas.h>
 #include <metric_flow_x/blood_flow_system.h>
 #include <metric_flow_x/io/vtk_utils.h>
+
+#include <algorithm>
+#include <array>
+#include <cmath>
+#include <filesystem>
+#include <fstream>
+#include <iomanip>
+#include <limits>
+#include <sstream>
 
 namespace MetricFlowX
 {
   using namespace dealii;
 
-#include <algorithm>
-#include <cmath>
-#include <fstream>
-#include <iomanip>
-#include <limits>
-#include <sstream>
+  // ===========================================================================
+  // IDA statistics access shim.
+  //
+  // SUNDIALS::IDA keeps its `ida_mem` handle private, but IDAGetNumSteps and
+  // friends need it.  An explicit instantiation may name a private member, so
+  // Planter<..., &IDA::ida_mem> captures the pointer-to-member and exposes it
+  // through the ADL-found friend steal().  Same trick as the pre-MetricFlowX
+  // driver; it lives in exactly one translation unit.
+  // ===========================================================================
+  namespace internal_ida_access
+  {
+    template <typename VecType>
+    struct IdaMemAccessor
+    {
+      using type = void *dealii::SUNDIALS::IDA<VecType>::*;
+      friend type        steal(IdaMemAccessor);
+    };
+
+    template <typename VecType, typename IdaMemAccessor<VecType>::type M>
+    struct Planter
+    {
+      friend typename IdaMemAccessor<VecType>::type
+      steal(IdaMemAccessor<VecType>)
+      {
+        return M;
+      }
+    };
+
+    template struct Planter<VectorType,
+                            &dealii::SUNDIALS::IDA<VectorType>::ida_mem>;
+
+    inline void *
+    get_ida_mem(const dealii::SUNDIALS::IDA<VectorType> &ida)
+    {
+      return ida.*steal(IdaMemAccessor<VectorType>{});
+    }
+  } // namespace internal_ida_access
 
   // ==========================================================================
   // Constructor
@@ -1627,6 +1668,11 @@ namespace MetricFlowX
     const std::string dir =
       output_directory + (output_directory.empty() ? "" : "/");
 
+    // Every rank may open a vessel file, so every rank makes sure the
+    // directory exists (create_directories is a no-op when it already does).
+    if (!output_directory.empty())
+      std::filesystem::create_directories(output_directory);
+
     close_csv_files();
     csv_vessel.clear();
     probe_targets.clear();
@@ -2009,7 +2055,7 @@ namespace MetricFlowX
     const QGauss<dim>     quad_cell(fe_->tensor_degree() + 1);
     const QGauss<dim - 1> quad_face(fe_->tensor_degree() + 1);
 
-    FEValues<dim, spacedim>     fev(*fe_,
+    FEValues<dim, spacedim> fev(*fe_,
                                 quad_cell,
                                 update_values | update_gradients |
                                   update_quadrature_points | update_JxW_values);
@@ -3685,8 +3731,8 @@ namespace MetricFlowX
             {
               const double A = y(ldofs[i]);
               p(ldofs[i])    = compute_pressure_value(A,
-                                                   cell->material_id(),
-                                                   compute_a_d_local(cell));
+                                                      cell->material_id(),
+                                                      compute_a_d_local(cell));
             }
       }
 
@@ -3907,6 +3953,286 @@ namespace MetricFlowX
     prev_AH1 = AH1;
     prev_UL2 = UL2;
     prev_UH1 = UH1;
+  }
+
+  // ============================================================================
+  // check_mass_conservation  ->  mass_conservation.csv
+  //
+  // Compares dV/dt (finite difference between consecutive outputs of the
+  // integrated cross-sectional area) with the net flux through the inlet and
+  // the terminals.  The reductions are collective; only rank 0 writes.
+  // ============================================================================
+  template <int dim, int spacedim>
+  void
+  BloodFlowSystem<dim, spacedim>::check_mass_conservation(const VectorType &y,
+                                                          const double t) const
+  {
+    TimerOutput::Scope timer(computing_timer, "check_mass_conservation");
+
+    // Force y_fe_relevant to reflect *this* y, not whatever trial iterate IDA
+    // last evaluated a residual/Jacobian at.  Without this, the volume
+    // integral below can read a stale snapshot, producing exact-zero dV/dt on
+    // some steps and an overshooting "catch-up" jump on the next.
+    update_ghosted_vectors(y);
+
+    const FEValuesExtractors::Scalar area_extr(0);
+    const QGauss<dim>                quad(fe_degree + 2);
+    FEValues<dim, spacedim> fev(*fe_, quad, update_values | update_JxW_values);
+
+    std::vector<double> A_q(quad.size());
+    double              local_volume = 0.0;
+    for (const auto &cell : dof_handler_.active_cell_iterators())
+      {
+        if (!cell->is_locally_owned())
+          continue;
+        fev.reinit(cell);
+        fev[area_extr].get_function_values(y_fe_relevant, A_q);
+        for (unsigned int q = 0; q < quad.size(); ++q)
+          local_volume += A_q[q] * fev.JxW(q);
+      }
+    const double total_volume =
+      Utilities::MPI::sum(local_volume, mpi_communicator_);
+
+    double local_net_flux = 0.0;
+    for (const auto &cell : dof_handler_.active_cell_iterators())
+      {
+        if (!cell->is_locally_owned())
+          continue;
+        for (unsigned int f = 0; f < GeometryInfo<dim>::faces_per_cell; ++f)
+          {
+            if (!cell->face(f)->at_boundary())
+              continue;
+            if (is_junction_face(cell->id(), f))
+              continue;
+
+            double A_hat = 0.0, U_hat = 0.0;
+            get_face_trace(y_relevant, cell, f, A_hat, U_hat);
+            const double Q   = A_hat * U_hat;
+            const auto   bid = cell->face(f)->boundary_id();
+            local_net_flux += (bid == 0) ? Q : -Q;
+          }
+      }
+    const double net_flux =
+      Utilities::MPI::sum(local_net_flux, mpi_communicator_);
+
+    if (!mass_initialized)
+      {
+        mass_prev_volume = total_volume;
+        mass_prev_t      = t;
+        mass_initialized = true;
+      }
+
+    const double dt = t - mass_prev_t;
+    const double dVdt =
+      (dt > 0.0) ? (total_volume - mass_prev_volume) / dt : 0.0;
+    const double imbalance = dVdt - net_flux;
+
+    // Normalise against a slowly varying flow scale (running peak |net_flux|),
+    // not the instantaneous value: net_flux crosses zero every cardiac cycle,
+    // and dividing by it there would blow the ratio up for a tiny imbalance.
+    mass_flow_scale = std::max(mass_flow_scale, std::abs(net_flux));
+    const double rel_imbalance =
+      std::abs(imbalance) / std::max(1e-12, mass_flow_scale);
+
+    if (this_mpi_process == 0 && mass_log.is_open())
+      {
+        mass_log << std::scientific << std::setprecision(8) << t << ","
+                 << total_volume << "," << dVdt << "," << net_flux << ","
+                 << imbalance << "," << rel_imbalance << "\n";
+        mass_log.flush();
+      }
+
+    // Two independent gates: relative-to-peak-flow AND an absolute floor, so
+    // a genuine problem cannot hide behind either one.
+    constexpr double rel_imbalance_warn_tol = 0.20;
+    constexpr double abs_imbalance_warn_tol = 1e-5;
+    if (rel_imbalance > rel_imbalance_warn_tol &&
+        std::abs(imbalance) > abs_imbalance_warn_tol)
+      pcout << "  [mass check WARNING] t=" << t << " dV/dt=" << dVdt
+            << " net_flux=" << net_flux << " imbalance=" << imbalance << " ("
+            << rel_imbalance * 100.0 << "% of peak flow)" << std::endl;
+
+    mass_prev_volume = total_volume;
+    mass_prev_t      = t;
+  }
+
+  // ============================================================================
+  // open_output_files
+  //
+  // Opens the per-vessel probes and mass_conservation.csv, and resets the
+  // running state of the mass check and of the BDF-order histogram.  Call once
+  // per simulation (per refinement cycle), before ida.solve_dae().
+  // ============================================================================
+  template <int dim, int spacedim>
+  void
+  BloodFlowSystem<dim, spacedim>::open_output_files()
+  {
+    open_csv_files();
+
+    mass_initialized = false;
+    mass_prev_volume = 0.0;
+    mass_prev_t      = 0.0;
+    mass_flow_scale  = 0.0;
+
+    if (mass_log.is_open())
+      mass_log.close();
+    if (this_mpi_process == 0)
+      {
+        const std::string dir =
+          output_directory.empty() ? "." : output_directory;
+        std::filesystem::create_directories(dir);
+        mass_log.open(dir + "/mass_conservation.csv", std::ios::trunc);
+        AssertThrow(mass_log,
+                    ExcMessage("Cannot open " + dir +
+                               "/mass_conservation.csv"));
+        mass_log << "t,total_volume,dVdt,net_flux,imbalance,rel_imbalance\n";
+      }
+
+    bdf_steps.fill(0);
+    bdf_prev_nst = 0;
+  }
+
+  // ============================================================================
+  // write_output_step
+  //
+  // One row in every HDG_IDA_Vessel_<vid>.csv owned by this rank and one row
+  // in mass_conservation.csv.
+  // ============================================================================
+  template <int dim, int spacedim>
+  void
+  BloodFlowSystem<dim, spacedim>::write_output_step(const double      t,
+                                                    const VectorType &sol)
+  {
+    write_csv_row(t, sol);
+    check_mass_conservation(sol, t);
+  }
+
+  // ============================================================================
+  // record_ida_step
+  //
+  // output_step fires once per output period, so every step accepted since
+  // the previous call is attributed to the order of the last accepted step.
+  // The per-order counts then sum exactly to the total number of steps.
+  // ============================================================================
+  template <int dim, int spacedim>
+  void
+  BloodFlowSystem<dim, spacedim>::record_ida_step(
+    const SUNDIALS::IDA<VectorType> &ida)
+  {
+    void *mem = internal_ida_access::get_ida_mem(ida);
+    if (mem == nullptr)
+      return;
+
+    long int nst_now = 0;
+    int      klast   = 0;
+    IDAGetNumSteps(mem, &nst_now);
+    IDAGetLastOrder(mem, &klast);
+
+    const long int delta = nst_now - bdf_prev_nst;
+    if (klast >= 1 && klast <= 5 && delta > 0)
+      bdf_steps[klast] += delta;
+    bdf_prev_nst = nst_now;
+  }
+
+  // ============================================================================
+  // write_ida_statistics  ->  ida_statistics.csv
+  //
+  // ida_mem is still alive after solve_dae() returns (it is freed in the IDA
+  // destructor or the next reset), so the cumulative counters can be read
+  // here.  One row per simulation, appended, so successive runs (e.g. a sweep
+  // over the maximum BDF order) accumulate in the same file.
+  // ============================================================================
+  template <int dim, int spacedim>
+  void
+  BloodFlowSystem<dim, spacedim>::write_ida_statistics(
+    const SUNDIALS::IDA<VectorType> &ida,
+    const double                     solve_wall_time) const
+  {
+    void *mem = internal_ida_access::get_ida_mem(ida);
+
+    long int nst = 0, netf = 0, nni = 0, ncfn = 0;
+    if (mem != nullptr)
+      {
+        IDAGetNumSteps(mem, &nst);                // accepted steps
+        IDAGetNumErrTestFails(mem, &netf);        // error-test failures
+        IDAGetNumNonlinSolvIters(mem, &nni);      // nonlinear iterations
+        IDAGetNumNonlinSolvConvFails(mem, &ncfn); // nonlinear conv. failures
+      }
+
+    // Collective: the slowest rank defines the wall time of the solve.
+    const double wall_time =
+      Utilities::MPI::max(solve_wall_time, mpi_communicator_);
+
+    if (this_mpi_process != 0)
+      return;
+
+    const std::string dir = output_directory.empty() ? "." : output_directory;
+    std::filesystem::create_directories(dir);
+
+    const std::string filename    = dir + "/ida_statistics.csv";
+    const bool        file_exists = std::ifstream(filename).good();
+
+    std::ofstream csv(filename, std::ios::app);
+    AssertThrow(csv, ExcMessage("Cannot open " + filename));
+
+    if (!file_exists)
+      csv << "max_order,wall_time,n_steps,n_err_test_fails,"
+             "n_nonlin_iters,n_nonlin_conv_fails,"
+             "bdf1_steps,bdf2_steps,bdf3_steps,bdf4_steps,bdf5_steps\n";
+
+    csv << ida_parameters.maximum_order << ',' << wall_time << ',' << nst << ','
+        << netf << ',' << nni << ',' << ncfn << ',' << bdf_steps[1] << ','
+        << bdf_steps[2] << ',' << bdf_steps[3] << ',' << bdf_steps[4] << ','
+        << bdf_steps[5] << '\n';
+  }
+
+  // ============================================================================
+  // finalize_output
+  // ============================================================================
+  template <int dim, int spacedim>
+  void
+  BloodFlowSystem<dim, spacedim>::finalize_output(
+    const SUNDIALS::IDA<VectorType> &ida,
+    const double                     solve_wall_time)
+  {
+    close_csv_files();
+    if (mass_log.is_open())
+      mass_log.close();
+    write_ida_statistics(ida, solve_wall_time);
+  }
+
+  // ============================================================================
+  // write_scaling_timings  ->  scaling_timings.csv
+  //
+  // Accumulated wall-clock time per TimerOutput section, tagged with the
+  // process count.  Run the executable with mpirun -np 1, 2, 4, ...; each
+  // invocation appends one row per section to the same CSV.
+  // ============================================================================
+  template <int dim, int spacedim>
+  void
+  BloodFlowSystem<dim, spacedim>::write_scaling_timings() const
+  {
+    const auto summary = computing_timer.get_summary_data(
+      TimerOutput::OutputData::total_wall_time);
+
+    if (this_mpi_process != 0)
+      return;
+
+    const std::string dir = output_directory.empty() ? "." : output_directory;
+    std::filesystem::create_directories(dir);
+
+    const std::string filename    = dir + "/scaling_timings.csv";
+    const bool        file_exists = std::ifstream(filename).good();
+
+    std::ofstream csv(filename, std::ios::app);
+    AssertThrow(csv, ExcMessage("Cannot open " + filename));
+
+    if (!file_exists)
+      csv << "n_mpi_processes,section,wall_time\n";
+
+    for (const auto &entry : summary)
+      csv << n_mpi_processes << "," << entry.first << "," << entry.second
+          << "\n";
   }
 
   // Explicit instantiation
