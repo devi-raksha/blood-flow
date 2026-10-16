@@ -83,18 +83,18 @@ namespace MetricFlowX
   using dealii::UpdateFlags;
   using dealii::Vector;
   using dealii::VectorOperation;
-  namespace DoFTools           = dealii::DoFTools;
-  namespace FEValuesExtractors = dealii::FEValuesExtractors;
-  namespace LinearAlgebraPETSc = dealii::LinearAlgebraPETSc;
-  // namespace LinearAlgebraTrilinos = dealii::LinearAlgebraTrilinos;
-  namespace PETScWrappers = dealii::PETScWrappers;
-  namespace SUNDIALS      = dealii::SUNDIALS;
-  namespace SparsityTools = dealii::SparsityTools;
-  // namespace TrilinosWrappers      = dealii::TrilinosWrappers;
-  namespace numbers   = dealii::numbers;
-  namespace parallel  = dealii::parallel;
-  namespace types     = dealii::types;
-  namespace Utilities = dealii::Utilities;
+  namespace DoFTools              = dealii::DoFTools;
+  namespace FEValuesExtractors    = dealii::FEValuesExtractors;
+  namespace LinearAlgebraPETSc    = dealii::LinearAlgebraPETSc;
+  //namespace LinearAlgebraTrilinos = dealii::LinearAlgebraTrilinos;
+  namespace PETScWrappers         = dealii::PETScWrappers;
+  namespace SUNDIALS              = dealii::SUNDIALS;
+  namespace SparsityTools         = dealii::SparsityTools;
+  //namespace TrilinosWrappers      = dealii::TrilinosWrappers;
+  namespace numbers               = dealii::numbers;
+  namespace parallel              = dealii::parallel;
+  namespace types                 = dealii::types;
+  namespace Utilities             = dealii::Utilities;
 
   // ---------------------------------------------------------------------------
   // Linear algebra backend.
@@ -428,12 +428,15 @@ namespace MetricFlowX
     //   mass_conservation.csv    : dV/dt vs. net boundary flux
     //   ida_statistics.csv       : IDA step / failure counts + BDF-order
     //                              histogram (one row per simulation)
+    //   ida_step_history.csv     : one row per output time: internal IDA
+    //                              steps and nonlinear iterations taken to
+    //                              reach it (per interval and cumulative)
     //   scaling_timings.csv      : TimerOutput wall time per section,
     //                              tagged with the MPI process count
     //
     // Call sequence from the time-integration driver:
     //   open_output_files();                     // before ida.solve_dae()
-    //   record_ida_step(ida);                    // first line of output_step
+    //   record_ida_step(ida, t);                 // first line of output_step
     //   write_output_step(t, sol);               // inside output_step
     //   finalize_output(ida, solve_wall_time);   // after ida.solve_dae()
     //   write_scaling_timings();                 // once, at program end
@@ -446,8 +449,36 @@ namespace MetricFlowX
     void
     write_output_step(const double t, const VectorType &sol);
 
+    // Per-output-time IDA bookkeeping.  Every field is identical on all ranks
+    // because the time integration itself is global.
+    struct IDAOutputRecord
+    {
+      double   output_time         = 0.0; // the output time we asked for
+      double   ida_time            = 0.0; // IDA's internal time (>= output)
+      long int steps_interval      = 0;   // internal steps since last output
+      long int steps_cumulative    = 0;
+      long int nonlin_iters_interval   = 0; // Newton iters since last output
+      long int nonlin_iters_cumulative = 0;
+      long int nonlin_fails_interval   = 0; // nonlinear conv. failures
+      long int err_test_fails_interval = 0; // local error-test failures
+      long int residual_evals_interval = 0;
+      long int lin_setups_interval     = 0; // setup_jacobian calls
+      double   last_step_size      = 0.0;
+      int      last_order          = 0;
+    };
+
     void
-    record_ida_step(const SUNDIALS::IDA<VectorType> &ida);
+    record_ida_step(const SUNDIALS::IDA<VectorType> &ida, const double t);
+
+    const std::vector<IDAOutputRecord> &
+    ida_output_history() const
+    {
+      return ida_history;
+    }
+
+    void
+    poll_ida_internal_step(const SUNDIALS::IDA<VectorType> &ida,
+                           const bool resync_time = false);
 
     void
     finalize_output(const SUNDIALS::IDA<VectorType> &ida,
@@ -455,7 +486,7 @@ namespace MetricFlowX
 
     void
     write_ida_statistics(const SUNDIALS::IDA<VectorType> &ida,
-                         const double solve_wall_time) const;
+                         const double                     solve_wall_time) const;
 
     void
     write_scaling_timings() const;
@@ -803,7 +834,7 @@ namespace MetricFlowX
     double       theta_bd = 0.5;
     double gamma = 1; // 0.5*gamma*(U^2) term in total pressure continuity at
                       // junctions chnage only for 56 arteries <= 0.8
-    double time  = 0.0;
+    double time = 0.0;
     // Positive values throttle file output; zero writes every IDA callback.
     double time_interval = 0.0;
 
@@ -840,6 +871,23 @@ namespace MetricFlowX
     // (k = 1..5), attributed at each output_step callback.
     std::array<long int, 6> bdf_steps{};
     long int                bdf_prev_nst = 0;
+
+    // ida_step_history.csv state: cumulative counters seen at the previous
+    // output, so each record can store the per-interval differences.
+    std::vector<IDAOutputRecord> ida_history;
+    std::ofstream                ida_history_log;
+    long int                     prev_nni  = 0;
+    long int                     prev_ncfn = 0;
+    long int                     prev_netf = 0;
+    long int                     prev_nre  = 0;
+    long int                     prev_nls  = 0;
+        std::ofstream ida_internal_log;
+    long int      is_prev_nst   = 0;
+    long int      is_prev_nni   = 0;
+    long int      is_prev_ncfn  = 0;
+    long int      is_prev_netf  = 0;
+    long int      is_prev_nls   = 0;
+    double        is_t_accepted = 0.0;
 
     // -----------------------------------------------------------------------
     // Internal helpers — geometry

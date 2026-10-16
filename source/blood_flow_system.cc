@@ -40,9 +40,10 @@
 #include <deal.II/numerics/error_estimator.h>
 #include <deal.II/numerics/vector_tools.h>
 
-#include <idas/idas.h>
 #include <metric_flow_x/blood_flow_system.h>
 #include <metric_flow_x/io/vtk_utils.h>
+
+#include <idas/idas.h>
 
 #include <algorithm>
 #include <array>
@@ -72,7 +73,8 @@ namespace MetricFlowX
     struct IdaMemAccessor
     {
       using type = void *dealii::SUNDIALS::IDA<VecType>::*;
-      friend type        steal(IdaMemAccessor);
+      friend type
+      steal(IdaMemAccessor);
     };
 
     template <typename VecType, typename IdaMemAccessor<VecType>::type M>
@@ -2055,7 +2057,7 @@ namespace MetricFlowX
     const QGauss<dim>     quad_cell(fe_->tensor_degree() + 1);
     const QGauss<dim - 1> quad_face(fe_->tensor_degree() + 1);
 
-    FEValues<dim, spacedim> fev(*fe_,
+    FEValues<dim, spacedim>     fev(*fe_,
                                 quad_cell,
                                 update_values | update_gradients |
                                   update_quadrature_points | update_JxW_values);
@@ -3731,8 +3733,8 @@ namespace MetricFlowX
             {
               const double A = y(ldofs[i]);
               p(ldofs[i])    = compute_pressure_value(A,
-                                                      cell->material_id(),
-                                                      compute_a_d_local(cell));
+                                                   cell->material_id(),
+                                                   compute_a_d_local(cell));
             }
       }
 
@@ -4022,9 +4024,8 @@ namespace MetricFlowX
         mass_initialized = true;
       }
 
-    const double dt = t - mass_prev_t;
-    const double dVdt =
-      (dt > 0.0) ? (total_volume - mass_prev_volume) / dt : 0.0;
+    const double dt   = t - mass_prev_t;
+    const double dVdt = (dt > 0.0) ? (total_volume - mass_prev_volume) / dt : 0.0;
     const double imbalance = dVdt - net_flux;
 
     // Normalise against a slowly varying flow scale (running peak |net_flux|),
@@ -4083,13 +4084,95 @@ namespace MetricFlowX
         std::filesystem::create_directories(dir);
         mass_log.open(dir + "/mass_conservation.csv", std::ios::trunc);
         AssertThrow(mass_log,
-                    ExcMessage("Cannot open " + dir +
-                               "/mass_conservation.csv"));
+                    ExcMessage("Cannot open " + dir + "/mass_conservation.csv"));
         mass_log << "t,total_volume,dVdt,net_flux,imbalance,rel_imbalance\n";
       }
 
     bdf_steps.fill(0);
     bdf_prev_nst = 0;
+
+    ida_history.clear();
+    prev_nni  = 0;
+    prev_ncfn = 0;
+    prev_netf = 0;
+    prev_nre  = 0;
+    prev_nls  = 0;
+
+    if (ida_history_log.is_open())
+      ida_history_log.close();
+    if (this_mpi_process == 0)
+      {
+        const std::string dir =
+          output_directory.empty() ? "." : output_directory;
+        ida_history_log.open(dir + "/ida_step_history.csv", std::ios::trunc);
+        AssertThrow(ida_history_log,
+                    ExcMessage("Cannot open " + dir + "/ida_step_history.csv"));
+        ida_history_log
+          << "output_time,ida_time,steps_interval,steps_cumulative,"
+             "nonlin_iters_interval,nonlin_iters_cumulative,"
+             "nonlin_iters_per_step,nonlin_fails_interval,"
+             "err_test_fails_interval,residual_evals_interval,"
+             "lin_setups_interval,last_step_size,last_order\n";
+      }
+
+          is_prev_nst = is_prev_nni = is_prev_ncfn = is_prev_netf = is_prev_nls = 0;
+    is_t_accepted = ida_parameters.initial_time;
+
+    if (ida_internal_log.is_open())
+      ida_internal_log.close();
+    if (this_mpi_process == 0)
+      {
+        const std::string dir = output_directory.empty() ? "." : output_directory;
+        ida_internal_log.open(dir + "/ida_internal_steps.csv", std::ios::trunc);
+        ida_internal_log << "step,t,h,order,nonlin_iters,nonlin_iters_cumulative,"
+                            "nonlin_conv_fails,err_test_fails,jacobian_setups\n";
+      }
+  }
+
+  template <int dim, int spacedim>
+  void
+  BloodFlowSystem<dim, spacedim>::poll_ida_internal_step(
+    const SUNDIALS::IDA<VectorType> &ida,
+    const bool                       resync_time)
+  {
+    void *mem = internal_ida_access::get_ida_mem(ida);
+    if (mem == nullptr)
+      return;
+
+    long int nst = 0;
+    IDAGetNumSteps(mem, &nst);
+    if (nst == is_prev_nst)
+      return; // no new accepted step
+
+    long int nni = 0, ncfn = 0, netf = 0, nls = 0;
+    int      klast = 0;
+    double   hlast = 0.0;
+    IDAGetNumNonlinSolvIters(mem, &nni);
+    IDAGetNumNonlinSolvConvFails(mem, &ncfn);
+    IDAGetNumErrTestFails(mem, &netf);
+    IDAGetNumLinSolvSetups(mem, &nls);
+    IDAGetLastOrder(mem, &klast);
+    IDAGetLastStep(mem, &hlast);
+
+    // Inside the residual, IDA's tn is the *trial* time, so accumulate t += h.
+    // In output_step / after solve_dae, tn is exact -> resync.
+    is_t_accepted += hlast * static_cast<double>(nst - is_prev_nst);
+    if (resync_time)
+      IDAGetCurrentTime(mem, &is_t_accepted);
+
+    if (this_mpi_process == 0 && ida_internal_log.is_open())
+      ida_internal_log << nst << ',' << std::scientific << std::setprecision(12)
+                       << is_t_accepted << ',' << std::setprecision(6) << hlast
+                       << ',' << klast << ',' << (nni - is_prev_nni) << ','
+                       << nni << ',' << (ncfn - is_prev_ncfn) << ','
+                       << (netf - is_prev_netf) << ',' << (nls - is_prev_nls)
+                       << '\n';
+
+    is_prev_nst  = nst;
+    is_prev_nni  = nni;
+    is_prev_ncfn = ncfn;
+    is_prev_netf = netf;
+    is_prev_nls  = nls;
   }
 
   // ============================================================================
@@ -4110,28 +4193,95 @@ namespace MetricFlowX
   // ============================================================================
   // record_ida_step
   //
-  // output_step fires once per output period, so every step accepted since
-  // the previous call is attributed to the order of the last accepted step.
-  // The per-order counts then sum exactly to the total number of steps.
+  // Called at the top of output_step, i.e. once per output time requested
+  // through the output period.  deal.II's solve_dae() lets IDA take as many
+  // internal (adaptive) steps as it needs to pass the requested time, then
+  // interpolates the solution back to it.  The difference of IDA's cumulative
+  // counters between two consecutive calls is therefore exactly the work IDA
+  // did to get from the previous output time to this one:
+  //
+  //   steps_interval        : internal BDF steps accepted in the interval
+  //   nonlin_iters_interval : Newton iterations over all of those steps
+  //                           (including iterations of rejected attempts)
+  //
+  // The record is kept in ida_history and streamed to ida_step_history.csv.
+  // It also feeds the BDF-order histogram: every step accepted since the
+  // previous call is attributed to the order of the last accepted step, so
+  // the per-order counts sum exactly to the total number of steps.
   // ============================================================================
   template <int dim, int spacedim>
   void
   BloodFlowSystem<dim, spacedim>::record_ida_step(
-    const SUNDIALS::IDA<VectorType> &ida)
+    const SUNDIALS::IDA<VectorType> &ida,
+    const double                     t)
   {
     void *mem = internal_ida_access::get_ida_mem(ida);
     if (mem == nullptr)
       return;
 
-    long int nst_now = 0;
-    int      klast   = 0;
-    IDAGetNumSteps(mem, &nst_now);
+    long int nst = 0, nni = 0, ncfn = 0, netf = 0, nre = 0, nls = 0;
+    int      klast = 0;
+    double   hlast = 0.0, tcur = t;
+    IDAGetNumSteps(mem, &nst);
+    IDAGetNumNonlinSolvIters(mem, &nni);
+    IDAGetNumNonlinSolvConvFails(mem, &ncfn);
+    IDAGetNumErrTestFails(mem, &netf);
+    IDAGetNumResEvals(mem, &nre);
+    IDAGetNumLinSolvSetups(mem, &nls);
     IDAGetLastOrder(mem, &klast);
+    IDAGetLastStep(mem, &hlast);
+    IDAGetCurrentTime(mem, &tcur);
 
-    const long int delta = nst_now - bdf_prev_nst;
-    if (klast >= 1 && klast <= 5 && delta > 0)
-      bdf_steps[klast] += delta;
-    bdf_prev_nst = nst_now;
+    // ---- BDF-order histogram ------------------------------------------------
+    const long int delta_steps = nst - bdf_prev_nst;
+    if (klast >= 1 && klast <= 5 && delta_steps > 0)
+      bdf_steps[klast] += delta_steps;
+    bdf_prev_nst = nst;
+
+    // ---- per-output-time record ---------------------------------------------
+    IDAOutputRecord rec;
+    rec.output_time             = t;
+    rec.ida_time                = tcur;
+    rec.steps_interval          = delta_steps;
+    rec.steps_cumulative        = nst;
+    rec.nonlin_iters_interval   = nni - prev_nni;
+    rec.nonlin_iters_cumulative = nni;
+    rec.nonlin_fails_interval   = ncfn - prev_ncfn;
+    rec.err_test_fails_interval = netf - prev_netf;
+    rec.residual_evals_interval = nre - prev_nre;
+    rec.lin_setups_interval     = nls - prev_nls;
+    rec.last_step_size          = hlast;
+    rec.last_order              = klast;
+    ida_history.push_back(rec);
+
+    prev_nni  = nni;
+    prev_ncfn = ncfn;
+    prev_netf = netf;
+    prev_nre  = nre;
+    prev_nls  = nls;
+
+    if (this_mpi_process == 0 && ida_history_log.is_open())
+      {
+        const double iters_per_step =
+          rec.steps_interval > 0 ?
+            static_cast<double>(rec.nonlin_iters_interval) /
+              static_cast<double>(rec.steps_interval) :
+            0.0;
+
+        ida_history_log << std::scientific << std::setprecision(10)
+                        << rec.output_time << ',' << rec.ida_time << ','
+                        << rec.steps_interval << ',' << rec.steps_cumulative
+                        << ',' << rec.nonlin_iters_interval << ','
+                        << rec.nonlin_iters_cumulative << ','
+                        << std::setprecision(4) << iters_per_step << ','
+                        << rec.nonlin_fails_interval << ','
+                        << rec.err_test_fails_interval << ','
+                        << rec.residual_evals_interval << ','
+                        << rec.lin_setups_interval << ','
+                        << std::setprecision(6) << rec.last_step_size << ','
+                        << rec.last_order << '\n';
+        ida_history_log.flush();
+      }
   }
 
   // ============================================================================
@@ -4175,15 +4325,30 @@ namespace MetricFlowX
     std::ofstream csv(filename, std::ios::app);
     AssertThrow(csv, ExcMessage("Cannot open " + filename));
 
+    // Derived averages over the whole run.
+    const std::size_t n_outputs = ida_history.size();
+    const double nonlin_iters_per_step =
+      nst > 0 ? static_cast<double>(nni) / static_cast<double>(nst) : 0.0;
+    const double steps_per_output =
+      n_outputs > 0 ? static_cast<double>(nst) / static_cast<double>(n_outputs) :
+                      0.0;
+    const double nonlin_iters_per_output =
+      n_outputs > 0 ? static_cast<double>(nni) / static_cast<double>(n_outputs) :
+                      0.0;
+
     if (!file_exists)
       csv << "max_order,wall_time,n_steps,n_err_test_fails,"
              "n_nonlin_iters,n_nonlin_conv_fails,"
-             "bdf1_steps,bdf2_steps,bdf3_steps,bdf4_steps,bdf5_steps\n";
+             "bdf1_steps,bdf2_steps,bdf3_steps,bdf4_steps,bdf5_steps,"
+             "n_outputs,nonlin_iters_per_step,steps_per_output,"
+             "nonlin_iters_per_output\n";
 
-    csv << ida_parameters.maximum_order << ',' << wall_time << ',' << nst << ','
-        << netf << ',' << nni << ',' << ncfn << ',' << bdf_steps[1] << ','
-        << bdf_steps[2] << ',' << bdf_steps[3] << ',' << bdf_steps[4] << ','
-        << bdf_steps[5] << '\n';
+    csv << ida_parameters.maximum_order << ',' << wall_time << ',' << nst
+        << ',' << netf << ',' << nni << ',' << ncfn << ',' << bdf_steps[1]
+        << ',' << bdf_steps[2] << ',' << bdf_steps[3] << ',' << bdf_steps[4]
+        << ',' << bdf_steps[5] << ',' << n_outputs << ','
+        << nonlin_iters_per_step << ',' << steps_per_output << ','
+        << nonlin_iters_per_output << '\n';
   }
 
   // ============================================================================
@@ -4198,6 +4363,11 @@ namespace MetricFlowX
     close_csv_files();
     if (mass_log.is_open())
       mass_log.close();
+    if (ida_history_log.is_open())
+      ida_history_log.close();
+          poll_ida_internal_step(ida, /*resync_time=*/true); // catch the last step
+    if (ida_internal_log.is_open())
+      ida_internal_log.close();
     write_ida_statistics(ida, solve_wall_time);
   }
 
@@ -4212,8 +4382,8 @@ namespace MetricFlowX
   void
   BloodFlowSystem<dim, spacedim>::write_scaling_timings() const
   {
-    const auto summary = computing_timer.get_summary_data(
-      TimerOutput::OutputData::total_wall_time);
+    const auto summary =
+      computing_timer.get_summary_data(TimerOutput::OutputData::total_wall_time);
 
     if (this_mpi_process != 0)
       return;

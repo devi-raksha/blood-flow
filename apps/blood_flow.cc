@@ -16,6 +16,7 @@
 #include <deal.II/base/logstream.h> // deallog control
 #include <deal.II/base/mpi.h>
 #include <deal.II/base/parameter_handler.h>
+#include <deal.II/base/timer.h>
 
 #include <deal.II/lac/petsc_solver.h>
 
@@ -24,8 +25,10 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdlib>
+#include <iomanip>
 #include <iostream>
 #include <limits>
+#include <sstream>
 #include <stdexcept> // for std::invalid_argument
 
 using namespace dealii;
@@ -63,13 +66,18 @@ namespace MetricFlowX
           else
             problem.triangulation_.refine_global(1);
 
-          problem.open_csv_files();
           if (cycle > 0)
             {
               problem.setup_system();
               problem.initialize_terminal_capacitors();
               problem.build_per_cell_mass_inv();
             }
+
+          // After setup_system(), so the vessel probe cells and DoF indices
+          // belong to the current mesh.  Opens HDG_IDA_Vessel_*.csv,
+          // mass_conservation.csv and ida_step_history.csv, and resets the
+          // IDA counters for this cycle.
+          problem.open_output_files();
           problem.initialize_state(problem.solution,
                                    problem.ida_parameters.initial_time);
           problem.initialize_state_derivative(
@@ -210,10 +218,11 @@ namespace MetricFlowX
             return is;
           };
 
-          ida.residual = [&problem](const double      t,
+          ida.residual = [&problem, &ida](const double      t,
                                     const VectorType &y,
                                     const VectorType &ydot,
                                     VectorType       &res) -> int {
+            problem.poll_ida_internal_step(ida);
             problem.assemble_residual(t, y, ydot, res);
             return 0;
           };
@@ -284,6 +293,7 @@ namespace MetricFlowX
           unsigned int output_number     = 0;
           ida.output_step =
             [&problem,
+             &ida,
              initial_output_time,
              final_output_time,
              &next_output_time,
@@ -299,6 +309,7 @@ namespace MetricFlowX
               const double final_time_tolerance =
                 16.0 * std::numeric_limits<double>::epsilon() *
                 std::max(std::abs(t), std::abs(final_output_time));
+                problem.poll_ida_internal_step(ida, /*resync_time=*/true);
               const bool output_due =
                 problem.time_interval == 0.0 || t >= next_output_time ||
                 next_output_time - t <= tolerance || t >= final_output_time ||
@@ -306,9 +317,16 @@ namespace MetricFlowX
               if (!output_due)
                 return;
 
+              // IDA internal steps / nonlinear iterations taken since the
+              // previous *written* output -> ida_step_history.csv.  Recorded
+              // after the output_due check so each row spans one output
+              // interval set by "Output time interval".
+              problem.record_ida_step(ida, t);
+
               problem.compute_pressure(sol, problem.pressure_);
               problem.output_results(sol, problem.pressure_, output_number++);
-              problem.write_csv_row(t, sol);
+              // HDG_IDA_Vessel_*.csv + mass_conservation.csv
+              problem.write_output_step(t, sol);
 
               if (problem.time_interval > 0.0)
                 {
@@ -329,12 +347,22 @@ namespace MetricFlowX
 
           problem.solution_dot = 0.0;
           problem.time         = problem.ida_parameters.initial_time;
-          ida.solve_dae(problem.solution, problem.solution_dot);
 
-          problem.close_csv_files();
+          Timer solve_timer;
+          solve_timer.start();
+          ida.solve_dae(problem.solution, problem.solution_dot);
+          solve_timer.stop();
+
+          // Closes the vessel / mass / step-history CSVs and appends one row
+          // to ida_statistics.csv.  Must run while `ida` is still alive.
+          problem.finalize_output(ida, solve_timer.wall_time());
+
           problem.compute_pressure(problem.solution, problem.pressure_);
           problem.compute_errors(cycle);
         }
+
+      // One row per TimerOutput section -> scaling_timings.csv
+      problem.write_scaling_timings();
     }
   };
 } // namespace MetricFlowX
