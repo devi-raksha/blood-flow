@@ -1,9 +1,4 @@
 /* -----------------------------------------------------------------------------
- *
- *  SPDX-License-Identifier: LGPL-2.1-or-later
- *  Copyright:
- *      2025  Your Name or Institution
- *
  *  This file is part of the blood-flow example built on the deal.II library.
  *  It provides the top-level executable that steers the templated
  *  BloodFlowSystem<1,3> class.  The structure mirrors main_embedded.cc so that
@@ -17,10 +12,9 @@
 #include <deal.II/base/parameter_handler.h>
 
 #include <iostream>
-#include <stdexcept> // for std::invalid_argument
+#include <stdexcept>
 
-#include "blood_flow_system.h" // header exposing BloodFlowSystem
-
+#include "blood_flow_system.h"
 using namespace dealii;
 
 int
