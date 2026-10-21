@@ -368,6 +368,14 @@ namespace MetricFlowX
                       const VectorType &y,
                       const VectorType &ydot,
                       const double      alpha);
+    void 
+    export_jacobian_matrix_market(const std::string &filename,
+                                     const double       t,
+                                     const double       alpha) const;
+
+   std::string jacobian_export_filename = "";
+   double      jacobian_export_time = 0.0;
+   bool        jacobian_exported        = false;                  
 
     void
     assemble_state_jacobian(const double      t,
@@ -837,7 +845,7 @@ namespace MetricFlowX
     double time = 0.0;
     // Positive values throttle file output; zero writes every IDA callback.
     double time_interval = 0.0;
-
+    
     NumericalFluxType numerical_flux_type     = NumericalFluxType::HLL;
     std::string       numerical_flux_type_str = "HLL";
 

@@ -40,10 +40,9 @@
 #include <deal.II/numerics/error_estimator.h>
 #include <deal.II/numerics/vector_tools.h>
 
+#include <idas/idas.h>
 #include <metric_flow_x/blood_flow_system.h>
 #include <metric_flow_x/io/vtk_utils.h>
-
-#include <idas/idas.h>
 
 #include <algorithm>
 #include <array>
@@ -73,8 +72,7 @@ namespace MetricFlowX
     struct IdaMemAccessor
     {
       using type = void *dealii::SUNDIALS::IDA<VecType>::*;
-      friend type
-      steal(IdaMemAccessor);
+      friend type        steal(IdaMemAccessor);
     };
 
     template <typename VecType, typename IdaMemAccessor<VecType>::type M>
@@ -159,7 +157,13 @@ namespace MetricFlowX
     add_parameter("Use junction mesh", use_junction_mesh);
     add_parameter("Outlet boundary condition type", outlet_type);
     add_parameter("Vtk file path for mesh input", vtk_file_path);
-
+    add_parameter( "Jacobian export file (Matrix Market)",
+      jacobian_export_filename,
+      "If non-empty, the first assembled IDA Jacobian is written to this file "
+      "in Matrix Market format. Leave empty to disable.");
+    add_parameter("Jacobian export time",
+                  jacobian_export_time,
+                  "Export the first Jacobian assembled at or after this time.");
     this->enter_subsection("IDA parameters");
     this->enter_my_subsection(this->prm);
     ida_parameters.add_parameters(this->prm);
@@ -2729,10 +2733,11 @@ namespace MetricFlowX
   {
     TimerOutput::Scope timer(computing_timer, "assemble_residual");
     if (verbosity > 1)
-      {
-        deallog.push("assemble_residual");
-        deallog << "t=" << t << std::endl;
-      }
+{
+      deallog.push("assemble_residual");
+    deallog << "t_residual=" << t << std::endl;
+}
+
 
     update_ghosted_vectors(y);
 
@@ -2804,16 +2809,60 @@ namespace MetricFlowX
     TimerOutput::Scope timer(computing_timer, "assemble_jacobian");
     if (verbosity > 1)
       deallog.push("assemble_jacobian");
-    deallog << "t=" << t << std::endl;
+    deallog << "t_jacobian=" << t << std::endl;
 
     assemble_state_jacobian(t, y, ydot);
     assemble_derivative_jacobian(t, y, ydot);
 
     jacobian_matrix.copy_from(state_jacobian_matrix_);
     jacobian_matrix.add(alpha, derivative_jacobian_matrix_);
-
+    if (!jacobian_export_filename.empty() && !jacobian_exported &&
+        t >= jacobian_export_time)
+      {
+        export_jacobian_matrix_market(jacobian_export_filename, t, alpha);
+        jacobian_exported = true;
+      }
     if (verbosity > 1)
       deallog.pop();
+  }
+
+    template <int dim, int spacedim>
+  void
+  BloodFlowSystem<dim, spacedim>::export_jacobian_matrix_market(
+    const std::string &filename,
+    const double       t,
+    const double       alpha) const
+  {
+    types::global_dof_index local_nnz = 0;
+    {
+      std::ofstream part(filename + ".part" +
+                         Utilities::int_to_string(this_mpi_process, 4));
+      part << std::setprecision(17) << std::scientific;
+      for (const auto row : locally_owned_dofs_)
+        for (auto it = jacobian_matrix.begin(row);
+             it != jacobian_matrix.end(row);
+             ++it)
+          {
+            // Matrix Market is 1-based
+            part << row + 1 << ' ' << it->column() + 1 << ' ' << it->value()
+                 << '\n';
+            ++local_nnz;
+          }
+    }
+
+    const types::global_dof_index nnz =
+      Utilities::MPI::sum(local_nnz, mpi_communicator_);
+
+    if (this_mpi_process == 0)
+      {
+        std::ofstream header(filename + ".header");
+        header << "%%MatrixMarket matrix coordinate real general\n"
+               << "% IDA Jacobian J = -dR/dy + alpha*M, t = " << t
+               << ", alpha = " << alpha << ", MPI ranks = " << n_mpi_processes
+               << '\n'
+               << jacobian_matrix.m() << ' ' << jacobian_matrix.n() << ' '
+               << nnz << '\n';
+      }
   }
 
   template <int dim, int spacedim>
@@ -4024,8 +4073,9 @@ namespace MetricFlowX
         mass_initialized = true;
       }
 
-    const double dt   = t - mass_prev_t;
-    const double dVdt = (dt > 0.0) ? (total_volume - mass_prev_volume) / dt : 0.0;
+    const double dt = t - mass_prev_t;
+    const double dVdt =
+      (dt > 0.0) ? (total_volume - mass_prev_volume) / dt : 0.0;
     const double imbalance = dVdt - net_flux;
 
     // Normalise against a slowly varying flow scale (running peak |net_flux|),
@@ -4084,7 +4134,8 @@ namespace MetricFlowX
         std::filesystem::create_directories(dir);
         mass_log.open(dir + "/mass_conservation.csv", std::ios::trunc);
         AssertThrow(mass_log,
-                    ExcMessage("Cannot open " + dir + "/mass_conservation.csv"));
+                    ExcMessage("Cannot open " + dir +
+                               "/mass_conservation.csv"));
         mass_log << "t,total_volume,dVdt,net_flux,imbalance,rel_imbalance\n";
       }
 
@@ -4115,17 +4166,19 @@ namespace MetricFlowX
              "lin_setups_interval,last_step_size,last_order\n";
       }
 
-          is_prev_nst = is_prev_nni = is_prev_ncfn = is_prev_netf = is_prev_nls = 0;
+    is_prev_nst = is_prev_nni = is_prev_ncfn = is_prev_netf = is_prev_nls = 0;
     is_t_accepted = ida_parameters.initial_time;
 
     if (ida_internal_log.is_open())
       ida_internal_log.close();
     if (this_mpi_process == 0)
       {
-        const std::string dir = output_directory.empty() ? "." : output_directory;
+        const std::string dir =
+          output_directory.empty() ? "." : output_directory;
         ida_internal_log.open(dir + "/ida_internal_steps.csv", std::ios::trunc);
-        ida_internal_log << "step,t,h,order,nonlin_iters,nonlin_iters_cumulative,"
-                            "nonlin_conv_fails,err_test_fails,jacobian_setups\n";
+        ida_internal_log
+          << "step,t,h,order,nonlin_iters,nonlin_iters_cumulative,"
+             "nonlin_conv_fails,err_test_fails,jacobian_setups\n";
       }
   }
 
@@ -4327,14 +4380,16 @@ namespace MetricFlowX
 
     // Derived averages over the whole run.
     const std::size_t n_outputs = ida_history.size();
-    const double nonlin_iters_per_step =
+    const double      nonlin_iters_per_step =
       nst > 0 ? static_cast<double>(nni) / static_cast<double>(nst) : 0.0;
     const double steps_per_output =
-      n_outputs > 0 ? static_cast<double>(nst) / static_cast<double>(n_outputs) :
-                      0.0;
+      n_outputs > 0 ?
+        static_cast<double>(nst) / static_cast<double>(n_outputs) :
+        0.0;
     const double nonlin_iters_per_output =
-      n_outputs > 0 ? static_cast<double>(nni) / static_cast<double>(n_outputs) :
-                      0.0;
+      n_outputs > 0 ?
+        static_cast<double>(nni) / static_cast<double>(n_outputs) :
+        0.0;
 
     if (!file_exists)
       csv << "max_order,wall_time,n_steps,n_err_test_fails,"
@@ -4343,12 +4398,11 @@ namespace MetricFlowX
              "n_outputs,nonlin_iters_per_step,steps_per_output,"
              "nonlin_iters_per_output\n";
 
-    csv << ida_parameters.maximum_order << ',' << wall_time << ',' << nst
-        << ',' << netf << ',' << nni << ',' << ncfn << ',' << bdf_steps[1]
-        << ',' << bdf_steps[2] << ',' << bdf_steps[3] << ',' << bdf_steps[4]
-        << ',' << bdf_steps[5] << ',' << n_outputs << ','
-        << nonlin_iters_per_step << ',' << steps_per_output << ','
-        << nonlin_iters_per_output << '\n';
+    csv << ida_parameters.maximum_order << ',' << wall_time << ',' << nst << ','
+        << netf << ',' << nni << ',' << ncfn << ',' << bdf_steps[1] << ','
+        << bdf_steps[2] << ',' << bdf_steps[3] << ',' << bdf_steps[4] << ','
+        << bdf_steps[5] << ',' << n_outputs << ',' << nonlin_iters_per_step
+        << ',' << steps_per_output << ',' << nonlin_iters_per_output << '\n';
   }
 
   // ============================================================================
@@ -4365,7 +4419,7 @@ namespace MetricFlowX
       mass_log.close();
     if (ida_history_log.is_open())
       ida_history_log.close();
-          poll_ida_internal_step(ida, /*resync_time=*/true); // catch the last step
+    poll_ida_internal_step(ida, /*resync_time=*/true); // catch the last step
     if (ida_internal_log.is_open())
       ida_internal_log.close();
     write_ida_statistics(ida, solve_wall_time);
@@ -4382,8 +4436,8 @@ namespace MetricFlowX
   void
   BloodFlowSystem<dim, spacedim>::write_scaling_timings() const
   {
-    const auto summary =
-      computing_timer.get_summary_data(TimerOutput::OutputData::total_wall_time);
+    const auto summary = computing_timer.get_summary_data(
+      TimerOutput::OutputData::total_wall_time);
 
     if (this_mpi_process != 0)
       return;
