@@ -41,11 +41,13 @@
 #include <metric_flow_x/parsed_tools/constants.h>
 #include <metric_flow_x/parsed_tools/function.h>
 
+#include <algorithm>
 #include <array>
 #include <fstream>
 #include <map>
 #include <memory>
 #include <set>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -862,9 +864,12 @@ namespace MetricFlowX
     // is written by exactly one rank and no output is duplicated.
     // -----------------------------------------------------------------------
     std::map<unsigned int, std::ofstream> csv_vessel;
+    // (vessel id, cell containing the vessel's arc-length midpoint, reference
+    // coordinate of the midpoint inside that cell).
     std::vector<
-      std::pair<unsigned int,
-                typename DoFHandler<dim, spacedim>::active_cell_iterator>>
+      std::tuple<unsigned int,
+                 typename DoFHandler<dim, spacedim>::active_cell_iterator,
+                 double>>
       probe_targets;
 
     // mass_conservation.csv state (rank 0 writes the file; every rank keeps
@@ -933,17 +938,23 @@ namespace MetricFlowX
     // Internal helpers — physics / constitutive law
     // -----------------------------------------------------------------------
 
-    // Local diastolic cross-sectional area at a cell's centroid, obtained by
-    // interpolating linearly in arc length between the inlet radius r_in and
-    // the outlet radius r_out of the parent vessel.  The arc-length bounds are
-    // the global ones, so the value a cell gets does not depend on the
+    // Local diastolic cross-sectional area at a point x of a cell, obtained by
+    // interpolating the radius linearly in arc length between the inlet radius
+    // r_in and the outlet radius r_out of the parent vessel.  The arc-length
+    // bounds are the global ones, so the value does not depend on the
     // partitioning.
+    //
+    // The pressure law is evaluated pointwise with this a_d(x): the momentum
+    // equation is written for U with flux U^2/2 + p(A, a_d(x))/rho, so the
+    // taper needs no extra source term as long as every evaluation of p --
+    // volume quadrature points and both states of a face flux -- uses a_d at
+    // the point where p is evaluated.
     //
     // If r_in == r_out == 0 (no taper data), fall back to the vessel-level a_d.
     double
-    compute_a_d_local(
-      const typename DoFHandler<dim, spacedim>::active_cell_iterator &cell)
-      const
+    compute_a_d_at_point(
+      const typename DoFHandler<dim, spacedim>::active_cell_iterator &cell,
+      const Point<spacedim>                                          &x) const
     {
       const unsigned int vid = cell->material_id();
       const auto        &vpp = vessel_map.at(vid);
@@ -955,14 +966,38 @@ namespace MetricFlowX
 
       const Tensor<1, spacedim> d_hat = compute_directional_vector(cell);
 
-      const double s = cell->center() * d_hat;
+      const double s = x * d_hat;
 
+      // Clamp so that round-off at the vessel ends cannot extrapolate.
       const double xi_geometry =
-        (s_max - s_min > 1e-14) ? (s - s_min) / (s_max - s_min) : 0.5;
+        (s_max - s_min > 1e-14) ?
+          std::clamp((s - s_min) / (s_max - s_min), 0.0, 1.0) :
+          0.5;
 
       const double r = vpp.r_in + xi_geometry * (vpp.r_out - vpp.r_in);
 
       return numbers::PI * r * r;
+    }
+
+    // Physical location of the support point of local DoF i (the FE is
+    // nodal, and the 1-D cells are straight segments).
+    Point<spacedim>
+    support_point(
+      const typename DoFHandler<dim, spacedim>::active_cell_iterator &cell,
+      const unsigned int                                              i) const
+    {
+      const double xi = fe_->unit_support_point(i)[0];
+      return cell->vertex(0) + xi * (cell->vertex(1) - cell->vertex(0));
+    }
+
+    // a_d at the cell centroid.  Only meant for point probes at the cell
+    // midpoint; residuals and Jacobians use compute_a_d_at_point().
+    double
+    compute_a_d_local(
+      const typename DoFHandler<dim, spacedim>::active_cell_iterator &cell)
+      const
+    {
+      return compute_a_d_at_point(cell, cell->center());
     }
 
     double
@@ -970,18 +1005,7 @@ namespace MetricFlowX
       const typename DoFHandler<dim, spacedim>::active_cell_iterator &cell,
       const unsigned int face_no) const
     {
-      const unsigned int vid = cell->material_id();
-      const auto        &vpp = vessel_map.at(vid);
-      if (vpp.r_in <= 0.0 || vpp.r_out <= 0.0)
-        return vpp.a_d;
-
-      const auto &[s_min, s_max]      = vessel_s_bounds.at(vid);
-      const Tensor<1, spacedim> d_hat = compute_directional_vector(cell);
-      const double              s     = cell->vertex(face_no) * d_hat;
-      const double              xi_geometry =
-        (s_max - s_min > 1e-14) ? (s - s_min) / (s_max - s_min) : 0.5;
-      const double r = vpp.r_in + xi_geometry * (vpp.r_out - vpp.r_in);
-      return numbers::PI * r * r;
+      return compute_a_d_at_point(cell, cell->vertex(face_no));
     }
 
     double

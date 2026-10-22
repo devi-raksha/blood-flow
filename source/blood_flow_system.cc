@@ -1425,12 +1425,16 @@ namespace MetricFlowX
           continue;
 
         cell->get_dof_indices(ldofs);
-        const double a_d_local = compute_a_d_local(cell);
 
+        // Nodal interpolation of a_d(x).  For a linearly tapered radius a_d is
+        // quadratic in x, so for fe_degree >= 2 the vessel starts exactly at
+        // rest (A = a_d, U = 0 gives p = p0 + p_d everywhere).
         for (unsigned int i = 0; i < fe_->n_dofs_per_cell(); ++i)
           {
             const unsigned int comp = fe_->system_to_component_index(i).first;
-            dst(ldofs[i])           = (comp == 0) ? a_d_local : 0.0;
+            dst(ldofs[i]) =
+              (comp == 0) ? compute_a_d_at_point(cell, support_point(cell, i)) :
+                            0.0;
           }
 
         // Trace: seed A_hat with the diastolic area at that face and U_hat with
@@ -1694,7 +1698,13 @@ namespace MetricFlowX
         if (it != vessel_s_bounds.end())
           s_mid = 0.5 * (it->second.first + it->second.second);
 
+        // Pick the cell whose arc-length interval contains s_mid (distance 0)
+        // and probe it at the reference coordinate of s_mid.  Probing at the
+        // centre of the nearest cell instead would move the probe with the
+        // mesh (L/2, L/4, 3L/8, ... for 1, 2, 4, ... cells per vessel), and
+        // runs on different refinements would not be comparable.
         double best_dist = std::numeric_limits<double>::max();
+        double best_xi   = 0.5;
         typename DoFHandler<dim, spacedim>::active_cell_iterator best_cell;
         bool                                                     found = false;
 
@@ -1706,12 +1716,14 @@ namespace MetricFlowX
               continue;
 
             const Tensor<1, spacedim> d_hat = compute_directional_vector(cell);
-            const double              s     = cell->center() * d_hat;
-            const double              d     = std::abs(s - s_mid);
+            const double              s0    = cell->vertex(0) * d_hat;
+            const double              s1    = cell->vertex(1) * d_hat;
+            const double d = std::max(0.0, std::max(s0 - s_mid, s_mid - s1));
             if (d < best_dist)
               {
                 best_dist = d;
                 best_cell = cell;
+                best_xi   = std::clamp((s_mid - s0) / (s1 - s0), 0.0, 1.0);
                 found     = true;
               }
           }
@@ -1729,7 +1741,7 @@ namespace MetricFlowX
         if (winning_rank != this_mpi_process || !found)
           continue;
 
-        probe_targets.emplace_back(vid, best_cell);
+        probe_targets.emplace_back(vid, best_cell, best_xi);
 
         std::ofstream &os = csv_vessel[vid];
         os.open(dir + "HDG_IDA_Vessel_" + std::to_string(vid) + ".csv");
@@ -1747,11 +1759,10 @@ namespace MetricFlowX
   {
     const unsigned int dofs_per_cell = fe_->n_dofs_per_cell();
 
-    // Reference-cell midpoint (DGQ, dim == 1 -> xi = 0.5).
-    const Point<dim> xi_mid = (dim == 1) ? Point<dim>(0.5) : Point<dim>();
-
-    for (const auto &[vid, cell] : probe_targets)
+    for (const auto &[vid, cell, xi] : probe_targets)
       {
+        const Point<dim> xi_probe = (dim == 1) ? Point<dim>(xi) : Point<dim>();
+
         std::ofstream &os = csv_vessel.at(vid);
 
         // The probe cell is locally owned, so every one of its DoFs is owned
@@ -1762,7 +1773,7 @@ namespace MetricFlowX
         double A_val = 0.0, U_val = 0.0;
         for (unsigned int i = 0; i < dofs_per_cell; ++i)
           {
-            const double       phi  = fe_->shape_value(i, xi_mid);
+            const double       phi  = fe_->shape_value(i, xi_probe);
             const unsigned int comp = fe_->system_to_component_index(i).first;
             if (comp == 0)
               A_val += sol(ldofs[i]) * phi;
@@ -1773,8 +1784,12 @@ namespace MetricFlowX
         const double A_cm2  = A_val * 1.0e4;
         const double U_cmps = U_val * 1.0e2;
 
+        const Point<spacedim> x_probe =
+          cell->vertex(0) + xi * (cell->vertex(1) - cell->vertex(0));
         const double P_Pa =
-          compute_pressure_value(A_val, vid, compute_a_d_local(cell));
+          compute_pressure_value(A_val,
+                                 vid,
+                                 compute_a_d_at_point(cell, x_probe));
         const double P_dynpcm2 = P_Pa * 10.0;
 
         const double Q_cm3ps = A_val * U_val * 1.0e6;
@@ -2102,10 +2117,8 @@ namespace MetricFlowX
           {
             const double A = std::max(A_h[q], 1e-10);
             const double U = U_h[q];
-            const double P =
-              compute_pressure_value(A, vid, compute_a_d_local(cell));
-            // const double              P =
-            // compute_pressure_value(A, vid);
+            const double P = compute_pressure_value(
+              A, vid, compute_a_d_at_point(cell, fev.quadrature_point(q)));
             const Tensor<1, spacedim> b = compute_directional_vector(cell);
 
             const double rhs_A =
@@ -2138,8 +2151,10 @@ namespace MetricFlowX
               }
           }
 
-        const double ad_local = compute_a_d_local(cell);
         // ---- Face flux: interior cell value vs. global face trace
+        //
+        // Interior and trace state sit at the same point, so both pressures
+        // use the a_d of the face.
 
         for (unsigned int f = 0; f < GeometryInfo<dim>::faces_per_cell; ++f)
           {
@@ -2179,16 +2194,8 @@ namespace MetricFlowX
                 // In current implementation there is no physical
                 // neighbour cell on the other side so we are ;
 
-                const auto [FA, FU] = numerical_flux(bn,
-                                                     bn,
-                                                     A_in,
-                                                     U_in,
-                                                     A_hat,
-                                                     U_hat,
-                                                     vid,
-                                                     vid,
-                                                     ad_local,
-                                                     ad_face);
+                const auto [FA, FU] = numerical_flux(
+                  bn, bn, A_in, U_in, A_hat, U_hat, vid, vid, ad_face, ad_face);
 
                 for (unsigned int i = 0; i < n_dofs; ++i)
                   {
@@ -2271,9 +2278,11 @@ namespace MetricFlowX
 
             const unsigned int vid_L   = cell->material_id();
             const unsigned int vid_R   = nb->material_id();
-            const double       ad_L    = compute_a_d_local(cell);
-            const double       ad_R    = compute_a_d_local(nb);
+            // A non-junction interior face joins two cells of the same vessel
+            // at one point, so both states and the trace share its a_d.
             const double       ad_face = compute_a_d_at_face(cell, f);
+            const double       ad_L    = ad_face;
+            const double       ad_R    = ad_face;
             // Interior cell values at face — use y_cell, not y
             fef.reinit(cell, f);
             const double bn_L =
@@ -2956,8 +2965,10 @@ namespace MetricFlowX
     const QGauss<dim>     quad_cell(fe_->tensor_degree() + 1);
     const QGauss<dim - 1> quad_face(fe_->tensor_degree() + 1);
 
-    FEValues<dim, spacedim> fev(
-      *fe_, quad_cell, update_values | update_gradients | update_JxW_values);
+    FEValues<dim, spacedim>     fev(*fe_,
+                                quad_cell,
+                                update_values | update_gradients |
+                                  update_quadrature_points | update_JxW_values);
     FEFaceValues<dim, spacedim> fef(*fe_,
                                     quad_face,
                                     update_values | update_JxW_values |
@@ -2977,8 +2988,7 @@ namespace MetricFlowX
 
         fev.reinit(cell);
 
-        const auto                          &JxW      = fev.get_JxW_values();
-        const double                         ad_local = compute_a_d_local(cell);
+        const auto                          &JxW = fev.get_JxW_values();
         std::vector<types::global_dof_index> ldofs(n_dofs);
         cell->get_dof_indices(ldofs);
 
@@ -2995,7 +3005,8 @@ namespace MetricFlowX
           {
             const double A    = std::max(A_h[q], 1e-10);
             const double U    = U_h[q];
-            const double dpdA = compute_pressure_derivative(A, vid, ad_local);
+            const double dpdA = compute_pressure_derivative(
+              A, vid, compute_a_d_at_point(cell, fev.quadrature_point(q)));
             const double c2_A = A / rho * dpdA;
 
             for (unsigned int i = 0; i < n_dofs; ++i)
@@ -3081,7 +3092,7 @@ namespace MetricFlowX
                                                                0.0,
                                                                vid,
                                                                vid,
-                                                               ad_local,
+                                                               ad_face,
                                                                ad_face);
 
                     for (unsigned int i = 0; i < n_dofs; ++i)
@@ -3115,7 +3126,7 @@ namespace MetricFlowX
                                                                dU_hat,
                                                                vid,
                                                                vid,
-                                                               ad_local,
+                                                               ad_face,
                                                                ad_face);
 
                     for (unsigned int i = 0; i < n_dofs; ++i)
@@ -3197,9 +3208,11 @@ namespace MetricFlowX
             const unsigned int nb_f    = cell->neighbor_of_neighbor(f);
             const unsigned int vid_L   = cell->material_id();
             const unsigned int vid_R   = nb->material_id();
-            const double       ad_L    = compute_a_d_local(cell);
-            const double       ad_R    = compute_a_d_local(nb);
+            // A non-junction interior face joins two cells of the same vessel
+            // at one point, so both states and the trace share its a_d.
             const double       ad_face = compute_a_d_at_face(cell, f);
+            const double       ad_L    = ad_face;
+            const double       ad_R    = ad_face;
             // ---- Left cell: state and normal
             // --------------------------------
             fef.reinit(cell, f);
@@ -3781,9 +3794,10 @@ namespace MetricFlowX
           if (fe_->system_to_component_index(i).first == 0)
             {
               const double A = y(ldofs[i]);
-              p(ldofs[i])    = compute_pressure_value(A,
-                                                   cell->material_id(),
-                                                   compute_a_d_local(cell));
+              p(ldofs[i])    = compute_pressure_value(
+                A,
+                cell->material_id(),
+                compute_a_d_at_point(cell, support_point(cell, i)));
             }
       }
 
