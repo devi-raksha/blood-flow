@@ -85,20 +85,20 @@ namespace MetricFlowX
   using dealii::UpdateFlags;
   using dealii::Vector;
   using dealii::VectorOperation;
-  namespace DoFTools              = dealii::DoFTools;
-  namespace FEValuesExtractors    = dealii::FEValuesExtractors;
-  namespace LinearAlgebraPETSc    = dealii::LinearAlgebraPETSc;
-  namespace PETScWrappers         = dealii::PETScWrappers;
-  namespace SUNDIALS              = dealii::SUNDIALS;
-  namespace SparsityTools         = dealii::SparsityTools;
+  namespace DoFTools           = dealii::DoFTools;
+  namespace FEValuesExtractors = dealii::FEValuesExtractors;
+  namespace LinearAlgebraPETSc = dealii::LinearAlgebraPETSc;
+  namespace PETScWrappers      = dealii::PETScWrappers;
+  namespace SUNDIALS           = dealii::SUNDIALS;
+  namespace SparsityTools      = dealii::SparsityTools;
 #ifdef DEAL_II_WITH_TRILINOS
   namespace LinearAlgebraTrilinos = dealii::LinearAlgebraTrilinos;
   namespace TrilinosWrappers      = dealii::TrilinosWrappers;
 #endif
-  namespace numbers               = dealii::numbers;
-  namespace parallel              = dealii::parallel;
-  namespace types                 = dealii::types;
-  namespace Utilities             = dealii::Utilities;
+  namespace numbers   = dealii::numbers;
+  namespace parallel  = dealii::parallel;
+  namespace types     = dealii::types;
+  namespace Utilities = dealii::Utilities;
 
   // ---------------------------------------------------------------------------
   // Linear algebra backend.
@@ -372,14 +372,14 @@ namespace MetricFlowX
                       const VectorType &y,
                       const VectorType &ydot,
                       const double      alpha);
-    void 
+    void
     export_jacobian_matrix_market(const std::string &filename,
-                                     const double       t,
-                                     const double       alpha) const;
+                                  const double       t,
+                                  const double       alpha) const;
 
-   std::string jacobian_export_filename = "";
-   double      jacobian_export_time = 0.0;
-   bool        jacobian_exported        = false;                  
+    std::string jacobian_export_filename = "";
+    double      jacobian_export_time     = 0.0;
+    bool        jacobian_exported        = false;
 
     void
     assemble_state_jacobian(const double      t,
@@ -465,18 +465,18 @@ namespace MetricFlowX
     // because the time integration itself is global.
     struct IDAOutputRecord
     {
-      double   output_time         = 0.0; // the output time we asked for
-      double   ida_time            = 0.0; // IDA's internal time (>= output)
-      long int steps_interval      = 0;   // internal steps since last output
-      long int steps_cumulative    = 0;
+      double   output_time             = 0.0; // the output time we asked for
+      double   ida_time                = 0.0; // IDA's internal time (>= output)
+      long int steps_interval          = 0; // internal steps since last output
+      long int steps_cumulative        = 0;
       long int nonlin_iters_interval   = 0; // Newton iters since last output
       long int nonlin_iters_cumulative = 0;
       long int nonlin_fails_interval   = 0; // nonlinear conv. failures
       long int err_test_fails_interval = 0; // local error-test failures
       long int residual_evals_interval = 0;
       long int lin_setups_interval     = 0; // setup_jacobian calls
-      double   last_step_size      = 0.0;
-      int      last_order          = 0;
+      double   last_step_size          = 0.0;
+      int      last_order              = 0;
     };
 
     void
@@ -498,7 +498,7 @@ namespace MetricFlowX
 
     void
     write_ida_statistics(const SUNDIALS::IDA<VectorType> &ida,
-                         const double                     solve_wall_time) const;
+                         const double solve_wall_time) const;
 
     void
     write_scaling_timings() const;
@@ -846,10 +846,10 @@ namespace MetricFlowX
     double       theta_bd = 0.5;
     double gamma = 1; // 0.5*gamma*(U^2) term in total pressure continuity at
                       // junctions chnage only for 56 arteries <= 0.8
-    double time = 0.0;
+    double time  = 0.0;
     // Positive values throttle file output; zero writes every IDA callback.
     double time_interval = 0.0;
-    
+
     NumericalFluxType numerical_flux_type     = NumericalFluxType::HLL;
     std::string       numerical_flux_type_str = "HLL";
 
@@ -896,13 +896,13 @@ namespace MetricFlowX
     long int                     prev_netf = 0;
     long int                     prev_nre  = 0;
     long int                     prev_nls  = 0;
-        std::ofstream ida_internal_log;
-    long int      is_prev_nst   = 0;
-    long int      is_prev_nni   = 0;
-    long int      is_prev_ncfn  = 0;
-    long int      is_prev_netf  = 0;
-    long int      is_prev_nls   = 0;
-    double        is_t_accepted = 0.0;
+    std::ofstream                ida_internal_log;
+    long int                     is_prev_nst   = 0;
+    long int                     is_prev_nni   = 0;
+    long int                     is_prev_ncfn  = 0;
+    long int                     is_prev_netf  = 0;
+    long int                     is_prev_nls   = 0;
+    double                       is_t_accepted = 0.0;
 
     // -----------------------------------------------------------------------
     // Internal helpers — geometry
